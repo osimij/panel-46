@@ -1,0 +1,24 @@
+{
+  "name": "panel",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "trap 'kill 0' EXIT; bun --watch server/index.ts & vite",
+    "build": "vite build",
+    "start": "vite build && bun server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.3.0",
+    "react": "19",
+    "react-dom": "19"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5"
+  }
+}
