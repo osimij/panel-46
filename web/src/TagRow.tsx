@@ -38,6 +38,7 @@ export function TagRow(props: {
   const [renamingGroup, setRenamingGroup] = useState<string | null>(null);
   const [menu, setMenu] = useState<Menu | null>(null);
   const [moreRight, setMoreRight] = useState(false);
+  const [fresh, setFresh] = useState<string | null>(null); // just created: pop it in
 
   // Fade the right edge only while there are tags hidden past it.
   useEffect(() => {
@@ -173,6 +174,25 @@ export function TagRow(props: {
     }
   };
 
+  const createTag = async (name: string) => {
+    try {
+      const t = await api.createTag(name);
+      await props.onChanged();
+      setFresh(t.name);
+      // If it already existed it may be anywhere in the row; bring it into view.
+      requestAnimationFrame(() =>
+        rowRef.current?.querySelector(`[data-key="t:${CSS.escape(t.name)}"]`)?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" }),
+      );
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
+
+  const deleteTag = async (name: string) => {
+    if (selected.includes(name)) setSelected(selected.filter((t) => t !== name));
+    await run(api.deleteTag(name));
+  };
+
   const toggle = (name: string) =>
     setSelected(selected.includes(name) ? selected.filter((t) => t !== name) : [...selected, name]);
 
@@ -195,11 +215,19 @@ export function TagRow(props: {
         childOf={opts.childOf}
         index={opts.index ?? 0}
         animateIn={!!opts.childOf && !closing.includes(opts.childOf)}
-        className={`pill ${opts.childOf ? "child" : ""} ${opts.on && !editing ? "on" : ""} ${dead ? "dead" : ""}`}
+        className={`pill ${opts.childOf ? "child" : ""} ${opts.on && !editing ? "on" : ""} ${dead ? "dead" : ""} ${fresh === t.name ? "fresh" : ""}`}
         onClick={(e) => (editing ? openMenu(e, { kind: "tag", name: t.name }) : toggle(t.name))}
         onDoubleClick={() => setRenamingTag(t.name)}
         onContextMenu={(e) => openMenu(e, { kind: "tag", name: t.name })}
-        title={editing ? "Rename or move to a group" : dead ? "Nothing matches this together with your current filters" : `${t.n} reference${t.n === 1 ? "" : "s"} · right-click to organize`}
+        title={
+          editing
+            ? "Rename or move to a group"
+            : t.n === 0
+              ? "Not on any reference yet · add it from a reference's tags"
+              : dead
+                ? "Nothing matches this together with your current filters"
+                : `${t.n} reference${t.n === 1 ? "" : "s"} · right-click to organize`
+        }
         pressed={!!opts.on}
       >
         {opts.on && !editing && <span className="pill-check"><Icon name="check" size={11} /></span>}
@@ -280,6 +308,7 @@ export function TagRow(props: {
         {ungrouped.filter((t) => !isDead(t)).map((t) => tagPill(t))}
         {groups.filter(groupDead).map(groupCapsule)}
         {ungrouped.filter(isDead).map((t) => tagPill(t))}
+        <NewTagButton onCreate={createTag} />
         {editing && (
           <NewGroupButton onCreate={(name) => run(api.createTagGroup(name))} />
         )}
@@ -315,6 +344,10 @@ export function TagRow(props: {
               onNewGroup={(name) => {
                 setMenu(null);
                 void run(api.createTagGroup(name, [menu.name]));
+              }}
+              onDelete={() => {
+                setMenu(null);
+                void deleteTag(menu.name);
               }}
             />
           ) : (
@@ -381,6 +414,29 @@ function TagPill(props: {
   );
 }
 
+/** The dashed pill at the end of the row: type a name, Enter makes the tag. */
+function NewTagButton({ onCreate }: { onCreate: (name: string) => void }) {
+  const [adding, setAdding] = useState(false);
+  if (adding)
+    return (
+      <InlineName
+        initial=""
+        placeholder="New tag"
+        className="pill-input"
+        onDone={(v) => {
+          setAdding(false);
+          if (v) onCreate(v);
+        }}
+        onCancel={() => setAdding(false)}
+      />
+    );
+  return (
+    <button className="pill ghost" onClick={() => setAdding(true)} title="Create a tag">
+      <Icon name="plus" size={11} /> New tag
+    </button>
+  );
+}
+
 function NewGroupButton({ onCreate }: { onCreate: (name: string) => void }) {
   const [adding, setAdding] = useState(false);
   if (adding)
@@ -440,8 +496,11 @@ function TagMenu(props: {
   onRename: () => void;
   onMove: (groupId: string | null) => void;
   onNewGroup: (name: string) => void;
+  onDelete: () => void;
 }) {
   const [creating, setCreating] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const n = props.tag.n;
   const current = props.tag.group_id;
   return (
     <>
@@ -475,6 +534,12 @@ function TagMenu(props: {
           New group…
         </button>
       )}
+      <div className="menu-sep" />
+      {/* Removing it from references takes a second click; an unused tag goes at once. */}
+      <button className="menu-item danger" onClick={() => (n === 0 || confirming ? props.onDelete() : setConfirming(true))}>
+        <Icon name="trash" size={13} />
+        {confirming ? `Remove from ${n} reference${n === 1 ? "" : "s"}?` : "Delete tag"}
+      </button>
     </>
   );
 }

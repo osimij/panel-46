@@ -20,11 +20,17 @@ export function Masonry({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // First guess from the window; the ResizeObserver corrects it before paint.
-  const [cols, setCols] = useState(() => Math.max(1, Math.floor((innerWidth - 240) / (COL_MIN + GAP))));
+  const [cols, setCols] = useState(() => Math.max(1, Math.floor((innerWidth - 170) / (COL_MIN + GAP))));
 
   useLayoutEffect(() => {
     const el = ref.current!;
-    const measure = () => setCols(Math.max(1, Math.floor((el.clientWidth + GAP) / (COL_MIN + GAP))));
+    // Count columns as if the sidebar were at rest, so hovering it squeezes the
+    // columns a little instead of reshuffling cards into a different number of them.
+    const measure = () => {
+      const css = getComputedStyle(el);
+      const lent = parseFloat(css.getPropertyValue("--side-now")) - parseFloat(css.getPropertyValue("--side-mini")) || 0;
+      setCols(Math.max(1, Math.floor((el.clientWidth + lent + GAP) / (COL_MIN + GAP))));
+    };
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);

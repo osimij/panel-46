@@ -134,6 +134,8 @@ export const api = {
   createCollection: (name: string) => call<Collection>("/api/collections", { method: "POST", body: body({ name }) }),
   renameCollection: (id: string, name: string) =>
     call<{ ok: boolean }>(`/api/collections/${id}`, { method: "PATCH", body: body({ name }) }),
+  createTag: (name: string) => call<{ name: string }>("/api/tags", { method: "POST", body: body({ name }) }),
+  deleteTag: (name: string) => call<{ ok: boolean }>(`/api/tags/${encodeURIComponent(name)}`, { method: "DELETE" }),
   renameTag: (from: string, name: string) =>
     call<{ name: string }>(`/api/tags/${encodeURIComponent(from)}`, { method: "PATCH", body: body({ name }) }),
   deleteCollection:(id: string) => call<{ ok: boolean }>(`/api/collections/${id}`, { method: "DELETE" }),

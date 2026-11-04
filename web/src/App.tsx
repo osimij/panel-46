@@ -630,7 +630,7 @@ function Sidebar(props: {
 
       <div className="side-foot">
         <span className={`dot ${props.online ? "archived" : "link_only"}`} />
-        {props.online ? "Online" : "Offline · library still works"}
+        <span className="side-foot-text">{props.online ? "Online" : "Offline · library still works"}</span>
         <button className="side-add side-settings" onClick={props.onSettings} aria-label="Library settings" title="Library & storage">
           <Icon name="settings" size={14} />
         </button>

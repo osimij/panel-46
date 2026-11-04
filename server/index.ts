@@ -176,7 +176,7 @@ function setTags(refId: string, names: string[]) {
       const tag = db.query<{ id: number }, [string]>("SELECT id FROM tags WHERE name = ?").get(name)!;
       db.run("INSERT OR IGNORE INTO ref_tags (ref_id, tag_id, source) VALUES (?, ?, 'user')", [refId, tag.id]);
     }
-    db.run("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM ref_tags)");
+    db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
   })();
   reindex(refId);
 }
@@ -318,7 +318,7 @@ async function handle(req: Request): Promise<Response> {
       }
       db.run("DELETE FROM refs WHERE id = ?", [id]);
       db.run("DELETE FROM refs_fts WHERE ref_id = ?", [id]);
-      db.run("DELETE FROM tags WHERE id NOT IN (SELECT tag_id FROM ref_tags)");
+      db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
       return json({ ok: true });
     }
     if (action === "/tags" && m === "PUT") {
@@ -347,10 +347,18 @@ async function handle(req: Request): Promise<Response> {
     return json(
       db
         .query<{ name: string; n: number; group_id: string | null }, []>(
-          "SELECT t.name, COUNT(*) n, t.group_id FROM tags t JOIN ref_tags rt ON rt.tag_id = t.id GROUP BY t.id ORDER BY n DESC, t.name",
+          "SELECT t.name, COUNT(rt.ref_id) n, t.group_id FROM tags t LEFT JOIN ref_tags rt ON rt.tag_id = t.id GROUP BY t.id ORDER BY n DESC, t.name",
         )
         .all(),
     );
+  }
+  if (path === "/api/tags" && m === "POST") {
+    const body = (await req.json()) as { name?: string };
+    const name = body.name?.trim().toLowerCase();
+    if (!name) return bad("Name required");
+    // Creating one that already exists just keeps it; no error for a duplicate.
+    db.run("INSERT INTO tags (name, kept) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET kept = 1", [name]);
+    return json(db.query<{ name: string }, [string]>("SELECT name FROM tags WHERE name = ?").get(name)!);
   }
 
   // ---- Tag groups ----
@@ -394,6 +402,14 @@ async function handle(req: Request): Promise<Response> {
   }
 
   const tagMatch = path.match(/^\/api\/tags\/(.+)$/);
+  if (tagMatch && m === "DELETE") {
+    const tag = db.query<{ id: number }, [string]>("SELECT id FROM tags WHERE name = ?").get(decodeURIComponent(tagMatch[1]!));
+    if (!tag) return bad("Not found", 404);
+    const refIds = db.query<{ ref_id: string }, [number]>("SELECT ref_id FROM ref_tags WHERE tag_id = ?").all(tag.id);
+    db.run("DELETE FROM tags WHERE id = ?", [tag.id]); // ref_tags rows go with it
+    for (const { ref_id } of refIds) reindex(ref_id);
+    return json({ ok: true });
+  }
   if (tagMatch && m === "PATCH") {
     const from = decodeURIComponent(tagMatch[1]!);
     const body = (await req.json()) as { name?: string };

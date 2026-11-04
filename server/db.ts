@@ -128,6 +128,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS tag_groups (
 )`);
 const tagCols = db.query<{ name: string }, []>("PRAGMA table_info(tags)").all().map((c) => c.name);
 if (!tagCols.includes("group_id")) db.exec("ALTER TABLE tags ADD COLUMN group_id TEXT");
+// Tags made on purpose (from the tag row) stay even while nothing uses them yet.
+if (!tagCols.includes("kept")) db.exec("ALTER TABLE tags ADD COLUMN kept INTEGER NOT NULL DEFAULT 0");
 
 export const now = () => new Date().toISOString();
 export const newId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
