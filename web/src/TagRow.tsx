@@ -179,6 +179,8 @@ export function TagRow(props: {
       const t = await api.createTag(name);
       await props.onChanged();
       setFresh(t.name);
+      // Only the first appearance pops; later (e.g. unfolding in a group) it moves like the others.
+      setTimeout(() => setFresh((f) => (f === t.name ? null : f)), 700);
       // If it already existed it may be anywhere in the row; bring it into view.
       requestAnimationFrame(() =>
         rowRef.current?.querySelector(`[data-key="t:${CSS.escape(t.name)}"]`)?.scrollIntoView({ inline: "nearest", block: "nearest", behavior: "smooth" }),

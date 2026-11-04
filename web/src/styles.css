@@ -104,8 +104,13 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
   z-index: 25; background: var(--bg); white-space: nowrap;
 }
 .brand { width: 28px; height: 28px; margin: -2px 0 6px -3px; display: grid; place-items: center; border-radius: 7px; }
-.brand svg { transition: transform var(--med) var(--spring); }
-.brand:hover svg { transform: rotate(-6deg) scale(1.06); }
+/* The logo file is only a shape here; it takes the text colour, so it follows light and dark. */
+.brand-mark {
+  width: 24px; height: 24px; background: var(--text);
+  -webkit-mask: url(/logo.svg) center / contain no-repeat; mask: url(/logo.svg) center / contain no-repeat;
+}
+.brand-mark { transition: transform var(--med) var(--spring); }
+.brand:hover .brand-mark { transform: rotate(-6deg) scale(1.06); }
 
 .side-group { display: flex; flex-direction: column; }
 .side-group.attention { animation: field-in var(--slow) var(--ease); }

@@ -576,11 +576,7 @@ function Sidebar(props: {
   return (
     <aside className="sidebar">
       <button className="brand" onClick={() => setScope({ kind: "all" })} aria-label="Panel, go to library">
-        <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden>
-          <rect x="3" y="3" width="11" height="26" rx="3" fill="currentColor" />
-          <rect x="18" y="3" width="11" height="12" rx="3" fill="currentColor" />
-          <rect x="18" y="19" width="11" height="10" rx="3" fill="var(--accent)" />
-        </svg>
+        <span className="brand-mark" aria-hidden />
       </button>
 
       <div className="side-group">
