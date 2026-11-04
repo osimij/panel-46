@@ -7,7 +7,7 @@ export type MediaType = "image" | "video" | "gif";
 
 export interface RefRow {
   id: string;
-  kind: "x" | "web" | "upload";
+  kind: "x" | "instagram" | "youtube" | "pinterest" | "web" | "upload";
   source_url: string | null;
   source_id: string | null;
   creator_handle: string | null;

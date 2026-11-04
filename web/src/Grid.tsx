@@ -2,8 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { displayTitle, formatDuration, prefersReducedMotion, STATUS_LABEL, type Ref } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
-const COL_MIN = 236;
-const GAP = 12;
+/**
+ * Columns aim for about this width and the count rounds to the nearest fit, so
+ * cards scale smoothly with the window: 4 columns on a 14" MacBook Pro, 5 on a
+ * 16" or a 1080p display, 7 on a 1440p one, 2 on a phone.
+ */
+const IDEAL_COL = 320;
+const columnsFor = (width: number) => Math.max(width < 340 ? 1 : 2, Math.round(width / IDEAL_COL));
 
 /**
  * Masonry that keeps reading order left-to-right: each card goes into the
@@ -19,18 +24,12 @@ export function Masonry({
   onFavorite: (r: Ref) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  // First guess from the window; the ResizeObserver corrects it before paint.
-  const [cols, setCols] = useState(() => Math.max(1, Math.floor((innerWidth - 170) / (COL_MIN + GAP))));
+  // First guess from the window (minus sidebar and padding); the ResizeObserver corrects it before paint.
+  const [cols, setCols] = useState(() => columnsFor(innerWidth - (innerWidth > 820 ? 192 : 24)));
 
   useLayoutEffect(() => {
     const el = ref.current!;
-    // Count columns as if the sidebar were at rest, so hovering it squeezes the
-    // columns a little instead of reshuffling cards into a different number of them.
-    const measure = () => {
-      const css = getComputedStyle(el);
-      const lent = parseFloat(css.getPropertyValue("--side-now")) - parseFloat(css.getPropertyValue("--side-mini")) || 0;
-      setCols(Math.max(1, Math.floor((el.clientWidth + lent + GAP) / (COL_MIN + GAP))));
-    };
+    const measure = () => setCols(columnsFor(el.clientWidth));
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);

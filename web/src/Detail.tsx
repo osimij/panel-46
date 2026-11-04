@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  api, displayTitle, formatBytes, formatDuration, sourceLabel, STATUS_LABEL, timeAgo,
+  api, atHandle, displayTitle, formatBytes, formatDuration, site, sourceLabel, STATUS_LABEL, timeAgo,
   type Collection, type Media, type Ref,
 } from "./api.ts";
 import { Avatar, FadeImg } from "./Grid.tsx";
@@ -320,6 +320,7 @@ function Info({
   const first = r.media[0];
   const fmtDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const sourceHost = r.source_url ? new URL(r.source_url).hostname.replace(/^www\./, "") : null;
+  const s = site(r);
 
   return (
     <>
@@ -328,19 +329,19 @@ function Info({
           <Avatar r={r} size={28} />
           <div className="byline-text">
             <div className="byline-name">
-              {r.kind === "x" && r.creator_handle ? (
-                <a href={`https://x.com/${r.creator_handle}`} target="_blank" rel="noreferrer">
-                  {r.creator_name ?? `@${r.creator_handle}`}
+              {s && r.creator_handle ? (
+                <a href={s.profile(r.creator_handle)} target="_blank" rel="noreferrer">
+                  {r.creator_name ?? atHandle(r) ?? r.creator_handle}
                 </a>
               ) : (
                 (r.kind === "upload" ? "Added from this Mac" : r.creator_name ?? sourceLabel(r))
               )}
             </div>
             <div className="byline-meta">
-              {r.kind === "x" && r.creator_handle && <span>@{r.creator_handle}</span>}
+              {s && atHandle(r) && <span>{atHandle(r)}</span>}
               {r.source_url && (
                 <a href={r.source_url} target="_blank" rel="noreferrer" className="with-icon" title="Open original">
-                  {r.kind === "x" ? "X" : sourceHost}
+                  {s ? s.name : sourceHost}
                   <Icon name="arrow-up-right" size={11} />
                 </a>
               )}

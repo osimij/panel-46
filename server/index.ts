@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from 
 import { homedir } from "node:os";
 import { HOST, LIBRARY_DIR, MEDIA_DIR, PORT } from "./config.ts";
 import { db, newId, now, refreshStatus, reindex, type MediaRow, type RefRow } from "./db.ts";
-import { backfillAvatars, capture, fixEscapedText, mimeFromExt, registerLocalFile, retry } from "./capture.ts";
+import { backfillAvatars, capture, fixEscapedText, mimeFromExt, registerLocalFile, retry, upgradeSocialLinks } from "./capture.ts";
 import { abs } from "./media.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
@@ -253,7 +253,7 @@ async function handle(req: Request): Promise<Response> {
     const body = (await req.json().catch(() => ({}))) as { url?: string; note?: string };
     if (!body.url) return bad("Paste a link to save.");
     try {
-      const result = capture(body.url, body.note ?? "");
+      const result = await capture(body.url, body.note ?? "");
       return json({ ...result, ref: hydrate([getRef(result.id)!], true)[0] });
     } catch (e) {
       return bad((e as Error).message);
@@ -488,6 +488,7 @@ async function handle(req: Request): Promise<Response> {
 for (const { id } of db.query<{ id: string }, []>("SELECT id FROM refs WHERE status = 'pending'").all()) retry(id);
 fixEscapedText();
 void backfillAvatars();
+void upgradeSocialLinks();
 
 Bun.serve({
   hostname: HOST,

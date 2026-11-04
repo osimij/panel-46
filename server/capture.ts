@@ -1,8 +1,9 @@
 import { rmSync } from "node:fs";
 import { db, newId, now, refreshStatus, reindex, type MediaRow, type MediaType, type RefRow } from "./db.ts";
 import {
-  abs, describeLocal, downloadTo, fetchWithTimeout, makeThumb, mediaTypeFor, probe, ytDlp,
+  abs, describeLocal, downloadTo, fetchWithTimeout, makeThumb, mediaTypeFor, probe, ytDlp, type YtInfo,
 } from "./media.ts";
+import { expandShortLink, fetchPost, parseSocial, SITE_NAME, type Post, type PostItem, type SocialKind } from "./social.ts";
 
 // ---------- URL parsing ----------
 
@@ -44,17 +45,19 @@ function pump() {
 
 // ---------- Public entry points ----------
 
-export function capture(input: string, note = ""): { id: string; existing: boolean } {
+export async function capture(input: string, note = ""): Promise<{ id: string; existing: boolean }> {
+  input = await expandShortLink(input);
   const x = parseXStatus(input);
+  const social = x ? null : parseSocial(input);
   let url: URL;
   try {
-    url = new URL(x?.url ?? input.trim());
+    url = new URL(x?.url ?? social?.url ?? input.trim());
     if (!/^https?:$/.test(url.protocol)) throw new Error();
   } catch {
     throw new Error("That doesn't look like a link.");
   }
-  const kind = x ? "x" : "web";
-  const sourceId = x ? x.id : url.href;
+  const kind = x ? "x" : social ? social.kind : "web";
+  const sourceId = x ? x.id : social ? social.id : url.href;
 
   const existing = db
     .query<RefRow, [string, string]>("SELECT * FROM refs WHERE kind = ? AND source_id = ?")
@@ -72,7 +75,7 @@ export function capture(input: string, note = ""): { id: string; existing: boole
     [id, kind, url.href, sourceId, note, ts, ts],
   );
   reindex(id);
-  enqueue(() => (x ? captureX(id, x.id) : captureWeb(id, url.href)));
+  enqueue(() => (x ? captureX(id, x.id) : social ? captureSocial(id, social.kind, social.id, social.url) : captureWeb(id, url.href)));
   return { id, existing: false };
 }
 
@@ -83,7 +86,13 @@ export function retry(refId: string) {
   const failed = media.filter((m) => m.status === "failed" && m.remote_url);
   db.run("UPDATE refs SET status = 'pending', status_detail = NULL, updated_at = ? WHERE id = ?", [now(), refId]);
 
-  if (failed.length) {
+  const social = ref.kind === "instagram" || ref.kind === "youtube" || ref.kind === "pinterest" ? ref.kind : null;
+  if (social && media.length && media.some((m) => m.status === "failed")) {
+    // These sites' file links expire, so ask for fresh ones; keep files we already verified.
+    const redo = media.filter((m) => m.status === "failed");
+    for (const m of redo) db.run("UPDATE media SET status = 'pending', error = NULL WHERE id = ?", [m.id]);
+    enqueue(() => captureSocial(refId, social, ref.source_id!, ref.source_url!, redo));
+  } else if (failed.length) {
     // Re-download only what is missing; keep files we already verified.
     for (const m of failed) db.run("UPDATE media SET status = 'pending', error = NULL WHERE id = ?", [m.id]);
     enqueue(async () => {
@@ -94,7 +103,13 @@ export function retry(refId: string) {
     // We never got the post's contents: start over.
     db.run("DELETE FROM media WHERE ref_id = ?", [refId]);
     rmSync(abs(refId), { recursive: true, force: true });
-    enqueue(() => (ref.kind === "x" ? captureX(refId, ref.source_id!) : captureWeb(refId, ref.source_url!)));
+    enqueue(() =>
+      ref.kind === "x"
+        ? captureX(refId, ref.source_id!)
+        : social
+          ? captureSocial(refId, social, ref.source_id!, ref.source_url!)
+          : captureWeb(refId, ref.source_url!),
+    );
   }
 }
 
@@ -182,6 +197,7 @@ async function captureX(refId: string, tweetId: string) {
 
   // Embed endpoint couldn't read it (deleted, protected, age-gated, rate limited). Try yt-dlp.
   const result = await ytDlp(`https://x.com/i/status/${tweetId}`, refId);
+  applyYtInfo(refId, result.info, { handle: true });
   if (result.files.length) {
     let idx = 0;
     for (const rel of result.files) await registerLocalFile(refId, idx++, rel, mimeFromExt(rel));
@@ -238,6 +254,129 @@ export async function backfillAvatars() {
   }
 }
 
+// ---------- Instagram, YouTube, Pinterest ----------
+
+/**
+ * Read the post from the site, keep who made it and what they wrote, then save
+ * every photo and video in it. On a retry (`redo`), only the files that failed
+ * are fetched again, with fresh links.
+ */
+async function captureSocial(refId: string, kind: SocialKind, id: string, url: string, redo?: MediaRow[]) {
+  let post: Post;
+  try {
+    post = await fetchPost(kind, id, url);
+  } catch (e) {
+    const why = (e as Error).message;
+    if (redo) {
+      // Couldn't get fresh links; the old ones might still work.
+      await Promise.all(redo.map((m) => saveRemote(m.id)));
+      return refreshStatus(refId);
+    }
+    // The site wouldn't talk to us directly: yt-dlp may still get the video.
+    const result = await ytDlp(url, refId);
+    if (result.files.length) {
+      applyYtInfo(refId, result.info, { handle: true });
+      let idx = 0;
+      for (const rel of result.files) await registerLocalFile(refId, idx++, rel, mimeFromExt(rel));
+      return refreshStatus(refId);
+    }
+    return markFailed(refId, `Couldn't read this ${SITE_NAME[kind]} post. It may be private or deleted. (${why})`);
+  }
+
+  if (!redo) applyPost(refId, post);
+  await saveAvatar(refId, post.avatar ?? undefined);
+
+  const rows = redo ?? post.items.map((it, idx) => {
+    const mediaId = newId();
+    db.run("INSERT INTO media (id, ref_id, idx, type, remote_url, status) VALUES (?, ?, ?, ?, ?, 'pending')", [
+      mediaId, refId, idx, it.type, it.url,
+    ]);
+    return { id: mediaId, idx } as MediaRow;
+  });
+  await Promise.all(
+    rows.map((m) => {
+      const item = post.items[m.idx];
+      if (!item) {
+        db.run("UPDATE media SET status = 'failed', error = ? WHERE id = ?", ["This file is no longer in the post", m.id]);
+        return;
+      }
+      return saveItem(m.id, refId, m.idx, item);
+    }),
+  );
+  refreshStatus(refId);
+}
+
+/** Prefer yt-dlp's full-quality copy where there is one; otherwise the direct file. */
+async function saveItem(mediaId: string, refId: string, idx: number, item: PostItem) {
+  db.run("UPDATE media SET remote_url = ? WHERE id = ?", [item.url, mediaId]);
+  let why = "The site did not provide a downloadable file";
+  if (item.page) {
+    const r = await ytDlp(item.page, refId, { name: String(idx), sort: item.sort, timeoutMs: 30 * 60_000 });
+    if (r.files[0]) {
+      for (const extra of r.files.slice(1)) rmSync(abs(extra), { force: true });
+      return verifyAndStore(mediaId, await describeLocal(r.files[0], mimeFromExt(r.files[0])), item.type);
+    }
+    why = r.error ?? why;
+  }
+  if (item.url) return saveRemote(mediaId);
+  db.run("UPDATE media SET status = 'failed', error = ? WHERE id = ?", [why, mediaId]);
+}
+
+function applyPost(refId: string, p: Post) {
+  db.run(
+    `UPDATE refs SET creator_handle = ?, creator_name = ?, title = ?, text = ?, posted_at = ?, updated_at = ? WHERE id = ?`,
+    [p.handle, p.name, p.title, p.text, p.postedAt, now(), refId],
+  );
+  reindex(refId);
+}
+
+/** Fill in who/what/when from yt-dlp's metadata, where the site gave any. */
+function applyYtInfo(refId: string, info: YtInfo | undefined, opts: { handle: boolean }) {
+  if (!info) return;
+  const name = info.channel ?? info.uploader;
+  const handle = info.uploader_id && !/^\d+$/.test(info.uploader_id) ? info.uploader_id.replace(/^@/, "") : null;
+  const date = info.timestamp ? new Date(info.timestamp * 1000).toISOString() : null;
+  db.run(
+    `UPDATE refs SET creator_name = COALESCE(?, creator_name),
+       creator_handle = CASE WHEN ? THEN COALESCE(?, creator_handle) ELSE creator_handle END,
+       text = COALESCE(NULLIF(text, ''), ?), posted_at = COALESCE(posted_at, ?), updated_at = ? WHERE id = ?`,
+    [name ?? null, opts.handle ? 1 : 0, handle, info.description?.trim() || null, date, now(), refId],
+  );
+  reindex(refId);
+}
+
+/**
+ * Posts saved as plain web links before these sites had their own capture:
+ * give them their proper kind and fill in creator, caption and avatar. Files
+ * already on disk are kept; only posts with nothing saved get re-captured.
+ */
+export async function upgradeSocialLinks() {
+  const rows = db.query<RefRow, []>("SELECT * FROM refs WHERE kind = 'web'").all();
+  for (const r of rows) {
+    const s = r.source_url ? parseSocial(r.source_url) : null;
+    if (!s) continue;
+    const taken = db.query<{ id: string }, [string, string]>("SELECT id FROM refs WHERE kind = ? AND source_id = ?").get(s.kind, s.id);
+    if (taken) continue; // saved twice; leave the old copy as it is
+    db.run("UPDATE refs SET kind = ?, source_id = ?, source_url = ? WHERE id = ?", [s.kind, s.id, s.url, r.id]);
+    const hasFiles = db.query<{ n: number }, [string]>("SELECT COUNT(*) n FROM media WHERE ref_id = ? AND status = 'archived'").get(r.id)!.n > 0;
+    if (!hasFiles) {
+      retry(r.id);
+      continue;
+    }
+    enqueue(async () => {
+      try {
+        const post = await fetchPost(s.kind, s.id, s.url);
+        // The old capture titled these after the site ("Instagram"); that isn't a real title.
+        const autoTitle = !r.title || /instagram|youtube|pinterest/i.test(r.title);
+        applyPost(r.id, autoTitle ? post : { ...post, title: r.title });
+        await saveAvatar(r.id, post.avatar ?? undefined);
+      } catch (e) {
+        console.error("[upgrade]", r.source_url, (e as Error).message);
+      }
+    });
+  }
+}
+
 // ---------- Any other link ----------
 
 async function captureWeb(refId: string, url: string) {
@@ -278,6 +417,7 @@ async function captureWeb(refId: string, url: string) {
 
   const result = await ytDlp(url, refId);
   if (result.files.length) {
+    applyYtInfo(refId, result.info, { handle: false });
     let idx = 0;
     for (const rel of result.files) await registerLocalFile(refId, idx++, rel, mimeFromExt(rel));
     refreshStatus(refId);

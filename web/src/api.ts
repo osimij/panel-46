@@ -19,7 +19,7 @@ export interface Media {
 
 export interface Ref {
   id: string;
-  kind: "x" | "web" | "upload";
+  kind: "x" | "instagram" | "youtube" | "pinterest" | "web" | "upload";
   source_url: string | null;
   creator_handle: string | null;
   creator_name: string | null;
@@ -182,8 +182,31 @@ export function timeAgo(iso: string) {
   return new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+/** Sites we read posts from properly: their name and where a creator's profile lives. */
+const SITES = {
+  x: { name: "X", label: "Post on X", profile: (h: string) => `https://x.com/${h}` },
+  instagram: { name: "Instagram", label: "Post on Instagram", profile: (h: string) => `https://www.instagram.com/${h}/` },
+  youtube: {
+    name: "YouTube",
+    label: "Video on YouTube",
+    profile: (h: string) => (isChannelId(h) ? `https://www.youtube.com/channel/${h}` : `https://www.youtube.com/@${h}`),
+  },
+  pinterest: { name: "Pinterest", label: "Pin on Pinterest", profile: (h: string) => `https://www.pinterest.com/${h}/` },
+};
+const isChannelId = (h: string) => /^UC[\w-]{22}$/.test(h);
+
+export function site(r: Ref) {
+  return r.kind in SITES ? SITES[r.kind as keyof typeof SITES] : null;
+}
+
+/** "@name", unless the site only gave us an opaque id. */
+export function atHandle(r: Ref) {
+  return r.creator_handle && !isChannelId(r.creator_handle) ? `@${r.creator_handle}` : null;
+}
+
 export function sourceLabel(r: Ref) {
-  if (r.kind === "x") return "Post on X";
+  const s = site(r);
+  if (s) return s.label;
   if (r.kind === "upload") return "Added from this Mac";
   return r.creator_handle ?? "Website";
 }

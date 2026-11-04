@@ -106,8 +106,8 @@ export async function describeLocal(rel: string, mime: string): Promise<SavedFil
   return { rel, bytes: statSync(abs(rel)).size, sha256: hasher.digest("hex"), mime };
 }
 
-async function run(cmd: string[], timeoutMs = 60_000) {
-  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe" });
+export async function run(cmd: string[], timeoutMs = 60_000, cwd?: string) {
+  const proc = Bun.spawn(cmd, { stdout: "pipe", stderr: "pipe", cwd });
   const timer = setTimeout(() => proc.kill(), timeoutMs);
   const [out, err, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -155,32 +155,72 @@ export async function makeThumb(rel: string, type: MediaType): Promise<string | 
   return code === 0 && existsSync(out) ? thumbRel : null;
 }
 
+/** The line from yt-dlp's stderr worth showing a person. */
+export function ytDlpError(err: string) {
+  const line = err.split("\n").find((l) => l.startsWith("ERROR")) ?? err.trim().split("\n").pop() ?? "";
+  return line.replace(/^ERROR:\s*(\[[^\]]+\]\s*)?/, "").slice(0, 300) || "yt-dlp failed";
+}
+
 /**
- * Fallback downloader for posts and sites the direct path can't read.
- * Returns the files yt-dlp wrote into `dirRel`.
+ * Download with yt-dlp into `dirRel`, naming files `<name>.<ext>` (playlists
+ * get `<name>-00001.<ext>`, ...). Returns the files it wrote, plus yt-dlp's
+ * metadata for the first one when it has any.
  */
-export async function ytDlp(url: string, dirRel: string): Promise<{ files: string[]; error?: string }> {
+export async function ytDlp(
+  url: string,
+  dirRel: string,
+  opts: { name?: string; sort?: string; timeoutMs?: number } = {},
+): Promise<{ files: string[]; info?: YtInfo; error?: string }> {
   const dir = abs(dirRel);
   mkdirSync(dir, { recursive: true });
+  const name = opts.name ?? "yt";
   const { code, err } = await run(
     [
       "yt-dlp", "--no-progress", "--no-warnings", "--restrict-filenames",
       "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
+      ...(opts.sort ? ["-S", opts.sort] : []),
       "--merge-output-format", "mp4",
-      "-o", join(dir, "yt-%(autonumber)s.%(ext)s"),
-      "--print", "after_move:filepath",
+      "--write-info-json", "--no-write-playlist-metafiles",
+      "-o", join(dir, `${name}%(playlist_index&-{}|)s.%(ext)s`),
       url,
     ],
-    10 * 60_000,
+    opts.timeoutMs ?? 10 * 60_000,
   );
-  const glob = new Bun.Glob("yt-*");
-  const files = [...glob.scanSync({ cwd: dir })]
-    .filter((f) => !f.endsWith(".part") && !f.endsWith(".ytdl"))
-    .sort()
+  const all = [...new Bun.Glob(`${name}{.,-}*`).scanSync({ cwd: dir })].sort();
+  const files = all
+    .filter((f) => !/\.(part|ytdl|json)$/.test(f) && !f.includes(".part-") && !f.includes(".thumb."))
     .map((f) => `${dirRel}/${f}`);
-  if (code !== 0 && files.length === 0) {
-    const line = err.split("\n").find((l) => l.startsWith("ERROR")) ?? err.trim().split("\n").pop() ?? "";
-    return { files, error: line.replace(/^ERROR:\s*/, "").slice(0, 300) || "yt-dlp failed" };
+  let info: YtInfo | undefined;
+  for (const f of all.filter((f) => f.endsWith(".info.json"))) {
+    try {
+      info ??= JSON.parse(await Bun.file(join(dir, f)).text()) as YtInfo;
+    } catch {
+      /* metadata is a bonus */
+    }
+    unlinkSync(join(dir, f));
   }
-  return { files };
+  if (code !== 0 && files.length === 0) return { files, info, error: ytDlpError(err) };
+  return { files, info };
+}
+
+/** Just yt-dlp's metadata for a page, nothing downloaded. */
+export async function ytDlpInfo(url: string): Promise<YtInfo> {
+  const { out, err, code } = await run(["yt-dlp", "-J", "--no-warnings", "--no-playlist", url], 90_000);
+  if (code !== 0 || !out.trim()) throw new Error(ytDlpError(err));
+  return JSON.parse(out) as YtInfo;
+}
+
+/** The fields we use from yt-dlp's metadata (they vary by site). */
+export interface YtInfo {
+  title?: string;
+  fulltitle?: string;
+  description?: string;
+  uploader?: string;
+  uploader_id?: string;
+  channel?: string;
+  channel_id?: string;
+  channel_url?: string;
+  timestamp?: number;
+  upload_date?: string;
+  webpage_url?: string;
 }
