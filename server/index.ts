@@ -20,7 +20,9 @@ function hydrate(refs: RefRow[], full = false) {
   if (!refs.length) return [];
   const ids = refs.map((r) => r.id);
   const ph = ids.map(() => "?").join(",");
-  const media = db.query<MediaRow, string[]>(`SELECT * FROM media WHERE ref_id IN (${ph}) ORDER BY idx`).all(...ids);
+  const media = db
+    .query<MediaRow, string[]>(`SELECT * FROM media WHERE ref_id IN (${ph}) ORDER BY COALESCE(position, idx), idx`)
+    .all(...ids);
   const tags = db
     .query<TagRow, string[]>(
       `SELECT rt.ref_id, t.name, rt.source FROM ref_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.ref_id IN (${ph}) ORDER BY t.name`,
@@ -367,12 +369,23 @@ async function handle(req: Request): Promise<Response> {
       setCollections(id, body.ids ?? []);
       return json(hydrate([getRef(id)!], true)[0]);
     }
+    // The first one in this order is the card's cover.
+    if (action === "/order" && m === "PUT") {
+      const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+      const own = db.query<{ id: string }, [string]>("SELECT id FROM media WHERE ref_id = ?").all(id).map((r) => r.id);
+      const ids = body.ids ?? [];
+      if (ids.length !== own.length || new Set(ids).size !== ids.length || !ids.every((x) => own.includes(x)))
+        return bad("That order doesn't match this reference's media.");
+      db.transaction(() => ids.forEach((mid, i) => db.run("UPDATE media SET position = ? WHERE id = ?", [i, mid])))();
+      db.run("UPDATE refs SET updated_at = ? WHERE id = ?", [now(), id]);
+      return json(hydrate([getRef(id)!], true)[0]);
+    }
     if (action === "/retry" && m === "POST") {
       retry(id);
       return json(hydrate([getRef(id)!], true)[0]);
     }
     if (action === "/reveal" && m === "POST") {
-      const first = db.query<MediaRow, [string]>("SELECT * FROM media WHERE ref_id = ? AND local_path IS NOT NULL ORDER BY idx").get(id);
+      const first = db.query<MediaRow, [string]>("SELECT * FROM media WHERE ref_id = ? AND local_path IS NOT NULL ORDER BY COALESCE(position, idx), idx").get(id);
       const target = first?.local_path ? abs(first.local_path) : join(MEDIA_DIR, id);
       if (existsSync(target)) Bun.spawn(["open", "-R", target]);
       return json({ ok: existsSync(target) });

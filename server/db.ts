@@ -31,6 +31,8 @@ export interface MediaRow {
   id: string;
   ref_id: string;
   idx: number;
+  /** Display order you chose; null keeps the original order. `idx` stays fixed, since files are named after it. */
+  position: number | null;
   type: MediaType;
   remote_url: string | null;
   local_path: string | null;
@@ -121,6 +123,8 @@ CREATE VIRTUAL TABLE IF NOT EXISTS refs_fts USING fts5(
 const refCols = db.query<{ name: string }, []>("PRAGMA table_info(refs)").all().map((c) => c.name);
 if (!refCols.includes("avatar_path")) db.exec("ALTER TABLE refs ADD COLUMN avatar_path TEXT");
 if (!refCols.includes("hidden")) db.exec("ALTER TABLE refs ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
+const mediaCols = db.query<{ name: string }, []>("PRAGMA table_info(media)").all().map((c) => c.name);
+if (!mediaCols.includes("position")) db.exec("ALTER TABLE media ADD COLUMN position INTEGER");
 
 // Tag groups: each tag sits in at most one group, purely for tidy browsing.
 db.exec(`CREATE TABLE IF NOT EXISTS tag_groups (

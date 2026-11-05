@@ -71,6 +71,47 @@ export function Detail(props: {
 
   const current = ref.media[active];
 
+  // ---- Ordering a carousel: drag the thumbnails, or make the one showing the cover ----
+
+  const [dragging, setDragging] = useState<string | null>(null);
+  const orderAtStart = useRef<string[]>([]);
+
+  /** Shows the new order right away (keeping the same image in view), then saves it. */
+  const reorder = async (ids: string[], save = true) => {
+    const showing = ref.media[active]?.id;
+    const media = ids.map((mid) => ref.media.find((m) => m.id === mid)!);
+    setRef({ ...ref, media });
+    setActive(Math.max(0, media.findIndex((m) => m.id === showing)));
+    if (!save) return;
+    try {
+      setRef(await api.reorder(ref.id, ids));
+      void onChanged();
+    } catch (e) {
+      setError((e as Error).message);
+      void load();
+    }
+  };
+
+  const makeCover = () => {
+    const ids = ref.media.map((m) => m.id);
+    const [picked] = ids.splice(active, 1);
+    void reorder([picked!, ...ids]);
+  };
+
+  const dragOver = (e: React.DragEvent, over: string) => {
+    if (!dragging || dragging === over) return;
+    e.preventDefault();
+    const ids = ref.media.map((m) => m.id).filter((mid) => mid !== dragging);
+    ids.splice(ref.media.findIndex((m) => m.id === over), 0, dragging);
+    void reorder(ids, false);
+  };
+
+  const dragEnd = () => {
+    const ids = ref.media.map((m) => m.id);
+    setDragging(null);
+    if (ids.join() !== orderAtStart.current.join()) void reorder(ids);
+  };
+
   return (
     <div className="detail" role="dialog" aria-label={displayTitle(ref)}>
       <div className="detail-scrim" onMouseDown={onClose} />
@@ -130,12 +171,40 @@ export function Detail(props: {
         )}
 
         {ref.media.length > 1 && (
-          <div className="filmstrip">
-            {ref.media.map((m, i) => (
-              <button key={m.id} className={i === active ? "on" : ""} onClick={() => setActive(i)} aria-label={`Show item ${i + 1}`}>
-                {m.thumb_url ? <img src={m.thumb_url} alt="" /> : <Icon name={m.status === "failed" ? "alert" : "image"} />}
+          <div className="filmstrip-row">
+            <div className="filmstrip">
+              {ref.media.map((m, i) => (
+                <button
+                  key={m.id}
+                  className={`${i === active ? "on" : ""} ${dragging === m.id ? "dragging" : ""}`}
+                  onClick={() => setActive(i)}
+                  aria-label={`Show item ${i + 1}${i === 0 ? " (cover)" : ""}`}
+                  title="Drag to reorder"
+                  draggable
+                  onDragStart={(e) => {
+                    orderAtStart.current = ref.media.map((x) => x.id);
+                    setDragging(m.id);
+                    e.dataTransfer.effectAllowed = "move";
+                    e.dataTransfer.setData("application/x-panel-media", m.id);
+                  }}
+                  onDragOver={(e) => dragOver(e, m.id)}
+                  onDrop={(e) => e.preventDefault()}
+                  onDragEnd={dragEnd}
+                >
+                  {m.thumb_url ? <img src={m.thumb_url} alt="" draggable={false} /> : <Icon name={m.status === "failed" ? "alert" : "image"} />}
+                </button>
+              ))}
+            </div>
+            {active === 0 ? (
+              <span className="cover-btn is-cover">
+                <Icon name="check" size={13} />
+                Cover
+              </span>
+            ) : (
+              <button className="cover-btn" onClick={makeCover} title="Show this one first, and on the card">
+                Make cover
               </button>
-            ))}
+            )}
           </div>
         )}
       </div>

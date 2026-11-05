@@ -650,7 +650,17 @@ textarea.detail-title {
 video.stage-media { background: #000; }
 .stage-frame.preview .chip { top: 12px; left: 12px; }
 .stage-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; color: var(--muted); text-align: center; max-width: 380px; }
-.filmstrip { display: flex; gap: 6px; animation: content-in 0.4s var(--ease) 0.15s both; }
+.filmstrip-row { display: flex; align-items: center; gap: 12px; animation: content-in 0.4s var(--ease) 0.15s both; }
+.filmstrip { display: flex; gap: 6px; }
+.filmstrip button { cursor: grab; transition: opacity var(--fast) var(--ease), transform var(--med) var(--spring); }
+.filmstrip button.dragging { opacity: 0.2 !important; transform: scale(0.9); }
+.cover-btn {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 11px; border-radius: 999px; flex: none;
+  font-size: 12px; font-weight: 500; color: var(--text); background: var(--fill);
+  transition: background-color var(--fast) var(--ease);
+}
+.cover-btn:hover { background: var(--fill-hover); }
+.cover-btn.is-cover { color: var(--muted); background: none; padding: 0 4px; }
 .filmstrip button { width: 48px; height: 48px; border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); overflow: hidden; opacity: 0.45; background: var(--card); display: grid; place-items: center; }
 .filmstrip button:hover { opacity: 0.8; }
 .filmstrip button.on { opacity: 1; box-shadow: 0 0 0 2px var(--bg), 0 0 0 3.5px var(--text); }

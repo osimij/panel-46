@@ -130,6 +130,9 @@ export const api = {
   update: (id: string, patch: Partial<Pick<Ref, "title" | "note" | "favorite" | "hidden">>) =>
     call<Ref>(`/api/refs/${id}`, { method: "PATCH", body: body(patch) }),
   setTags: (id: string, tags: string[]) => call<Ref>(`/api/refs/${id}/tags`, { method: "PUT", body: body({ tags }) }),
+  /** Media ids in the order to show them; the first becomes the card's cover. */
+  reorder: (id: string, mediaIds: string[]) =>
+    call<Ref>(`/api/refs/${id}/order`, { method: "PUT", body: body({ ids: mediaIds }) }),
   setCollections: (id: string, ids: string[]) =>
     call<Ref>(`/api/refs/${id}/collections`, { method: "PUT", body: body({ ids }) }),
   retry: (id: string) => call<Ref>(`/api/refs/${id}/retry`, { method: "POST" }),
