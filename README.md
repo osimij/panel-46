@@ -35,7 +35,7 @@ Requires `ffmpeg`/`ffprobe` (verification and thumbnails). `yt-dlp` is an option
 ### Saving
 
 - **X post link**: reads the post through X's public embed endpoint and downloads the original-resolution images (`name=orig`) and the highest-bitrate MP4. If that fails, it tries `yt-dlp`.
-- **Any other link**: a direct image or video URL is saved as a file. For a page, it tries `yt-dlp`, otherwise keeps the title, description and a cached preview.
+- **Any other link**: a direct image or video URL is saved as a file. A page from a video site `yt-dlp` knows (Vimeo, TikTok…) gets its video. Any other page is a **site**: Chrome, running headless with a throwaway profile, takes full-page screenshots at desktop (1440px, 2×) and phone (390px, 3×) size, at retina sharpness, and Panel keeps the site's name and icon. Sites have their own section in the sidebar. Without Chrome installed, a page is kept as a link with its preview image.
 - **Files**: drag in, paste, or use the `+` button.
 
 Paste a link anywhere on the page (⌘V) to save it. Pasting the same post again opens the copy you already have.

@@ -27,17 +27,19 @@ export function Masonry({
   onOpen,
   onFavorite,
   onHide,
+  onDelete,
   selection,
 }: {
   items: Ref[];
   onOpen: (r: Ref, thumb: HTMLElement) => void;
   onFavorite: (r: Ref) => void;
   onHide: (r: Ref) => void;
+  onDelete: (r: Ref) => void;
   selection: Selection;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // First guess from the window (minus sidebar and padding); the ResizeObserver corrects it before paint.
-  const [cols, setCols] = useState(() => columnsFor(innerWidth - (innerWidth > 820 ? 192 : 24)));
+  const [cols, setCols] = useState(() => columnsFor(innerWidth - (innerWidth > 820 ? 276 : 24)));
 
   useLayoutEffect(() => {
     const el = ref.current!;
@@ -68,6 +70,7 @@ export function Masonry({
               onOpen={onOpen}
               onFavorite={onFavorite}
               onHide={onHide}
+              onDelete={onDelete}
               selection={selection}
             />
           ))}
@@ -78,6 +81,8 @@ export function Masonry({
 }
 
 function cardRatio(r: Ref) {
+  // A site's card shows its first screen (1440×900).
+  if (r.site) return 0.625;
   const m = r.media[0];
   const ratio = m?.width && m?.height ? m.height / m.width : r.preview_url ? 0.56 : 0.8;
   return Math.min(Math.max(ratio, 0.45), 1.7);
@@ -89,6 +94,7 @@ function Card({
   onOpen,
   onFavorite,
   onHide,
+  onDelete,
   selection,
 }: {
   r: Ref;
@@ -96,6 +102,7 @@ function Card({
   onOpen: (r: Ref, thumb: HTMLElement) => void;
   onFavorite: (r: Ref) => void;
   onHide: (r: Ref) => void;
+  onDelete: (r: Ref) => void;
   selection: Selection;
 }) {
   const m = r.media[0];
@@ -103,6 +110,13 @@ function Card({
   const poster = m?.thumb_url ?? r.preview_url;
   const moving = m && m.type !== "image" && m.url;
   const picked = selection.ids.has(r.id);
+  // Delete takes a second click on the same spot, so a stray click can't lose a post.
+  const [arming, setArming] = useState(false);
+  useEffect(() => {
+    if (!arming) return;
+    const t = setTimeout(() => setArming(false), 2500);
+    return () => clearTimeout(t);
+  }, [arming]);
   const activate = (range: boolean) => (selection.active ? selection.toggle(r, range) : onOpen(r, thumbRef.current!));
 
   return (
@@ -127,7 +141,7 @@ function Card({
           </span>
         )}
         {m && m.type !== "image" && m.duration ? <span className="chip time">{formatDuration(m.duration)}</span> : null}
-        {r.media_count > 1 && <span className="chip count">{r.media_count}</span>}
+        {r.media_count > 1 && !r.site && <span className="chip count">{r.media_count}</span>}
 
         {/* Top left: picks the card, and starts selecting if nothing is picked yet. */}
         <button
@@ -165,6 +179,19 @@ function Card({
             }}
           >
             <Icon name={r.hidden ? "eye" : "eye-off"} size={19} />
+          </button>
+          <button
+            className={`glass-btn delete ${arming ? "armed" : ""}`}
+            aria-label={arming ? "Click again to move to Trash" : "Delete"}
+            title={arming ? "Click again to move to Trash" : "Delete"}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (arming) onDelete(r);
+              else setArming(true);
+            }}
+            onMouseLeave={() => setArming(false)}
+          >
+            <Icon name="trash" size={19} />
           </button>
         </div>
 

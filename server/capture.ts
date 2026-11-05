@@ -1,8 +1,9 @@
 import { rmSync } from "node:fs";
 import { db, newId, now, refreshStatus, reindex, type MediaRow, type MediaType, type RefRow } from "./db.ts";
 import {
-  abs, describeLocal, downloadTo, fetchWithTimeout, makeThumb, mediaTypeFor, probe, ytDlp, type YtInfo,
+  abs, describeLocal, downloadTo, fetchWithTimeout, makeThumb, mediaTypeFor, probe, run, ytDlp, type YtInfo,
 } from "./media.ts";
+import { shootSite, type Viewport } from "./site.ts";
 import { expandShortLink, fetchPost, parseSocial, SITE_NAME, type Post, type PostItem, type SocialKind } from "./social.ts";
 
 // ---------- URL parsing ----------
@@ -393,17 +394,19 @@ export async function upgradeSocialLinks() {
 // ---------- Any other link ----------
 
 async function captureWeb(refId: string, url: string) {
-  let res: Response;
+  // A site that turns away scripts may still open in Chrome, so a failed fetch isn't the end.
+  let res: Response | null = null;
+  let reachError = "";
   try {
     res = await fetchWithTimeout(url, { method: "GET" });
   } catch (e) {
-    return markFailed(refId, `Couldn't reach ${new URL(url).host}: ${(e as Error).message}`);
+    reachError = (e as Error).message;
   }
-  const mime = (res.headers.get("content-type") ?? "").split(";")[0]!.trim();
+  const mime = (res?.headers.get("content-type") ?? "").split(";")[0]!.trim();
 
   // A direct image or video link: save the file itself.
   const directType = mediaTypeFor(mime);
-  if (res.ok && directType) {
+  if (res?.ok && directType) {
     res.body?.cancel();
     const name = decodeURIComponent(new URL(url).pathname.split("/").pop() ?? "");
     db.run("UPDATE refs SET title = ?, creator_handle = ?, updated_at = ? WHERE id = ?", [
@@ -419,16 +422,17 @@ async function captureWeb(refId: string, url: string) {
     return;
   }
 
-  // A page: keep its title/description, try to pull real media with yt-dlp,
-  // and fall back to a link-only bookmark with a cached preview image.
-  const html = res.ok && mime.includes("html") ? await res.text() : "";
+  // A page: keep its title/description. A video site yt-dlp knows (Vimeo, TikTok…)
+  // gets its video saved; any other page is a website, kept as full-page screenshots.
+  const html = res?.ok && mime.includes("html") ? await res.text() : "";
+  if (!html) res?.body?.cancel();
   const meta = readMeta(html, url);
   db.run("UPDATE refs SET title = ?, text = ?, creator_handle = ?, creator_name = ?, updated_at = ? WHERE id = ?", [
     meta.title, meta.description, new URL(url).hostname.replace(/^www\./, ""), meta.siteName, now(), refId,
   ]);
   reindex(refId);
 
-  const result = await ytDlp(url, refId);
+  const result = await ytDlp(url, refId, { generic: false });
   if (result.files.length) {
     applyYtInfo(refId, result.info, { handle: false });
     let idx = 0;
@@ -437,6 +441,9 @@ async function captureWeb(refId: string, url: string) {
     return;
   }
 
+  if (await captureSite(refId, url)) return;
+
+  // No Chrome to take screenshots with: keep a bookmark with the page's preview image.
   if (meta.image) {
     try {
       const saved = await downloadTo(meta.image, `${refId}/preview`);
@@ -445,8 +452,70 @@ async function captureWeb(refId: string, url: string) {
       /* a missing preview is fine for a bookmark */
     }
   }
+  if (!res) return markFailed(refId, `Couldn't reach ${new URL(url).host}: ${reachError}`);
   if (!res.ok) return markFailed(refId, `${new URL(url).host} returned HTTP ${res.status}`);
   refreshStatus(refId); // no media rows -> link_only
+}
+
+/**
+ * Full-page screenshots of a website, desktop then phone, plus its name and icon.
+ * Returns false only when there's no Chrome to take them with.
+ */
+async function captureSite(refId: string, url: string): Promise<boolean> {
+  let result: Awaited<ReturnType<typeof shootSite>>;
+  try {
+    result = await shootSite(url, refId);
+  } catch (e) {
+    if (/needs Google Chrome/.test((e as Error).message)) return false;
+    db.run("UPDATE refs SET site = 1 WHERE id = ?", [refId]);
+    markFailed(refId, `Couldn't take screenshots: ${(e as Error).message}`);
+    return true;
+  }
+  db.run("UPDATE refs SET site = 1 WHERE id = ?", [refId]);
+  const { shots, info, errors } = result;
+  if (info) {
+    // The page as Chrome saw it fills anything the plain fetch couldn't read.
+    db.run(
+      `UPDATE refs SET title = COALESCE(title, ?), text = COALESCE(text, ?), creator_name = COALESCE(creator_name, ?)
+       WHERE id = ?`,
+      [info.title, info.description, info.siteName, refId],
+    );
+    reindex(refId);
+    await saveAvatar(refId, info.icon ?? undefined);
+  }
+  if (!shots.length) {
+    markFailed(refId, `Couldn't take screenshots: ${errors[0] ?? "unknown error"}`);
+    return true;
+  }
+  for (const [i, shot] of shots.entries()) {
+    const mediaId = newId();
+    db.run("INSERT INTO media (id, ref_id, idx, type, status) VALUES (?, ?, ?, 'image', 'pending')", [mediaId, refId, i]);
+    try {
+      const saved = await describeLocal(shot.rel, "image/jpeg");
+      const p = await probe(shot.rel);
+      const thumb = await makeSiteThumb(shot.rel, shot.viewport);
+      db.run(
+        `UPDATE media SET local_path = ?, thumb_path = ?, mime = ?, bytes = ?, sha256 = ?, width = ?, height = ?,
+         status = 'archived', error = NULL WHERE id = ?`,
+        [saved.rel, thumb, saved.mime, saved.bytes, saved.sha256, p.width, p.height, mediaId],
+      );
+    } catch (e) {
+      db.run("UPDATE media SET status = 'failed', error = ? WHERE id = ?", [(e as Error).message, mediaId]);
+    }
+  }
+  refreshStatus(refId);
+  return true;
+}
+
+/** The card shows the site's first screen, not a sliver of the whole page. */
+async function makeSiteThumb(rel: string, vp: Viewport) {
+  const thumbRel = rel.replace(/\.jpg$/, ".thumb.jpg");
+  const ratio = (vp.height / vp.width).toFixed(4);
+  const { code } = await run([
+    "ffmpeg", "-y", "-v", "error", "-i", abs(rel), "-frames:v", "1",
+    "-vf", `crop=iw:'min(ih,trunc(iw*${ratio}/2)*2)':0:0,scale='min(1200,iw)':-2:flags=lanczos`, "-q:v", "2", abs(thumbRel),
+  ]);
+  return code === 0 ? thumbRel : null;
 }
 
 function readMeta(html: string, base: string) {

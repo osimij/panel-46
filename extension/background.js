@@ -38,10 +38,10 @@ async function send(url, auto = false) {
   }
   const body = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(body.error || `Panel returned HTTP ${res.status}`);
-  return { existing: !!body.existing || !!body.skipped };
+  return { existing: !!body.existing || !!body.skipped, id: body.id ?? null };
 }
 
-/** Saves made while Panel was closed wait here until it's back. */
+/** Saves (and skips) made while Panel was closed wait here until it's back. */
 async function flushPending() {
   const pending = await get("pending", []);
   while (pending.length) {
@@ -49,6 +49,35 @@ async function flushPending() {
     pending.shift();
     await set("pending", pending);
   }
+  const skips = await get("pendingSkips", []);
+  while (skips.length) {
+    await tellSkip(skips[0]);
+    skips.shift();
+    await set("pendingSkips", skips);
+  }
+}
+
+async function tellSkip(url) {
+  try {
+    await fetch(`${PANEL}/api/dismiss`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+  } catch {
+    throw new PanelDown();
+  }
+}
+
+/** You bookmarked an X post but said no: Panel remembers, so the sync won't add it either. */
+async function skipBookmark(url) {
+  try {
+    await tellSkip(url);
+  } catch {
+    const skips = await get("pendingSkips", []);
+    if (!skips.includes(url)) await set("pendingSkips", [...skips, url]);
+  }
+  return { ok: true };
 }
 
 async function saveFromClick(url, site) {
@@ -70,6 +99,31 @@ async function saveFromClick(url, site) {
     if (!pending.includes(url)) await set("pending", [...pending, url]);
     return { ok: false, queued: true };
   }
+}
+
+/** "Save this site" from the popup or the right-click menu: any page or link. */
+async function savePage(url) {
+  if (!/^https?:\/\//.test(url ?? "") || url.startsWith(PANEL)) return { ok: false, error: "Only web pages can be saved" };
+  try {
+    const { existing, id } = await send(url);
+    return { ok: true, existing, id };
+  } catch (e) {
+    if (!(e instanceof PanelDown)) return { ok: false, error: e.message };
+    const pending = await get("pending", []);
+    if (!pending.includes(url)) await set("pending", [...pending, url]);
+    return { ok: false, queued: true };
+  }
+}
+
+/** A short mark on the toolbar icon after a right-click save, then back to normal. */
+async function flashBadge(result) {
+  const [text, color] = result.ok ? ["✓", "#30a46c"] : result.queued ? ["…", "#8d8d8d"] : ["!", "#e5484d"];
+  chrome.action.setBadgeBackgroundColor({ color });
+  chrome.action.setBadgeText({ text });
+  await sleep(2500);
+  const failing = Object.values(await get("status", {})).some((s) => s.error);
+  chrome.action.setBadgeBackgroundColor({ color: "#e5484d" });
+  chrome.action.setBadgeText({ text: failing ? "!" : "" });
 }
 
 // ---------- X ----------
@@ -287,7 +341,17 @@ function sameSiteHeaders() {
 }
 
 sameSiteHeaders();
-chrome.runtime.onInstalled.addListener(() => schedule().then(() => sync()));
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: "panel-page", title: "Save this site to Panel", contexts: ["page"] });
+    chrome.contextMenus.create({ id: "panel-link", title: "Save link to Panel", contexts: ["link"] });
+  });
+  schedule().then(() => sync());
+});
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  const url = info.menuItemId === "panel-link" ? info.linkUrl : info.pageUrl ?? tab?.url;
+  flashBadge(await savePage(url));
+});
 chrome.runtime.onStartup.addListener(schedule);
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === "sync") sync();
@@ -312,6 +376,9 @@ const VALID_TEMPLATE = (t) =>
 chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
   const handlers = {
     save: () => saveFromClick(msg.url, msg.site),
+    "save-page": () => savePage(msg.url),
+    skip: () => skipBookmark(msg.url),
+    "is-on": async () => ({ on: await siteOn(msg.site) }),
     "ig-folders": () => rememberFolders(msg.folders),
     "ig-folder": async () => {
       await set("igFolder", msg.folder ?? null);

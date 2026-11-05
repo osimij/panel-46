@@ -75,5 +75,49 @@ $("#folder").addEventListener("change", async (e) => {
   render(await ask({ type: "ig-folder", folder }));
 });
 
+// ---------- This page ----------
+
+const POST = /^https:\/\/(x\.com|twitter\.com)\/[^/]+\/status\/|^https:\/\/www\.instagram\.com\/(p|reel)\//;
+
+async function showPage() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.url || !/^https?:\/\//.test(tab.url) || tab.url.startsWith("http://127.0.0.1:4646")) return;
+  const url = new URL(tab.url);
+  $("#page").hidden = false;
+  $("#page-title").textContent = tab.title || url.hostname;
+  $("#page-host").textContent = url.hostname.replace(/^www\./, "");
+  const icon = $("#page-icon");
+  if (tab.favIconUrl && /^https?:/.test(tab.favIconUrl)) icon.src = tab.favIconUrl;
+  else icon.classList.add("blank");
+  icon.onerror = () => icon.classList.add("blank");
+  const btn = $("#save-page");
+  btn.textContent = POST.test(tab.url) ? "Save this post" : "Save this site";
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Saving…";
+    const r = await ask({ type: "save-page", url: tab.url });
+    const out = $("#page-result");
+    out.hidden = false;
+    out.className = `page-result ${r.ok || r.queued ? "" : "bad"}`;
+    if (r.ok) {
+      btn.textContent = r.existing ? "In Panel" : "Saved";
+      out.replaceChildren(
+        r.existing ? "Already in Panel. " : POST.test(tab.url) ? "Saving a copy now. " : "Panel is taking full-page screenshots now. ",
+        Object.assign(document.createElement("a"), {
+          href: `http://127.0.0.1:4646/?open=${r.id}`, target: "_blank", textContent: "View in Panel",
+        }),
+      );
+    } else if (r.queued) {
+      btn.textContent = "Waiting";
+      out.textContent = "Panel isn't running. It'll be saved when Panel opens.";
+    } else {
+      btn.disabled = false;
+      btn.textContent = "Try again";
+      out.textContent = r.error || "Couldn't save this page.";
+    }
+  });
+}
+
+showPage();
 refresh();
 setInterval(refresh, 1000);

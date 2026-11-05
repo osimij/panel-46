@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from 
 import { homedir } from "node:os";
 import { HOST, LIBRARY_DIR, MEDIA_DIR, PORT } from "./config.ts";
 import { db, newId, now, refreshStatus, reindex, type MediaRow, type RefRow } from "./db.ts";
-import { backfillAvatars, capture, fixEscapedText, mimeFromExt, registerLocalFile, retry, upgradeSocialLinks } from "./capture.ts";
+import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, registerLocalFile, retry, upgradeSocialLinks } from "./capture.ts";
 import { abs } from "./media.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
@@ -40,6 +40,7 @@ function hydrate(refs: RefRow[], full = false) {
       ...r,
       favorite: !!r.favorite,
       hidden: !!r.hidden,
+      site: !!r.site,
       preview_url: r.preview_path ? `/media/${r.preview_path}` : null,
       avatar_url: r.avatar_path ? `/media/${r.avatar_path}` : null,
       media: (full ? own : own.slice(0, 1)).map((m) => ({
@@ -113,6 +114,7 @@ function listRefs(params: URLSearchParams) {
   }
   where.push(params.get("hidden") === "1" ? "r.hidden = 1" : "r.hidden = 0");
   if (params.get("favorite") === "1") where.push("r.favorite = 1");
+  if (params.get("site") === "1") where.push("r.site = 1");
   const type = params.get("type");
   if (type === "video") where.push("EXISTS (SELECT 1 FROM media m WHERE m.ref_id = r.id AND m.type IN ('video','gif'))");
   if (type === "image")
@@ -148,8 +150,9 @@ function stats() {
   );
   // Counts describe what the views show, so hidden references only count towards Hidden.
   const totals = db
-    .query<{ n: number; fav: number; hidden: number }, []>(
-      "SELECT COALESCE(SUM(hidden = 0),0) n, COALESCE(SUM(favorite = 1 AND hidden = 0),0) fav, COALESCE(SUM(hidden),0) hidden FROM refs",
+    .query<{ n: number; fav: number; hidden: number; sites: number }, []>(
+      `SELECT COALESCE(SUM(hidden = 0),0) n, COALESCE(SUM(favorite = 1 AND hidden = 0),0) fav, COALESCE(SUM(hidden),0) hidden,
+         COALESCE(SUM(site = 1 AND hidden = 0),0) sites FROM refs`,
     )
     .get()!;
   const videos = db
@@ -172,7 +175,7 @@ function stats() {
     /* not available on this filesystem */
   }
   return {
-    total: totals.n, favorites: totals.fav, hidden: totals.hidden, videos, byStatus,
+    total: totals.n, favorites: totals.fav, hidden: totals.hidden, sites: totals.sites, videos, byStatus,
     bytes: saved.bytes, files: saved.files, videoBytes: saved.videoBytes, diskFree, libraryDir: LIBRARY_DIR,
   };
 }
@@ -295,6 +298,16 @@ async function handle(req: Request): Promise<Response> {
       for (const id of ids) db.run("UPDATE refs SET hidden = ?, updated_at = ? WHERE id = ?", [body.hidden === false ? 0 : 1, ts, id]);
     })();
     return json({ ok: true, changed: ids.length });
+  }
+
+  // "Not this one": an X post you bookmarked but chose not to keep. Background syncs skip it.
+  if (path === "/api/dismiss" && m === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { url?: string };
+    const x = parseXStatus(body.url ?? "");
+    if (!x) return bad("That isn't an X post link.");
+    const kept = db.query("SELECT 1 FROM refs WHERE kind = 'x' AND source_id = ?").get(x.id);
+    if (!kept) db.run("INSERT OR REPLACE INTO dismissed (kind, source_id, at) VALUES ('x', ?, ?)", [x.id, now()]);
+    return json({ ok: true, kept: !!kept });
   }
 
   if (path === "/api/capture" && m === "POST") {

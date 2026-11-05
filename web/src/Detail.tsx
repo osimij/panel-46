@@ -156,7 +156,9 @@ export function Detail(props: {
       </aside>
 
       <div className="detail-stage" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-        {current ? (
+        {ref.site && ref.media.length ? (
+          <SiteStage r={ref} />
+        ) : current ? (
           <Stage key={current.id} m={current} hero={active === 0} />
         ) : ref.preview_url ? (
           <div className="stage-frame preview" style={{ viewTransitionName: "hero", "--ar": 1.78 } as React.CSSProperties}>
@@ -170,7 +172,7 @@ export function Detail(props: {
           </div>
         )}
 
-        {ref.media.length > 1 && (
+        {ref.media.length > 1 && !ref.site && (
           <div className="filmstrip-row">
             <div className="filmstrip">
               {ref.media.map((m, i) => (
@@ -207,6 +209,53 @@ export function Detail(props: {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** A website, scrolled like the real thing. Desktop and phone screenshots of the whole page. */
+function SiteStage({ r }: { r: Ref }) {
+  const shots = r.media.filter((m) => m.type === "image").sort((a, b) => a.idx - b.idx);
+  const [view, setView] = useState(0);
+  const m = shots[view] ?? shots[0]!;
+  const phone = m.idx === 1;
+  const host = r.source_url ? new URL(r.source_url).hostname.replace(/^www\./, "") : "";
+  return (
+    <div className="site-stage">
+      <div className="site-top">
+        <div className="seg" role="tablist" aria-label="Screen size">
+          {shots.map((s, i) => (
+            <button key={s.id} role="tab" aria-selected={i === view} className={i === view ? "on" : ""} onClick={() => setView(i)}>
+              <Icon name={s.idx === 1 ? "phone" : "monitor"} size={13} />
+              {s.idx === 1 ? "Phone" : "Desktop"}
+            </button>
+          ))}
+        </div>
+        {r.source_url && (
+          <a className="cover-btn" href={r.source_url} target="_blank" rel="noreferrer">
+            Open live site <Icon name="arrow-up-right" size={12} />
+          </a>
+        )}
+      </div>
+      <div
+        className={`site-window ${phone ? "phone" : "desktop"}`}
+        style={{ viewTransitionName: "hero" } as React.CSSProperties}
+      >
+        <div className="site-chrome" aria-hidden>
+          <span /><span /><span />
+          <div className="site-url">{host}</div>
+        </div>
+        <div className="site-scroll" key={m.id}>
+          {m.url ? (
+            <img src={m.url} alt={`${host} on ${phone ? "a phone" : "desktop"}, full page`} draggable={false} />
+          ) : (
+            <div className="stage-empty">
+              <Icon name="alert" size={24} />
+              <p>This screenshot wasn’t saved{m.error ? `: ${m.error}` : ""}</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -483,8 +532,16 @@ function Info({
       )}
       {r.status === "archived" && (
         <p className="archived-note">
-          Plays offline, even if the original post disappears.{" "}
+          {r.site ? "Kept on this Mac as it looked when you saved it." : "Plays offline, even if the original post disappears."}{" "}
           <button className="text-btn inline" onClick={() => api.reveal(r.id)}>Show in Finder</button>
+          {r.site && (
+            <>
+              {" · "}
+              <button className="text-btn inline" onClick={() => apply(api.retry(r.id))} title="Replace these screenshots with the site as it is today">
+                Take new screenshots
+              </button>
+            </>
+          )}
         </p>
       )}
 

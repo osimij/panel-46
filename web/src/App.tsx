@@ -13,6 +13,7 @@ import { Popover, TagRow } from "./TagRow.tsx";
 type Scope =
   | { kind: "all" }
   | { kind: "favorites" }
+  | { kind: "sites" }
   | { kind: "hidden" }
   | { kind: "status"; status: RefStatus }
   | { kind: "collection"; id: string };
@@ -60,6 +61,14 @@ export function App() {
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [tagGroups, setTagGroups] = useState<TagGroup[]>([]);
   const [open, setOpen] = useState<Ref | null>(null);
+
+  // The extension links straight to something it saved: /?open=<id>.
+  useEffect(() => {
+    const id = new URLSearchParams(location.search).get("open");
+    if (!id) return;
+    history.replaceState(null, "", location.pathname);
+    api.ref(id).then(setOpen).catch(() => {});
+  }, []);
   const [toast, setToast] = useState<{ id: number; text: string; tone?: "error" } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
@@ -81,6 +90,7 @@ export function App() {
       q: debounced || undefined,
       favorite: scope.kind === "favorites" || undefined,
       hidden: scope.kind === "hidden" || undefined,
+      site: scope.kind === "sites" || undefined,
       status: scope.kind === "status" ? scope.status : undefined,
       collection: scope.kind === "collection" ? scope.id : undefined,
       type: media === "all" ? undefined : media,
@@ -322,6 +332,17 @@ export function App() {
     }
   };
 
+  const removeOne = async (r: Ref) => {
+    setRefs((list) => list?.filter((x) => x.id !== r.id) ?? null);
+    try {
+      await api.removeMany([r.id]);
+      say("Moved to Trash");
+    } catch (e) {
+      say((e as Error).message, "error");
+    }
+    void refresh();
+  };
+
   const hidePicked = async () => {
     const unhide = scope.kind === "hidden";
     try {
@@ -417,6 +438,7 @@ export function App() {
             onOpen={openRef}
             onFavorite={toggleFavorite}
             onHide={toggleHidden}
+            onDelete={removeOne}
             selection={{ active: selecting, ids: picked, toggle: togglePick }}
           />
         )}
@@ -513,6 +535,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
   switch (scope.kind) {
     case "all": return { title: "Panel", subtitle: stats ? `${stats.total} reference${stats.total === 1 ? "" : "s"}` : "" };
     case "favorites": return { title: "Favorites", subtitle: "The ones that matter most." };
+    case "sites": return { title: "Sites", subtitle: "Whole websites, top to bottom, on desktop and phone." };
     case "hidden": return { title: "Hidden", subtitle: "Kept, but out of sight everywhere else." };
     case "status":
       return {
@@ -724,6 +747,7 @@ function Sidebar(props: {
         <div className="side-heading">Browse</div>
         {link({ kind: "all" }, "Panel", stats?.total)}
         {link({ kind: "favorites" }, "Favorites", stats?.favorites)}
+        {link({ kind: "sites" }, "Sites", stats?.sites)}
         {link({ kind: "hidden" }, "Hidden", stats?.hidden)}
       </div>
 
@@ -848,6 +872,12 @@ function Empty({ scope, filtered }: { scope: Scope; filtered: boolean }) {
     );
   if (scope.kind === "collection")
     return <div className="empty"><p>This collection is empty. Open any reference and add it here.</p></div>;
+  if (scope.kind === "sites")
+    return (
+      <div className="empty">
+        <p>No sites yet. Paste any website's link (⌘V anywhere) and Panel keeps a full-page screenshot of it, on desktop and on phone.</p>
+      </div>
+    );
   if (scope.kind === "hidden")
     return <div className="empty"><p>Nothing hidden. Hover a card and use the eye button to keep something out of sight.</p></div>;
   return <div className="empty"><p>Nothing here yet.</p></div>;

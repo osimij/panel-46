@@ -169,7 +169,8 @@ export function ytDlpError(err: string) {
 export async function ytDlp(
   url: string,
   dirRel: string,
-  opts: { name?: string; sort?: string; timeoutMs?: number } = {},
+  /** `generic: false` only tries sites yt-dlp knows (Vimeo, TikTok…), not any page with a video on it. */
+  opts: { name?: string; sort?: string; timeoutMs?: number; generic?: boolean } = {},
 ): Promise<{ files: string[]; info?: YtInfo; error?: string }> {
   const dir = abs(dirRel);
   mkdirSync(dir, { recursive: true });
@@ -179,6 +180,7 @@ export async function ytDlp(
       "yt-dlp", "--no-progress", "--no-warnings", "--restrict-filenames",
       "-f", "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b",
       ...(opts.sort ? ["-S", opts.sort] : []),
+      ...(opts.generic === false ? ["--ies", "default,-generic"] : []),
       "--merge-output-format", "mp4",
       "--write-info-json", "--no-write-playlist-metafiles",
       "-o", join(dir, `${name}%(playlist_index&-{}|)s.%(ext)s`),

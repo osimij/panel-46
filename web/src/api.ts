@@ -28,6 +28,8 @@ export interface Ref {
   note: string;
   favorite: boolean;
   hidden: boolean;
+  /** A whole website: media[0] is the desktop page, media[1] the phone page. */
+  site: boolean;
   status: RefStatus;
   status_detail: string | null;
   preview_url: string | null;
@@ -52,6 +54,7 @@ export interface Stats {
   total: number;
   favorites: number;
   hidden: number;
+  sites: number;
   videos: number;
   byStatus: Partial<Record<RefStatus, number>>;
   bytes: number;
@@ -79,6 +82,7 @@ export interface Filters {
   type?: "image" | "video";
   favorite?: boolean;
   hidden?: boolean;
+  site?: boolean;
   collection?: string;
   tags?: string[];
   tagMode?: "all" | "any";
@@ -104,6 +108,7 @@ export const api = {
     if (f.type) p.set("type", f.type);
     if (f.favorite) p.set("favorite", "1");
     if (f.hidden) p.set("hidden", "1");
+    if (f.site) p.set("site", "1");
     if (f.collection) p.set("collection", f.collection);
     f.tags?.forEach((t) => p.append("tag", t));
     if (f.tagMode === "any") p.set("tagMode", "any");
