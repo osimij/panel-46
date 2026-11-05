@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="mark" aria-hidden="true"></span>
+      <strong>Panel</strong>
+      <span class="conn" id="conn"><span class="dot"></span><span id="conn-text">Checking…</span></span>
+    </header>
+
+    <section class="sites">
+      <div class="site" data-site="x">
+        <div class="site-head">
+          <span class="site-name">X bookmarks</span>
+          <label class="toggle" title="Send X bookmarks to Panel">
+            <input type="checkbox" data-on="x" /><span class="switch"></span>
+          </label>
+        </div>
+        <p class="site-line"><span class="site-status">Not synced yet</span><button class="link" data-import="x">Import all</button></p>
+      </div>
+      <div class="site" data-site="instagram">
+        <div class="site-head">
+          <span class="site-name">Instagram saved</span>
+          <label class="toggle" title="Send Instagram saves to Panel">
+            <input type="checkbox" data-on="instagram" /><span class="switch"></span>
+          </label>
+        </div>
+        <label class="folder">
+          <span>Folder</span>
+          <select id="folder"></select>
+        </label>
+        <p class="hint" id="folder-hint" hidden>Open your Instagram Saved page once to pick a folder.</p>
+        <p class="site-line"><span class="site-status">Not synced yet</span><button class="link" data-import="instagram">Import all</button></p>
+      </div>
+    </section>
+
+    <p class="pending" id="pending" hidden></p>
+
+    <footer>
+      <label class="toggle">
+        <input type="checkbox" id="auto" />
+        <span class="switch"></span>
+        <span>Check every 20 min</span>
+      </label>
+      <div class="actions">
+        <a class="btn ghost" href="http://127.0.0.1:4646/" target="_blank">Open Panel</a>
+        <button class="btn" id="sync">Sync now</button>
+      </div>
+    </footer>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

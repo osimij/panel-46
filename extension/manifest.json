@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Panel",
+  "version": "0.1.0",
+  "description": "Sends what you bookmark on X and save on Instagram to your Panel library.",
+  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+  },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "permissions": ["storage", "alarms", "cookies", "declarativeNetRequest"],
+  "host_permissions": [
+    "http://127.0.0.1:4646/*",
+    "https://x.com/*",
+    "https://abs.twimg.com/*",
+    "https://www.instagram.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://x.com/*", "https://www.instagram.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://x.com/*"],
+      "js": ["x-page.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    }
+  ]
+}
