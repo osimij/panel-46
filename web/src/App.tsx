@@ -407,9 +407,13 @@ function Command(props: {
   const { value, setValue, isUrl, saving } = props;
   return (
     <div className={`command ${isUrl ? "is-url" : ""} ${value ? "has-value" : ""}`}>
-      <span className="command-icon">
-        {saving === "busy" ? <span className="spinner" /> : saving === "done" ? <span className="check-in"><Icon name="check" size={18} /></span> : <Icon name={isUrl ? "link" : "search"} size={18} />}
-      </span>
+      {/* No magnifier for now (trying the field without it); still show when a link is
+          recognized and while it saves. */}
+      {(saving !== "idle" || isUrl) && (
+        <span className="command-icon">
+          {saving === "busy" ? <span className="spinner" /> : saving === "done" ? <span className="check-in"><Icon name="check" size={18} /></span> : <Icon name="link" size={18} />}
+        </span>
+      )}
       <input
         ref={props.inputRef}
         value={value}

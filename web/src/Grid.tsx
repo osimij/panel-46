@@ -103,21 +103,25 @@ function Card({
         {m && m.type !== "image" && m.duration ? <span className="chip time">{formatDuration(m.duration)}</span> : null}
         {r.media_count > 1 && <span className="chip count">{r.media_count}</span>}
 
+        {/* Top right: takes the place of the duration/count chips, which fade out on hover. */}
+        <div className="card-top">
+          <button
+            className={`glass-btn ${r.favorite ? "on" : ""}`}
+            aria-label={r.favorite ? "Remove from favorites" : "Add to favorites"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onFavorite(r);
+            }}
+          >
+            <span key={String(r.favorite)} className={r.favorite ? "pop" : ""}>
+              <Icon name={r.favorite ? "heart-fill" : "heart"} size={19} />
+            </span>
+          </button>
+        </div>
+
         <div className="card-foot">
-          <Avatar r={r} size={20} />
+          <Avatar r={r} size={30} />
           <div className="card-actions">
-            <button
-              className={`glass-btn ${r.favorite ? "on" : ""}`}
-              aria-label={r.favorite ? "Remove from favorites" : "Add to favorites"}
-              onClick={(e) => {
-                e.stopPropagation();
-                onFavorite(r);
-              }}
-            >
-              <span key={String(r.favorite)} className={r.favorite ? "pop" : ""}>
-                <Icon name={r.favorite ? "heart-fill" : "heart"} size={14} />
-              </span>
-            </button>
             {r.source_url && (
               <a
                 className="glass-btn"
@@ -127,7 +131,7 @@ function Card({
                 aria-label="Open original"
                 onClick={(e) => e.stopPropagation()}
               >
-                <Icon name="arrow-up-right" size={14} />
+                <Icon name="arrow-up-right" size={19} />
               </a>
             )}
           </div>

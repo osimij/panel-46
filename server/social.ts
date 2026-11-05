@@ -106,7 +106,7 @@ interface IgMedia {
   taken_at?: number;
   caption?: { text?: string } | null;
   user?: { username?: string; full_name?: string; profile_pic_url?: string };
-  image_versions2?: { candidates?: { url: string }[] };
+  image_versions2?: { candidates?: { url: string; width?: number }[] };
   video_versions?: { url: string }[] | null;
   carousel_media?: IgMedia[] | null;
 }
@@ -142,7 +142,7 @@ async function instagram(code: string, url: string): Promise<Post> {
     const slides = media.carousel_media?.length ? media.carousel_media : [media];
     const items: PostItem[] = slides.map((m) => {
       const isVideo = m.media_type === 2 || !!m.video_versions?.length;
-      if (!isVideo) return { type: "image", url: m.image_versions2?.candidates?.[0]?.url ?? null };
+      if (!isVideo) return { type: "image", url: largest(m.image_versions2?.candidates) };
       // The direct link is a 720p version; yt-dlp assembles the full-quality one.
       return { type: "video", url: m.video_versions?.[0]?.url ?? null, page: `https://www.instagram.com/p/${m.code}/` };
     });
@@ -159,6 +159,14 @@ async function instagram(code: string, url: string): Promise<Post> {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Instagram lists the original first, but say so explicitly: pick the widest
+ * size when sizes are given (a stable sort keeps the first one on ties or when they aren't).
+ */
+function largest(candidates?: { url: string; width?: number }[]) {
+  return [...(candidates ?? [])].sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url ?? null;
 }
 
 // ---------- YouTube ----------
