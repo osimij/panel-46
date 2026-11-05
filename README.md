@@ -11,6 +11,8 @@ bun run start        # builds the UI, then serves everything at http://127.0.0.1
 
 For development, run `bun run dev`. It starts the companion with reload on change, plus Vite at http://localhost:5173.
 
+To keep Panel running in the background, so it starts at login and comes back if it stops, run `scripts/autostart.sh install`. After changing the code, `scripts/autostart.sh restart` rebuilds and restarts it. Logs go to `~/Library/Logs/Panel/server.log`, and `scripts/autostart.sh uninstall` turns it off.
+
 | Env var | Default | |
 |---|---|---|
 | `PANEL_LIBRARY_DIR` | `~/DesignLibrary` | Where the database and media live |
