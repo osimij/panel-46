@@ -3,25 +3,37 @@ import { displayTitle, formatDuration, prefersReducedMotion, STATUS_LABEL, type 
 import { Icon } from "./Icon.tsx";
 
 /**
- * Columns aim for about this width and the count rounds to the nearest fit, so
- * cards scale smoothly with the window: 4 columns on a 14" MacBook Pro, 5 on a
- * 16" or a 1080p display, 7 on a 1440p one, 2 on a phone.
+ * Columns aim for about this width and the count rounds to the nearest fit, up to
+ * 4: a 14" MacBook Pro and anything bigger shows 4 wider cards, smaller windows
+ * step down to 3 and 2, and a phone shows 2 (1 when very narrow).
  */
 const IDEAL_COL = 320;
-const columnsFor = (width: number) => Math.max(width < 340 ? 1 : 2, Math.round(width / IDEAL_COL));
+const MAX_COLS = 4;
+const columnsFor = (width: number) => Math.min(MAX_COLS, Math.max(width < 340 ? 1 : 2, Math.round(width / IDEAL_COL)));
 
 /**
  * Masonry that keeps reading order left-to-right: each card goes into the
  * currently shortest column, using its known aspect ratio (no layout jumps).
  */
+/** While selecting, clicking a card picks it instead of opening it. */
+export interface Selection {
+  active: boolean;
+  ids: Set<string>;
+  toggle: (r: Ref, range: boolean) => void;
+}
+
 export function Masonry({
   items,
   onOpen,
   onFavorite,
+  onHide,
+  selection,
 }: {
   items: Ref[];
   onOpen: (r: Ref, thumb: HTMLElement) => void;
   onFavorite: (r: Ref) => void;
+  onHide: (r: Ref) => void;
+  selection: Selection;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // First guess from the window (minus sidebar and padding); the ResizeObserver corrects it before paint.
@@ -45,11 +57,19 @@ export function Masonry({
   });
 
   return (
-    <div className="masonry" ref={ref}>
+    <div className={`masonry ${selection.active ? "selecting" : ""}`} ref={ref}>
       {columns.map((col, c) => (
         <div className="masonry-col" key={c}>
           {col.map(({ r, i }) => (
-            <Card key={r.id} r={r} index={i} onOpen={onOpen} onFavorite={onFavorite} />
+            <Card
+              key={r.id}
+              r={r}
+              index={i}
+              onOpen={onOpen}
+              onFavorite={onFavorite}
+              onHide={onHide}
+              selection={selection}
+            />
           ))}
         </div>
       ))}
@@ -68,27 +88,33 @@ function Card({
   index,
   onOpen,
   onFavorite,
+  onHide,
+  selection,
 }: {
   r: Ref;
   index: number;
   onOpen: (r: Ref, thumb: HTMLElement) => void;
   onFavorite: (r: Ref) => void;
+  onHide: (r: Ref) => void;
+  selection: Selection;
 }) {
   const m = r.media[0];
   const thumbRef = useRef<HTMLDivElement>(null);
   const poster = m?.thumb_url ?? r.preview_url;
   const moving = m && m.type !== "image" && m.url;
-  const open = () => onOpen(r, thumbRef.current!);
+  const picked = selection.ids.has(r.id);
+  const activate = (range: boolean) => (selection.active ? selection.toggle(r, range) : onOpen(r, thumbRef.current!));
 
   return (
     <article
-      className={`card ${r.status}`}
+      className={`card ${r.status} ${picked ? "picked" : ""}`}
       data-ref={r.id}
       style={{ "--i": Math.min(index, 14) } as React.CSSProperties}
-      onClick={open}
+      onClick={(e) => activate(e.shiftKey)}
       tabIndex={0}
-      onKeyDown={(e) => e.key === "Enter" && open()}
+      onKeyDown={(e) => e.key === "Enter" && activate(e.shiftKey)}
       aria-label={displayTitle(r)}
+      aria-selected={selection.active ? picked : undefined}
     >
       <div className="thumb" ref={thumbRef} style={{ aspectRatio: `1 / ${cardRatio(r)}` }}>
         {poster ? <FadeImg src={poster} /> : <Placeholder r={r} />}
@@ -103,6 +129,18 @@ function Card({
         {m && m.type !== "image" && m.duration ? <span className="chip time">{formatDuration(m.duration)}</span> : null}
         {r.media_count > 1 && <span className="chip count">{r.media_count}</span>}
 
+        {/* Top left: picks the card, and starts selecting if nothing is picked yet. */}
+        <button
+          className={`card-check ${picked ? "on" : ""}`}
+          aria-label={picked ? "Deselect" : "Select"}
+          onClick={(e) => {
+            e.stopPropagation();
+            selection.toggle(r, e.shiftKey);
+          }}
+        >
+          <Icon name="check" size={14} />
+        </button>
+
         {/* Top right: takes the place of the duration/count chips, which fade out on hover. */}
         <div className="card-top">
           <button
@@ -116,6 +154,17 @@ function Card({
             <span key={String(r.favorite)} className={r.favorite ? "pop" : ""}>
               <Icon name={r.favorite ? "heart-fill" : "heart"} size={19} />
             </span>
+          </button>
+          <button
+            className="glass-btn"
+            aria-label={r.hidden ? "Show in library" : "Hide"}
+            title={r.hidden ? "Show in library" : "Hide: keep it, but out of sight"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onHide(r);
+            }}
+          >
+            <Icon name={r.hidden ? "eye" : "eye-off"} size={19} />
           </button>
         </div>
 

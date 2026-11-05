@@ -37,6 +37,7 @@ function hydrate(refs: RefRow[], full = false) {
     return {
       ...r,
       favorite: !!r.favorite,
+      hidden: !!r.hidden,
       preview_url: r.preview_path ? `/media/${r.preview_path}` : null,
       avatar_url: r.avatar_path ? `/media/${r.avatar_path}` : null,
       media: (full ? own : own.slice(0, 1)).map((m) => ({
@@ -108,6 +109,7 @@ function listRefs(params: URLSearchParams) {
     where.push("r.status = ?");
     args.push(status);
   }
+  where.push(params.get("hidden") === "1" ? "r.hidden = 1" : "r.hidden = 0");
   if (params.get("favorite") === "1") where.push("r.favorite = 1");
   const type = params.get("type");
   if (type === "video") where.push("EXISTS (SELECT 1 FROM media m WHERE m.ref_id = r.id AND m.type IN ('video','gif'))");
@@ -137,13 +139,21 @@ function listRefs(params: URLSearchParams) {
 
 function stats() {
   const byStatus = Object.fromEntries(
-    db.query<{ status: string; n: number }, []>("SELECT status, COUNT(*) n FROM refs GROUP BY status").all().map((r) => [r.status, r.n]),
+    db
+      .query<{ status: string; n: number }, []>("SELECT status, COUNT(*) n FROM refs WHERE hidden = 0 GROUP BY status")
+      .all()
+      .map((r) => [r.status, r.n]),
   );
+  // Counts describe what the views show, so hidden references only count towards Hidden.
   const totals = db
-    .query<{ n: number; fav: number }, []>("SELECT COUNT(*) n, COALESCE(SUM(favorite),0) fav FROM refs")
+    .query<{ n: number; fav: number; hidden: number }, []>(
+      "SELECT COALESCE(SUM(hidden = 0),0) n, COALESCE(SUM(favorite = 1 AND hidden = 0),0) fav, COALESCE(SUM(hidden),0) hidden FROM refs",
+    )
     .get()!;
   const videos = db
-    .query<{ n: number }, []>("SELECT COUNT(DISTINCT ref_id) n FROM media WHERE type IN ('video','gif')")
+    .query<{ n: number }, []>(
+      "SELECT COUNT(DISTINCT m.ref_id) n FROM media m JOIN refs r ON r.id = m.ref_id WHERE m.type IN ('video','gif') AND r.hidden = 0",
+    )
     .get()!.n;
   const saved = db
     .query<{ files: number; bytes: number; videoBytes: number }, []>(
@@ -160,7 +170,7 @@ function stats() {
     /* not available on this filesystem */
   }
   return {
-    total: totals.n, favorites: totals.fav, videos, byStatus,
+    total: totals.n, favorites: totals.fav, hidden: totals.hidden, videos, byStatus,
     bytes: saved.bytes, files: saved.files, videoBytes: saved.videoBytes, diskFree, libraryDir: LIBRARY_DIR,
   };
 }
@@ -225,6 +235,25 @@ function serveFile(path: string, req: Request, cacheForever: boolean) {
   return new Response(file, { headers: { ...headers, "content-length": String(size) } });
 }
 
+/** Moves the files to the macOS Trash rather than erasing them, then forgets the reference. */
+function removeRef(id: string) {
+  const ref = getRef(id);
+  if (ref?.source_id && ref.kind !== "upload")
+    db.run("INSERT OR REPLACE INTO dismissed (kind, source_id, at) VALUES (?, ?, ?)", [ref.kind, ref.source_id, now()]);
+  const dir = join(MEDIA_DIR, id);
+  if (existsSync(dir)) {
+    const trash = join(homedir(), ".Trash", `Panel ${id} ${Date.now()}`);
+    try {
+      renameSync(dir, trash);
+    } catch {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+  db.run("DELETE FROM refs WHERE id = ?", [id]);
+  db.run("DELETE FROM refs_fts WHERE ref_id = ?", [id]);
+  db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
+}
+
 // ---------- Router ----------
 
 async function handle(req: Request): Promise<Response> {
@@ -249,11 +278,29 @@ async function handle(req: Request): Promise<Response> {
 
   if (path === "/api/refs" && m === "GET") return json(listRefs(url.searchParams));
 
+  if (path === "/api/refs/delete" && m === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
+    const ids = (body.ids ?? []).filter((id) => typeof id === "string" && getRef(id));
+    for (const id of ids) removeRef(id);
+    return json({ ok: true, removed: ids.length });
+  }
+
+  if (path === "/api/refs/hide" && m === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { ids?: string[]; hidden?: boolean };
+    const ids = (body.ids ?? []).filter((id) => typeof id === "string");
+    const ts = now();
+    db.transaction(() => {
+      for (const id of ids) db.run("UPDATE refs SET hidden = ?, updated_at = ? WHERE id = ?", [body.hidden === false ? 0 : 1, ts, id]);
+    })();
+    return json({ ok: true, changed: ids.length });
+  }
+
   if (path === "/api/capture" && m === "POST") {
-    const body = (await req.json().catch(() => ({}))) as { url?: string; note?: string };
+    const body = (await req.json().catch(() => ({}))) as { url?: string; note?: string; auto?: boolean };
     if (!body.url) return bad("Paste a link to save.");
     try {
-      const result = await capture(body.url, body.note ?? "");
+      const result = await capture(body.url, body.note ?? "", { auto: !!body.auto });
+      if (!result.id) return json(result);
       return json({ ...result, ref: hydrate([getRef(result.id)!], true)[0] });
     } catch (e) {
       return bad((e as Error).message);
@@ -297,28 +344,17 @@ async function handle(req: Request): Promise<Response> {
       return json(hydrate([getRef(id)!], true)[0]);
     }
     if (!action && m === "PATCH") {
-      const body = (await req.json()) as Partial<{ title: string; note: string; favorite: boolean }>;
+      const body = (await req.json()) as Partial<{ title: string; note: string; favorite: boolean; hidden: boolean }>;
       if (body.title !== undefined) db.run("UPDATE refs SET title = ? WHERE id = ?", [body.title, id]);
       if (body.note !== undefined) db.run("UPDATE refs SET note = ? WHERE id = ?", [body.note, id]);
       if (body.favorite !== undefined) db.run("UPDATE refs SET favorite = ? WHERE id = ?", [body.favorite ? 1 : 0, id]);
+      if (body.hidden !== undefined) db.run("UPDATE refs SET hidden = ? WHERE id = ?", [body.hidden ? 1 : 0, id]);
       db.run("UPDATE refs SET updated_at = ? WHERE id = ?", [now(), id]);
       reindex(id);
       return json(hydrate([getRef(id)!], true)[0]);
     }
     if (!action && m === "DELETE") {
-      // Move the files to the macOS Trash rather than erasing them.
-      const dir = join(MEDIA_DIR, id);
-      if (existsSync(dir)) {
-        const trash = join(homedir(), ".Trash", `Panel ${id} ${Date.now()}`);
-        try {
-          renameSync(dir, trash);
-        } catch {
-          rmSync(dir, { recursive: true, force: true });
-        }
-      }
-      db.run("DELETE FROM refs WHERE id = ?", [id]);
-      db.run("DELETE FROM refs_fts WHERE ref_id = ?", [id]);
-      db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
+      removeRef(id);
       return json({ ok: true });
     }
     if (action === "/tags" && m === "PUT") {

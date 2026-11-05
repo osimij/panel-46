@@ -16,6 +16,8 @@ export interface RefRow {
   text: string | null;
   note: string;
   favorite: number;
+  /** Kept in the library but out of every view except Hidden. */
+  hidden: number;
   status: RefStatus;
   status_detail: string | null;
   preview_path: string | null;
@@ -118,6 +120,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS refs_fts USING fts5(
 // Columns added after the first release.
 const refCols = db.query<{ name: string }, []>("PRAGMA table_info(refs)").all().map((c) => c.name);
 if (!refCols.includes("avatar_path")) db.exec("ALTER TABLE refs ADD COLUMN avatar_path TEXT");
+if (!refCols.includes("hidden")) db.exec("ALTER TABLE refs ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
 
 // Tag groups: each tag sits in at most one group, purely for tidy browsing.
 db.exec(`CREATE TABLE IF NOT EXISTS tag_groups (
@@ -130,6 +133,15 @@ const tagCols = db.query<{ name: string }, []>("PRAGMA table_info(tags)").all().
 if (!tagCols.includes("group_id")) db.exec("ALTER TABLE tags ADD COLUMN group_id TEXT");
 // Tags made on purpose (from the tag row) stay even while nothing uses them yet.
 if (!tagCols.includes("kept")) db.exec("ALTER TABLE tags ADD COLUMN kept INTEGER NOT NULL DEFAULT 0");
+
+// Posts you deleted. Background syncs (the browser extension) skip these, so a
+// deleted post doesn't come back; saving it again by hand still works.
+db.exec(`CREATE TABLE IF NOT EXISTS dismissed (
+  kind TEXT NOT NULL,
+  source_id TEXT NOT NULL,
+  at TEXT NOT NULL,
+  PRIMARY KEY (kind, source_id)
+)`);
 
 export const now = () => new Date().toISOString();
 export const newId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);

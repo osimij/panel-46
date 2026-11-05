@@ -27,6 +27,7 @@ export interface Ref {
   text: string | null;
   note: string;
   favorite: boolean;
+  hidden: boolean;
   status: RefStatus;
   status_detail: string | null;
   preview_url: string | null;
@@ -50,6 +51,7 @@ export interface Collection {
 export interface Stats {
   total: number;
   favorites: number;
+  hidden: number;
   videos: number;
   byStatus: Partial<Record<RefStatus, number>>;
   bytes: number;
@@ -76,6 +78,7 @@ export interface Filters {
   status?: RefStatus;
   type?: "image" | "video";
   favorite?: boolean;
+  hidden?: boolean;
   collection?: string;
   tags?: string[];
   tagMode?: "all" | "any";
@@ -100,6 +103,7 @@ export const api = {
     if (f.status) p.set("status", f.status);
     if (f.type) p.set("type", f.type);
     if (f.favorite) p.set("favorite", "1");
+    if (f.hidden) p.set("hidden", "1");
     if (f.collection) p.set("collection", f.collection);
     f.tags?.forEach((t) => p.append("tag", t));
     if (f.tagMode === "any") p.set("tagMode", "any");
@@ -123,7 +127,7 @@ export const api = {
     files.forEach((f) => form.append("files", f));
     return call<{ ids: string[] }>("/api/upload", { method: "POST", body: form });
   },
-  update: (id: string, patch: Partial<Pick<Ref, "title" | "note" | "favorite">>) =>
+  update: (id: string, patch: Partial<Pick<Ref, "title" | "note" | "favorite" | "hidden">>) =>
     call<Ref>(`/api/refs/${id}`, { method: "PATCH", body: body(patch) }),
   setTags: (id: string, tags: string[]) => call<Ref>(`/api/refs/${id}/tags`, { method: "PUT", body: body({ tags }) }),
   setCollections: (id: string, ids: string[]) =>
@@ -131,6 +135,10 @@ export const api = {
   retry: (id: string) => call<Ref>(`/api/refs/${id}/retry`, { method: "POST" }),
   reveal: (id: string) => call<{ ok: boolean }>(`/api/refs/${id}/reveal`, { method: "POST" }),
   remove: (id: string) => call<{ ok: boolean }>(`/api/refs/${id}`, { method: "DELETE" }),
+  hideMany: (ids: string[], hidden: boolean) =>
+    call<{ ok: boolean; changed: number }>("/api/refs/hide", { method: "POST", body: JSON.stringify({ ids, hidden }) }),
+  removeMany: (ids: string[]) =>
+    call<{ ok: boolean; removed: number }>("/api/refs/delete", { method: "POST", body: JSON.stringify({ ids }) }),
   createCollection: (name: string) => call<Collection>("/api/collections", { method: "POST", body: body({ name }) }),
   renameCollection: (id: string, name: string) =>
     call<{ ok: boolean }>(`/api/collections/${id}`, { method: "PATCH", body: body({ name }) }),

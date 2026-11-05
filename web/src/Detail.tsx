@@ -63,6 +63,7 @@ export function Detail(props: {
       if (e.key === "ArrowLeft" && !e.shiftKey) onPrev?.();
       if (e.key === "ArrowRight" && !e.shiftKey) onNext?.();
       if (e.key === "f") void apply(api.update(ref.id, { favorite: !ref.favorite }));
+      if (e.key === "h") void apply(api.update(ref.id, { hidden: !ref.hidden }));
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
@@ -89,6 +90,14 @@ export function Detail(props: {
               <span key={String(ref.favorite)} className={ref.favorite ? "pop" : ""}>
                 <Icon name={ref.favorite ? "heart-fill" : "heart"} size={14} />
               </span>
+            </button>
+            <button
+              className="round-btn"
+              onClick={() => apply(api.update(ref.id, { hidden: !ref.hidden }))}
+              aria-label={ref.hidden ? "Show in library" : "Hide"}
+              title={ref.hidden ? "Show in library (H)" : "Hide (H)"}
+            >
+              <Icon name={ref.hidden ? "eye" : "eye-off"} size={14} />
             </button>
             <button className="round-btn" onClick={onPrev} disabled={!onPrev} aria-label="Previous" title="Previous (←)">
               <Icon name="arrow-left" size={14} />

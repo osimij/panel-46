@@ -45,7 +45,15 @@ function pump() {
 
 // ---------- Public entry points ----------
 
-export async function capture(input: string, note = ""): Promise<{ id: string; existing: boolean }> {
+/**
+ * `auto` marks saves nobody asked for just now (the extension's background sync):
+ * those skip posts you deleted. Saving one again yourself brings it back.
+ */
+export async function capture(
+  input: string,
+  note = "",
+  { auto = false } = {},
+): Promise<{ id: string; existing: boolean } | { id: null; skipped: true }> {
   input = await expandShortLink(input);
   const x = parseXStatus(input);
   const social = x ? null : parseSocial(input);
@@ -58,6 +66,11 @@ export async function capture(input: string, note = ""): Promise<{ id: string; e
   }
   const kind = x ? "x" : social ? social.kind : "web";
   const sourceId = x ? x.id : social ? social.id : url.href;
+
+  if (db.query("SELECT 1 FROM dismissed WHERE kind = ? AND source_id = ?").get(kind, sourceId)) {
+    if (auto) return { id: null, skipped: true };
+    db.run("DELETE FROM dismissed WHERE kind = ? AND source_id = ?", [kind, sourceId]);
+  }
 
   const existing = db
     .query<RefRow, [string, string]>("SELECT * FROM refs WHERE kind = ? AND source_id = ?")

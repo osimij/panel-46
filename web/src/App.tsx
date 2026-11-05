@@ -13,6 +13,7 @@ import { Popover, TagRow } from "./TagRow.tsx";
 type Scope =
   | { kind: "all" }
   | { kind: "favorites" }
+  | { kind: "hidden" }
   | { kind: "status"; status: RefStatus }
   | { kind: "collection"; id: string };
 type MediaFilter = "all" | "image" | "video";
@@ -64,6 +65,10 @@ export function App() {
   const [online, setOnline] = useState(navigator.onLine);
   const [saving, setSaving] = useState<"idle" | "busy" | "done">("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selecting, setSelecting] = useState(false);
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const anchor = useRef<string | null>(null);
 
   const isUrl = looksLikeUrl(query);
   useEffect(() => {
@@ -75,6 +80,7 @@ export function App() {
     () => ({
       q: debounced || undefined,
       favorite: scope.kind === "favorites" || undefined,
+      hidden: scope.kind === "hidden" || undefined,
       status: scope.kind === "status" ? scope.status : undefined,
       collection: scope.kind === "collection" ? scope.id : undefined,
       type: media === "all" ? undefined : media,
@@ -247,6 +253,87 @@ export function App() {
     }
   };
 
+  // ---- Selecting several to remove at once ----
+
+  const stopSelecting = useCallback(() => {
+    setSelecting(false);
+    setPicked(new Set());
+    setConfirmRemove(false);
+    anchor.current = null;
+  }, []);
+
+  /** Shift picks everything between the last card picked and this one. */
+  const togglePick = (r: Ref, range: boolean) => {
+    const from = anchor.current;
+    setSelecting(true);
+    setConfirmRemove(false);
+    setPicked((prev) => {
+      const next = new Set(prev);
+      const a = range && from && refs ? refs.findIndex((x) => x.id === from) : -1;
+      const b = refs?.findIndex((x) => x.id === r.id) ?? -1;
+      if (a >= 0 && b >= 0) for (const x of refs!.slice(Math.min(a, b), Math.max(a, b) + 1)) next.add(x.id);
+      else if (next.has(r.id)) next.delete(r.id);
+      else next.add(r.id);
+      return next;
+    });
+    anchor.current = r.id;
+  };
+
+  // Only what's on screen counts, so a filter can't hide what's about to be removed.
+  const pickedRefs = useMemo(() => refs?.filter((r) => picked.has(r.id)) ?? [], [refs, picked]);
+  const allPicked = !!refs?.length && pickedRefs.length === refs.length;
+  const pickAll = useCallback(() => setPicked(new Set(refs?.map((r) => r.id))), [refs]);
+
+  const removePicked = async () => {
+    try {
+      const { removed } = await api.removeMany(pickedRefs.map((r) => r.id));
+      say(`Moved ${removed} to Trash`);
+      stopSelecting();
+      await refresh();
+    } catch (e) {
+      say((e as Error).message, "error");
+    }
+  };
+
+  useEffect(() => {
+    if (!selecting) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
+      if (e.key === "Escape") stopSelecting();
+      else if ((e.metaKey || e.ctrlKey) && e.key === "a") {
+        e.preventDefault();
+        pickAll();
+      } else if ((e.key === "Backspace" || e.key === "Delete") && picked.size) setConfirmRemove(true);
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [selecting, picked.size, pickAll, stopSelecting]);
+
+  // Hidden ones leave the grid at once (and come back to it from the Hidden view).
+  const toggleHidden = async (r: Ref) => {
+    setRefs((list) => list?.filter((x) => x.id !== r.id) ?? null);
+    try {
+      await api.update(r.id, { hidden: !r.hidden });
+      say(r.hidden ? "Back in your library" : "Hidden · find it under Hidden");
+      void refresh();
+    } catch (e) {
+      say((e as Error).message, "error");
+      void refresh();
+    }
+  };
+
+  const hidePicked = async () => {
+    const unhide = scope.kind === "hidden";
+    try {
+      const { changed } = await api.hideMany(pickedRefs.map((r) => r.id), !unhide);
+      say(unhide ? `${changed} back in your library` : `Hid ${changed}`);
+      stopSelecting();
+      await refresh();
+    } catch (e) {
+      say((e as Error).message, "error");
+    }
+  };
+
   const changeScope = (s: Scope) => {
     setScope(s);
     window.scrollTo({ top: 0 });
@@ -260,6 +347,21 @@ export function App() {
   // While tags, media type or search narrow the grid, say how many are showing.
   const narrowed = scope.kind === "all" && refs && stats && (selectedTags.length > 0 || media !== "all" || !!debounced);
   const subtitle = narrowed ? `${refs.length} of ${stats.total} references` : baseSubtitle;
+
+  const tools = (
+    <>
+      <MediaFilterButton media={media} setMedia={setMedia} stats={stats} />
+      <button
+        className={`round-btn small ${selecting ? "on" : ""}`}
+        onClick={() => (selecting ? stopSelecting() : setSelecting(true))}
+        aria-pressed={selecting}
+        aria-label="Select several"
+        title={selecting ? "Done selecting (Esc)" : "Select several"}
+      >
+        <Icon name="select" size={14} />
+      </button>
+    </>
+  );
 
   return (
     <div className={`app ${open ? "detail-open" : ""}`} {...dropHandlers}>
@@ -292,13 +394,11 @@ export function App() {
                   tags={tags}
                   onChanged={refresh}
                   onError={(t) => say(t, "error")}
-                  tools={<MediaFilterButton media={media} setMedia={setMedia} stats={stats} />}
+                  tools={tools}
                 />
               </>
             ) : (
-              <div className="row-tools">
-                <MediaFilterButton media={media} setMedia={setMedia} stats={stats} />
-              </div>
+              <div className="row-tools">{tools}</div>
             )}
           </div>
         </header>
@@ -312,24 +412,60 @@ export function App() {
         {refs === null ? null : refs.length === 0 ? (
           !debounced && <Empty scope={scope} filtered={media !== "all" || selectedTags.length > 0} />
         ) : (
-          <Masonry items={refs} onOpen={openRef} onFavorite={toggleFavorite} />
+          <Masonry
+            items={refs}
+            onOpen={openRef}
+            onFavorite={toggleFavorite}
+            onHide={toggleHidden}
+            selection={{ active: selecting, ids: picked, toggle: togglePick }}
+          />
         )}
       </main>
 
       {/* The primary action: search, or paste a link to save. Floats at the bottom of the grid. */}
       <div className="dock">
-        <Command
-          inputRef={searchRef}
-          value={query}
-          setValue={setQuery}
-          isUrl={isUrl}
-          saving={saving}
-          onSave={() => {
-            void saveLink(query.trim());
-            setQuery("");
-          }}
-        />
-        <AddFiles onFiles={uploadFiles} />
+        {selecting ? (
+          <div className="select-bar" role="toolbar" aria-label="Selection" key="select">
+            <span className="select-count">
+              {pickedRefs.length ? `${pickedRefs.length} selected` : "Pick references"}
+            </span>
+            <button className="select-btn" onClick={() => (allPicked ? setPicked(new Set()) : pickAll())}>
+              {allPicked ? "Select none" : "Select all"}
+            </button>
+            <button className="select-btn" disabled={!pickedRefs.length} onClick={hidePicked}>
+              <Icon name={scope.kind === "hidden" ? "eye" : "eye-off"} size={15} />
+              {scope.kind === "hidden" ? "Unhide" : "Hide"}
+            </button>
+            {confirmRemove ? (
+              <button className="select-btn danger solid" onClick={removePicked} autoFocus>
+                Move {pickedRefs.length} to Trash
+              </button>
+            ) : (
+              <button className="select-btn danger" disabled={!pickedRefs.length} onClick={() => setConfirmRemove(true)}>
+                <Icon name="trash" size={15} />
+                Delete
+              </button>
+            )}
+            <button className="select-x" onClick={stopSelecting} aria-label="Done selecting" title="Done (Esc)">
+              <Icon name="x" size={15} />
+            </button>
+          </div>
+        ) : (
+          <>
+            <Command
+              inputRef={searchRef}
+              value={query}
+              setValue={setQuery}
+              isUrl={isUrl}
+              saving={saving}
+              onSave={() => {
+                void saveLink(query.trim());
+                setQuery("");
+              }}
+            />
+            <AddFiles onFiles={uploadFiles} />
+          </>
+        )}
       </div>
 
       {open && (
@@ -377,6 +513,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
   switch (scope.kind) {
     case "all": return { title: "Panel", subtitle: stats ? `${stats.total} reference${stats.total === 1 ? "" : "s"}` : "" };
     case "favorites": return { title: "Favorites", subtitle: "The ones that matter most." };
+    case "hidden": return { title: "Hidden", subtitle: "Kept, but out of sight everywhere else." };
     case "status":
       return {
         title: STATUS_LABEL[scope.status],
@@ -587,6 +724,7 @@ function Sidebar(props: {
         <div className="side-heading">Browse</div>
         {link({ kind: "all" }, "Panel", stats?.total)}
         {link({ kind: "favorites" }, "Favorites", stats?.favorites)}
+        {link({ kind: "hidden" }, "Hidden", stats?.hidden)}
       </div>
 
       {statuses.length > 0 && (
@@ -710,5 +848,7 @@ function Empty({ scope, filtered }: { scope: Scope; filtered: boolean }) {
     );
   if (scope.kind === "collection")
     return <div className="empty"><p>This collection is empty. Open any reference and add it here.</p></div>;
+  if (scope.kind === "hidden")
+    return <div className="empty"><p>Nothing hidden. Hover a card and use the eye button to keep something out of sight.</p></div>;
   return <div className="empty"><p>Nothing here yet.</p></div>;
 }
