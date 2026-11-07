@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { RailHandle } from "./RailHandle.tsx";
 import { flushSync } from "react-dom";
 import {
   api, formatBytes, prefersReducedMotion, STATUS_LABEL,
-  type Collection, type Filters, type Ref, type RefStatus, type Stats, type TagGroup, type TagInfo,
+  type Collection, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
 } from "./api.ts";
 import { Detail } from "./Detail.tsx";
 import { Masonry } from "./Grid.tsx";
@@ -14,6 +15,8 @@ type Scope =
   | { kind: "all" }
   | { kind: "favorites" }
   | { kind: "sites" }
+  | { kind: "people" }
+  | { kind: "skills" }
   | { kind: "hidden" }
   | { kind: "status"; status: RefStatus }
   | { kind: "collection"; id: string };
@@ -91,6 +94,9 @@ export function App() {
       favorite: scope.kind === "favorites" || undefined,
       hidden: scope.kind === "hidden" || undefined,
       site: scope.kind === "sites" || undefined,
+      person: scope.kind === "people" || undefined,
+      skill: scope.kind === "skills" || undefined,
+      library: scope.kind === "all" || scope.kind === "sites" || undefined,
       status: scope.kind === "status" ? scope.status : undefined,
       collection: scope.kind === "collection" ? scope.id : undefined,
       type: media === "all" ? undefined : media,
@@ -100,14 +106,25 @@ export function App() {
     [debounced, scope, media, selectedTags, tagMode],
   );
 
+  // Each page has its own tags; Favorites, Hidden and collections use the library's.
+  const section: Section = scope.kind === "sites" || scope.kind === "people" || scope.kind === "skills" ? scope.kind : "library";
+  // A tag from one page means nothing on another.
+  const lastSection = useRef(section);
+  useEffect(() => {
+    if (lastSection.current !== section) setSelectedTags([]);
+    lastSection.current = section;
+  }, [section]);
+
   const refresh = useCallback(async () => {
-    const [r, s, c, t, g] = await Promise.all([api.refs(filters), api.stats(), api.collections(), api.tags(), api.tagGroups()]);
+    const [r, s, c, t, g] = await Promise.all([
+      api.refs(filters), api.stats(), api.collections(), api.tags(section), api.tagGroups(section),
+    ]);
     setRefs(r);
     setStats(s);
     setCollections(c);
     setTags(t);
     setTagGroups(g);
-  }, [filters]);
+  }, [filters, section]);
 
   const say = useCallback((text: string, tone?: "error") => setToast({ id: Date.now(), text, tone }), []);
 
@@ -144,8 +161,24 @@ export function App() {
     async (url: string) => {
       setSaving("busy");
       try {
-        const res = await api.capture(url);
-        say(res.existing ? "Already in your library" : "Saving a copy to this Mac…");
+        const person = scope.kind === "people";
+        const res = await api.capture(url, { person });
+        if (res.board) {
+          const n = res.board.pins;
+          say(`Saving ${n ? `${n.toLocaleString()} ${n === 1 ? "pin" : "pins"}` : "the pins"} from “${res.board.name}”…`);
+          setSaving("done");
+          setTimeout(() => setSaving("idle"), 1400);
+          // They arrive over the next while; show them as they come.
+          for (const ms of [3000, 8000, 20000, 45000]) setTimeout(() => void refresh(), ms);
+          return;
+        }
+        say(
+          res.existing
+            ? person && !res.ref.person ? "Moved to People & Accounts" : "Already in your library"
+            : res.ref.kind === "account" ? "Saving the profile…"
+            : res.ref.kind === "skill" ? "Saving the skill…"
+            : "Saving a copy to this Mac…",
+        );
         setSaving("done");
         setTimeout(() => setSaving("idle"), 1400);
         await refresh();
@@ -155,14 +188,19 @@ export function App() {
         say((e as Error).message, "error");
       }
     },
-    [refresh, say],
+    [refresh, say, scope.kind],
   );
 
   const uploadFiles = useCallback(
     async (files: File[]) => {
-      const list = files.filter((f) => /^(image|video)\//.test(f.type));
-      if (!list.length) return say("Only images and videos can be added.", "error");
-      const n = `${list.length} file${list.length > 1 ? "s" : ""}`;
+      const isSkill = (f: File) => /\.(md|markdown)$/i.test(f.name);
+      const list = files.filter((f) => /^(image|video)\//.test(f.type) || isSkill(f));
+      if (!list.length) return say("Only images, videos and .md skill files can be added.", "error");
+      const skills = list.filter(isSkill).length;
+      const n =
+        skills === list.length
+          ? `${skills} skill${skills > 1 ? "s" : ""}`
+          : `${list.length} file${list.length > 1 ? "s" : ""}`;
       say(`Adding ${n}…`);
       try {
         await api.upload(list);
@@ -177,7 +215,54 @@ export function App() {
 
   const searchRef = useRef<HTMLInputElement>(null);
 
-  // Paste anywhere (outside a text field) to save a link or files; ⌘K to search.
+  const [newTagSignal, setNewTagSignal] = useState(0);
+  // The + button's file picker, so ⌘U can open it too.
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Keyboard: ⌘K brings up the search bar from anywhere (closing whatever is open over
+  // it); ⌘U adds files from this Mac (the + button); P, F, S, H jump between the Browse
+  // pages when nothing else is open; T makes a new tag.
+  const overlayOpen = !!open || settingsOpen;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        flushSync(() => {
+          setOpen(null);
+          setSettingsOpen(false);
+          setSelecting(false);
+          setPicked(new Set());
+          setConfirmRemove(false);
+        });
+        searchRef.current?.focus();
+        searchRef.current?.select();
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "u") {
+        e.preventDefault();
+        fileInputRef.current?.click();
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat || overlayOpen) return;
+      if ((e.target as Element).closest?.("input, textarea, select, [contenteditable]")) return;
+      // T: make a new tag for this page.
+      if (e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        setNewTagSignal((n) => n + 1);
+        return;
+      }
+      const to = ({ p: { kind: "all" }, f: { kind: "favorites" }, s: { kind: "sites" }, h: { kind: "hidden" } } as Record<string, Scope>)[
+        e.key.toLowerCase()
+      ];
+      if (!to) return;
+      e.preventDefault();
+      setScope(to);
+      window.scrollTo({ top: 0 });
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [overlayOpen]);
+
+  // Paste anywhere (outside a text field) to save a link or files.
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
       if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
@@ -192,19 +277,8 @@ export function App() {
         void saveLink(text.trim());
       }
     };
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-        e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
-      }
-    };
     addEventListener("paste", onPaste);
-    addEventListener("keydown", onKey);
-    return () => {
-      removeEventListener("paste", onPaste);
-      removeEventListener("keydown", onKey);
-    };
+    return () => removeEventListener("paste", onPaste);
   }, [saveLink, uploadFiles]);
 
   const dragDepth = useRef(0);
@@ -355,7 +429,28 @@ export function App() {
     }
   };
 
+  // ---- The sidebar while something is open: tucked away to a strip, back on hover ----
+  // A short pause before it opens (so brushing past the edge does nothing) and a slightly
+  // longer one before it closes (so slipping off it for a moment doesn't snap it shut).
+  const [peek, setPeek] = useState(false);
+  const peekTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const peekTo = useCallback((show: boolean, delay: number) => {
+    clearTimeout(peekTimer.current);
+    peekTimer.current = setTimeout(() => setPeek(show), delay);
+  }, []);
+  useEffect(() => {
+    if (!open) {
+      clearTimeout(peekTimer.current);
+      setPeek(false);
+    }
+  }, [open]);
+  const sidebarHover = open
+    ? { onMouseEnter: () => clearTimeout(peekTimer.current), onMouseLeave: () => peekTo(false, 220) }
+    : undefined;
+
   const changeScope = (s: Scope) => {
+    // Picking a page from the sidebar (revealed over an open item) closes the item and goes there.
+    setOpen(null);
     setScope(s);
     window.scrollTo({ top: 0 });
   };
@@ -385,7 +480,13 @@ export function App() {
   );
 
   return (
-    <div className={`app ${open ? "detail-open" : ""}`} {...dropHandlers}>
+    <div className={`app ${open ? "detail-open" : ""} ${open && peek ? "side-peek" : ""}`} {...dropHandlers}>
+      {/* While something is open the sidebar tucks away to this strip; hover it to bring the sidebar back. */}
+      {open && (
+        <div className="side-rail" aria-hidden onMouseEnter={() => peekTo(true, 70)} onMouseLeave={() => peekTo(false, 220)}>
+          <RailHandle />
+        </div>
+      )}
       <Sidebar
         scope={scope}
         setScope={changeScope}
@@ -395,6 +496,7 @@ export function App() {
         onChanged={refresh}
         onError={(t) => say(t, "error")}
         onSettings={() => setSettingsOpen(true)}
+        hover={sidebarHover}
       />
 
       <main className="main">
@@ -406,6 +508,8 @@ export function App() {
               <>
                 <span className="filters-divider" />
                 <TagRow
+                  scope={section}
+                  newTagSignal={newTagSignal}
                   groups={tagGroups}
                   selected={selectedTags}
                   setSelected={setSelectedTags}
@@ -475,6 +579,11 @@ export function App() {
         ) : (
           <>
             <Command
+              placeholder={
+                scope.kind === "people" ? "Search, or paste a profile or portfolio link"
+                : scope.kind === "skills" ? "Search skills, or paste a link to a .md file"
+                : "Search, or paste a link to save"
+              }
               inputRef={searchRef}
               value={query}
               setValue={setQuery}
@@ -485,7 +594,7 @@ export function App() {
                 setQuery("");
               }}
             />
-            <AddFiles onFiles={uploadFiles} />
+            <AddFiles onFiles={uploadFiles} skills={scope.kind === "skills"} inputRef={fileInputRef} />
           </>
         )}
       </div>
@@ -494,7 +603,6 @@ export function App() {
         <Detail
           initial={open}
           collections={collections}
-          allTags={tags.map((t) => t.name)}
           onClose={closeDetail}
           onPrev={openIndex > 0 ? () => setOpen(refs![openIndex - 1]!) : undefined}
           onNext={openIndex >= 0 && openIndex < refs!.length - 1 ? () => setOpen(refs![openIndex + 1]!) : undefined}
@@ -504,8 +612,13 @@ export function App() {
             say("Moved to Trash");
             void refresh();
           }}
-          onTag={(name) => {
+          onTag={(name, tagSection) => {
             setOpen(null);
+            // Show everything with this tag on the tag's own page.
+            if (tagSection !== section) {
+              lastSection.current = tagSection;
+              setScope(tagSection === "library" ? { kind: "all" } : { kind: tagSection });
+            }
             setSelectedTags([name]);
           }}
         />
@@ -517,7 +630,7 @@ export function App() {
         <div className="dropzone-card">
           <Icon name="download" size={22} />
           <p>Drop to save to your library</p>
-          <span>Images, videos, or a link</span>
+          <span>Images, videos, .md skill files, or a link</span>
         </div>
       </div>
 
@@ -536,6 +649,8 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
     case "all": return { title: "Panel", subtitle: stats ? `${stats.total} reference${stats.total === 1 ? "" : "s"}` : "" };
     case "favorites": return { title: "Favorites", subtitle: "The ones that matter most." };
     case "sites": return { title: "Sites", subtitle: "Whole websites, top to bottom, on desktop and phone." };
+    case "people": return { title: "People & Accounts", subtitle: "Designers and studios to follow: their profiles and portfolios." };
+    case "skills": return { title: "Skills", subtitle: "SKILL.md files for your AI agents. Drop .md files here to add them." };
     case "hidden": return { title: "Hidden", subtitle: "Kept, but out of sight everywhere else." };
     case "status":
       return {
@@ -557,6 +672,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
 // ---------- Header ----------
 
 function Command(props: {
+  placeholder: string;
   inputRef: React.RefObject<HTMLInputElement | null>;
   value: string;
   setValue: (v: string) => void;
@@ -585,7 +701,7 @@ function Command(props: {
           }
           if (e.key === "Enter" && isUrl) props.onSave();
         }}
-        placeholder="Search, or paste a link to save"
+        placeholder={props.placeholder}
         spellCheck={false}
         aria-label="Search your library or paste a link to save"
       />
@@ -604,17 +720,24 @@ function Command(props: {
   );
 }
 
-function AddFiles({ onFiles }: { onFiles: (f: File[]) => void }) {
-  const ref = useRef<HTMLInputElement>(null);
+function AddFiles({
+  onFiles, skills, inputRef: ref,
+}: { onFiles: (f: File[]) => void; skills: boolean; inputRef: React.RefObject<HTMLInputElement | null> }) {
   return (
     <>
-      <button className="round-btn" onClick={() => ref.current?.click()} title="Add images or videos from this Mac" aria-label="Add files">
+      <button
+        className="round-btn"
+        onClick={() => ref.current?.click()}
+        title={skills ? "Add .md skill files from this Mac (⌘U)" : "Add images, videos or .md skill files from this Mac (⌘U)"}
+        aria-keyshortcuts="Meta+U"
+        aria-label="Add files"
+      >
         <Icon name="plus" size={18} />
       </button>
       <input
         ref={ref}
         type="file"
-        accept="image/*,video/*"
+        accept={skills ? ".md,.markdown,text/markdown" : "image/*,video/*,.md,.markdown"}
         multiple
         hidden
         onChange={(e) => {
@@ -637,10 +760,10 @@ function MediaFilterButton({ media, setMedia, stats }: { media: MediaFilter; set
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setMenu({ x: r.left, y: r.bottom + 6 });
   };
-  const options: { value: MediaFilter; label: string; icon: "grid" | "image" | "play"; n?: number }[] = [
-    { value: "all", label: "Everything", icon: "grid", n: stats?.total },
-    { value: "image", label: "Images", icon: "image", n: stats ? stats.total - stats.videos : undefined },
-    { value: "video", label: "Videos", icon: "play", n: stats?.videos },
+  const options: { value: MediaFilter; label: string; n?: number }[] = [
+    { value: "all", label: "Everything", n: stats?.total },
+    { value: "image", label: "Images", n: stats ? stats.total - stats.videos : undefined },
+    { value: "video", label: "Videos", n: stats?.videos },
   ];
   return (
     <>
@@ -671,7 +794,8 @@ function MediaFilterButton({ media, setMedia, stats }: { media: MediaFilter; set
                 setMenu(null);
               }}
             >
-              <span className="menu-check">{media === o.value ? <Icon name="check" size={12} /> : <Icon name={o.icon} size={12} />}</span>
+              {/* Only the chosen one is marked; the others line up after an empty slot. */}
+              <span className="menu-check">{media === o.value && <Icon name="check" size={12} />}</span>
               {o.label}
               {o.n !== undefined && <span className="menu-count">{o.n}</span>}
             </button>
@@ -693,13 +817,19 @@ function Sidebar(props: {
   onChanged: () => Promise<void>;
   onError: (text: string) => void;
   onSettings: () => void;
+  hover?: { onMouseEnter: () => void; onMouseLeave: () => void };
 }) {
   const { scope, setScope, stats, collections } = props;
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
 
-  const link = (s: Scope, label: React.ReactNode, count?: number, extra?: React.ReactNode) => (
-    <button className={`side-link ${sameScope(scope, s) ? "on" : ""}`} onClick={() => setScope(s)}>
+  const link = (s: Scope, label: React.ReactNode, count?: number, extra?: React.ReactNode, key?: string) => (
+    <button
+      className={`side-link ${sameScope(scope, s) ? "on" : ""}`}
+      onClick={() => setScope(s)}
+      title={key ? `Press ${key}` : undefined}
+      aria-keyshortcuts={key}
+    >
       {extra}
       <span className="side-label">{label}</span>
       <span className="side-dot" />
@@ -738,17 +868,19 @@ function Sidebar(props: {
   const onlySaving = statuses.every((s) => s === "pending");
 
   return (
-    <aside className="sidebar">
+    <aside className="sidebar" {...props.hover}>
       <button className="brand" onClick={() => setScope({ kind: "all" })} aria-label="Panel, go to library">
         <span className="brand-mark" aria-hidden />
       </button>
 
       <div className="side-group">
         <div className="side-heading">Browse</div>
-        {link({ kind: "all" }, "Panel", stats?.total)}
-        {link({ kind: "favorites" }, "Favorites", stats?.favorites)}
-        {link({ kind: "sites" }, "Sites", stats?.sites)}
-        {link({ kind: "hidden" }, "Hidden", stats?.hidden)}
+        {link({ kind: "all" }, "Panel", stats?.total, undefined, "P")}
+        {link({ kind: "favorites" }, "Favorites", stats?.favorites, undefined, "F")}
+        {link({ kind: "sites" }, "Sites", stats?.sites, undefined, "S")}
+        {link({ kind: "people" }, "People & Accounts", stats?.people)}
+        {link({ kind: "skills" }, "Skills", stats?.skills)}
+        {link({ kind: "hidden" }, "Hidden", stats?.hidden, undefined, "H")}
       </div>
 
       {statuses.length > 0 && (
@@ -876,6 +1008,25 @@ function Empty({ scope, filtered }: { scope: Scope; filtered: boolean }) {
     return (
       <div className="empty">
         <p>No sites yet. Paste any website's link (⌘V anywhere) and Panel keeps a full-page screenshot of it, on desktop and on phone.</p>
+      </div>
+    );
+  if (scope.kind === "people")
+    return (
+      <div className="empty">
+        <p>
+          No one here yet. Paste a profile link (⌘V anywhere) to keep the person: their photo, name and bio. Instagram, X, Threads,
+          TikTok, YouTube, LinkedIn, Dribbble, Behance, Pinterest, Vimeo, Are.na, Bluesky and GitHub all work. Any other link
+          pasted on this page is kept here as a portfolio, with full-page screenshots.
+        </p>
+      </div>
+    );
+  if (scope.kind === "skills")
+    return (
+      <div className="empty">
+        <p>
+          No skills yet. Drop SKILL.md (or any .md) files here, add them with the + button, or paste a link to one, like a file on
+          GitHub. Each is kept as text you can read, search and copy.
+        </p>
       </div>
     );
   if (scope.kind === "hidden")

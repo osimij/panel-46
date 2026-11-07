@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { api, prefersReducedMotion, type TagGroup, type TagInfo } from "./api.ts";
+import { api, prefersReducedMotion, type Section, type TagGroup, type TagInfo } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 import { InlineName } from "./InlineName.tsx";
 
@@ -18,6 +18,10 @@ type Menu =
  * into it on close). Selected tags always sit at the front.
  */
 export function TagRow(props: {
+  /** Whose tags these are: the page's section. */
+  scope: Section;
+  /** Goes up by one each time T is pressed on the page: opens "New tag". */
+  newTagSignal?: number;
   tags: TagInfo[];
   groups: TagGroup[];
   selected: string[];
@@ -166,7 +170,7 @@ export function TagRow(props: {
     setRenamingTag(null);
     if (!next || next.toLowerCase() === from) return;
     try {
-      const { name } = await api.renameTag(from, next);
+      const { name } = await api.renameTag(props.scope, from, next);
       if (selected.includes(from)) setSelected([...new Set(selected.map((t) => (t === from ? name : t)))]);
       await props.onChanged();
     } catch (e) {
@@ -176,7 +180,7 @@ export function TagRow(props: {
 
   const createTag = async (name: string) => {
     try {
-      const t = await api.createTag(name);
+      const t = await api.createTag(props.scope, name);
       await props.onChanged();
       setFresh(t.name);
       // Only the first appearance pops; later (e.g. unfolding in a group) it moves like the others.
@@ -192,7 +196,7 @@ export function TagRow(props: {
 
   const deleteTag = async (name: string) => {
     if (selected.includes(name)) setSelected(selected.filter((t) => t !== name));
-    await run(api.deleteTag(name));
+    await run(api.deleteTag(props.scope, name));
   };
 
   const toggle = (name: string) =>
@@ -310,9 +314,9 @@ export function TagRow(props: {
         {ungrouped.filter((t) => !isDead(t)).map((t) => tagPill(t))}
         {groups.filter(groupDead).map(groupCapsule)}
         {ungrouped.filter(isDead).map((t) => tagPill(t))}
-        <NewTagButton onCreate={createTag} />
+        <NewTagButton onCreate={createTag} signal={props.newTagSignal} />
         {editing && (
-          <NewGroupButton onCreate={(name) => run(api.createTagGroup(name))} />
+          <NewGroupButton onCreate={(name) => run(api.createTagGroup(props.scope, name))} />
         )}
       </div>
 
@@ -341,11 +345,11 @@ export function TagRow(props: {
               }}
               onMove={(gid) => {
                 setMenu(null);
-                void run(api.moveTag(menu.name, gid));
+                void run(api.moveTag(props.scope, menu.name, gid));
               }}
               onNewGroup={(name) => {
                 setMenu(null);
-                void run(api.createTagGroup(name, [menu.name]));
+                void run(api.createTagGroup(props.scope, name, [menu.name]));
               }}
               onDelete={() => {
                 setMenu(null);
@@ -417,8 +421,11 @@ function TagPill(props: {
 }
 
 /** The dashed pill at the end of the row: type a name, Enter makes the tag. */
-function NewTagButton({ onCreate }: { onCreate: (name: string) => void }) {
+function NewTagButton({ onCreate, signal = 0 }: { onCreate: (name: string) => void; signal?: number }) {
   const [adding, setAdding] = useState(false);
+  useEffect(() => {
+    if (signal) setAdding(true);
+  }, [signal]);
   if (adding)
     return (
       <InlineName
@@ -433,7 +440,7 @@ function NewTagButton({ onCreate }: { onCreate: (name: string) => void }) {
       />
     );
   return (
-    <button className="pill ghost" onClick={() => setAdding(true)} title="Create a tag">
+    <button className="pill ghost" onClick={() => setAdding(true)} title="Create a tag (T)" aria-keyshortcuts="T">
       <Icon name="plus" size={11} /> New tag
     </button>
   );

@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { displayTitle, formatDuration, prefersReducedMotion, STATUS_LABEL, type Ref } from "./api.ts";
+import { displayTitle, formatDuration, personFace, prefersReducedMotion, skillParts, STATUS_LABEL, type Ref } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
 /**
@@ -81,8 +81,11 @@ export function Masonry({
 }
 
 function cardRatio(r: Ref) {
+  // A person: their card, a little taller when there's a cover (a portfolio's first screen, a banner).
+  if (r.person) return personFace(r).cover ? 1.12 : 1;
   // A site's card shows its first screen (1440×900).
   if (r.site) return 0.625;
+  if (r.kind === "skill") return 0.86;
   const m = r.media[0];
   const ratio = m?.width && m?.height ? m.height / m.width : r.preview_url ? 0.56 : 0.8;
   return Math.min(Math.max(ratio, 0.45), 1.7);
@@ -131,7 +134,15 @@ function Card({
       aria-selected={selection.active ? picked : undefined}
     >
       <div className="thumb" ref={thumbRef} style={{ aspectRatio: `1 / ${cardRatio(r)}` }}>
-        {poster ? <FadeImg src={poster} /> : <Placeholder r={r} />}
+        {r.person && r.status !== "pending" ? (
+          <PersonFace r={r} />
+        ) : r.kind === "skill" && r.status !== "pending" ? (
+          <SkillFace r={r} />
+        ) : poster ? (
+          <FadeImg src={poster} />
+        ) : (
+          <Placeholder r={r} />
+        )}
         {moving && <AutoVideo src={m.url!} />}
 
         {r.status !== "archived" && (
@@ -196,7 +207,7 @@ function Card({
         </div>
 
         <div className="card-foot">
-          <Avatar r={r} size={30} />
+          {r.person || r.kind === "skill" ? <span /> : <Avatar r={r} size={30} />}
           <div className="card-actions">
             {r.source_url && (
               <a
@@ -281,6 +292,57 @@ export function Avatar({ r, size }: { r: Ref; size: number }) {
     <span className="avatar" style={{ width: size, height: size, fontSize: size * 0.45, background: `oklch(0.72 0.09 ${hue})` }}>
       {label[0]?.toUpperCase()}
     </span>
+  );
+}
+
+/**
+ * A person on the card, the same whether they were saved from a profile or their
+ * website: their photo (or their site's icon), name, where they are, and a cover
+ * when there is one: their portfolio's first screen, or a banner.
+ */
+function PersonFace({ r }: { r: Ref }) {
+  const f = personFace(r);
+  return (
+    <div className={`face person-face ${f.cover ? "has-cover" : ""}`}>
+      {f.cover && <FadeImg src={f.cover} className="person-cover" />}
+      <PersonAvatar r={r} size={88} />
+      <div className="person-name">{f.name}</div>
+      {f.sub && <div className="person-meta">{f.sub}</div>}
+      {f.bio && <p className="person-bio">{f.bio}</p>}
+      {f.stats && <div className="person-stats">{f.stats}</div>}
+      {f.places.length > 1 && (
+        <div className="person-places">
+          {f.places.map((p) => (
+            <span key={p}>{p}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A person's face: their photo, else their website's icon on a tile, else their initial. */
+export function PersonAvatar({ r, size }: { r: Ref; size: number }) {
+  const f = personFace(r);
+  if (f.photo) return <img className="avatar" src={f.photo} alt="" style={{ width: size, height: size }} draggable={false} />;
+  if (f.logo)
+    return (
+      <span className="avatar logo" style={{ width: size, height: size }}>
+        <img src={f.logo} alt="" draggable={false} />
+      </span>
+    );
+  return <Avatar r={r} size={size} />;
+}
+
+/** A skill file on the card: its name and what it's for, like a page of a manual. */
+function SkillFace({ r }: { r: Ref }) {
+  const { description } = skillParts(r.text ?? "");
+  return (
+    <div className="face skill-face">
+      <span className="skill-label">SKILL.md</span>
+      <div className="skill-name">{displayTitle(r)}</div>
+      {description && <p className="skill-desc">{description}</p>}
+    </div>
   );
 }
 

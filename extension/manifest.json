@@ -1,30 +1,69 @@
 {
   "manifest_version": 3,
   "name": "Panel",
-  "version": "0.2.0",
-  "description": "Sends your X bookmarks, Instagram saves and any website you choose to your Panel library.",
-  "icons": { "16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png" },
+  "version": "0.3.0",
+  "description": "Sends your X bookmarks, Instagram saves, Pinterest pins and any website you choose to your Panel library.",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_icon": { "16": "icons/16.png", "32": "icons/32.png" }
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    }
   },
-  "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["storage", "alarms", "cookies", "declarativeNetRequest", "contextMenus", "activeTab"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": [
+    "storage",
+    "alarms",
+    "cookies",
+    "declarativeNetRequest",
+    "contextMenus",
+    "activeTab"
+  ],
   "host_permissions": [
     "http://127.0.0.1:4646/*",
     "https://x.com/*",
     "https://abs.twimg.com/*",
-    "https://www.instagram.com/*"
+    "https://www.instagram.com/*",
+    "https://www.pinterest.com/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://x.com/*", "https://www.instagram.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://x.com/*",
+        "https://www.instagram.com/*",
+        "https://www.pinterest.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://x.com/*"],
-      "js": ["x-page.js"],
+      "matches": [
+        "https://x.com/*"
+      ],
+      "js": [
+        "x-page.js"
+      ],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.pinterest.com/*"
+      ],
+      "js": [
+        "pin-page.js"
+      ],
       "world": "MAIN",
       "run_at": "document_start"
     }

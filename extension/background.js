@@ -1,11 +1,11 @@
-// Sends what you bookmark on X or save on Instagram to Panel: right away when you
-// do it in this browser, and by checking both lists every few minutes, which also
-// catches what you saved on your phone.
+// Sends what you bookmark on X, save on Instagram or save on Pinterest to Panel: right
+// away when you do it in this browser, and by checking those lists every few minutes,
+// which also catches what you saved on your phone.
 
 const PANEL = "http://127.0.0.1:4646";
 const SYNC_MINUTES = 20;
-const SITES = ["x", "instagram"];
-const NAME = { x: "X", instagram: "Instagram" };
+const SITES = ["x", "instagram", "pinterest"];
+const NAME = { x: "X", instagram: "Instagram", pinterest: "Pinterest" };
 
 const get = async (key, fallback) => (await chrome.storage.local.get(key))[key] ?? fallback;
 const set = (key, value) => chrome.storage.local.set({ [key]: value });
@@ -16,22 +16,40 @@ class PanelDown extends Error {
     super("Panel isn't running");
   }
 }
+class Offline extends Error {
+  constructor() {
+    super("No internet. Trying again in a minute");
+  }
+}
 class LoggedOut extends Error {
   constructor(site) {
     super(`Log in to ${NAME[site]} in Chrome`);
   }
 }
 
+/** fetch for X and Instagram: a network failure (offline, Mac just woke) becomes Offline. */
+async function web(url, opts) {
+  try {
+    return await fetch(url, opts);
+  } catch {
+    throw new Offline();
+  }
+}
+
 // ---------- Panel ----------
 
-/** `auto` is for posts found by syncing: Panel skips ones you deleted. */
-async function send(url, auto = false) {
+/**
+ * `auto` is for posts found by syncing: Panel skips ones you deleted. `pin` is a
+ * Pinterest pin's details as Pinterest gave them here, signed in, so pins on secret
+ * boards can be saved too.
+ */
+async function send(url, auto = false, pin = null) {
   let res;
   try {
     res = await fetch(`${PANEL}/api/capture`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url, auto }),
+      body: JSON.stringify({ url, auto, ...(pin ? { pin } : {}) }),
     });
   } catch {
     throw new PanelDown();
@@ -101,6 +119,31 @@ async function saveFromClick(url, site) {
   }
 }
 
+/**
+ * You saved a pin on Pinterest in this browser. `id` is your copy of it (the same
+ * one a sync would find, so it's never sent twice). With one board picked in the
+ * popup, pins saved to other boards stay out.
+ */
+async function savePin(id, boardId) {
+  if (!/^\d+$/.test(String(id ?? ""))) return { ok: false, error: "Couldn't tell which pin that was" };
+  if (!(await siteOn("pinterest"))) return { ok: false, off: true };
+  const board = await get("pinBoard", null);
+  if (board && boardId && String(boardId) !== board.id) return { ok: false, off: true };
+  const url = `https://www.pinterest.com/pin/${id}/`;
+  const seen = new Set(await get("seen.pinterest", []));
+  seen.add(String(id));
+  await set("seen.pinterest", [...seen].slice(-5000));
+  try {
+    const { existing } = await send(url, false, await pinterestPin(id));
+    return { ok: true, existing };
+  } catch (e) {
+    if (!(e instanceof PanelDown)) return { ok: false, error: e.message };
+    const pending = await get("pending", []);
+    if (!pending.includes(url)) await set("pending", [...pending, url]);
+    return { ok: false, queued: true };
+  }
+}
+
 /** "Save this site" from the popup or the right-click menu: any page or link. */
 async function savePage(url) {
   if (!/^https?:\/\//.test(url ?? "") || url.startsWith(PANEL)) return { ok: false, error: "Only web pages can be saved" };
@@ -157,9 +200,9 @@ const X_DEFAULT = {
 
 /** The web app's own public client token, read from its script so it stays current. */
 async function xBearer() {
-  const html = await (await fetch("https://x.com/", { credentials: "include" })).text();
+  const html = await (await web("https://x.com/", { credentials: "include" })).text();
   const main = html.match(/https:\/\/abs\.twimg\.com\/responsive-web\/client-web[\w-]*\/main\.[\w]+\.js/)?.[0];
-  const js = main ? await (await fetch(main)).text() : "";
+  const js = main ? await (await web(main)).text() : "";
   const bearer = js.match(/"(AAAAAAAAAAAAAAAAAAAAA[\w%]+)"/)?.[1];
   if (!bearer) throw new Error("X changed its app. Open your X bookmarks once so Panel can catch up.");
   return bearer;
@@ -174,7 +217,7 @@ async function xPage(cursor) {
   const q = new URL(`https://x.com/i/api/graphql/${t.queryId}/Bookmarks`);
   q.searchParams.set("variables", JSON.stringify({ count: 20, includePromotedContent: false, ...(cursor ? { cursor } : {}) }));
   q.searchParams.set("features", JSON.stringify(t.features));
-  const res = await fetch(q, {
+  const res = await web(q, {
     credentials: "include",
     headers: {
       authorization: `Bearer ${t.bearer}`,
@@ -216,7 +259,7 @@ async function instagramPage(maxId) {
   );
   if (maxId) u.searchParams.set("max_id", maxId);
   // The app id is the one Instagram's own website identifies itself with.
-  const res = await fetch(u, { credentials: "include", headers: { "X-IG-App-ID": "936619743392459", "X-Requested-With": "XMLHttpRequest" } });
+  const res = await web(u, { credentials: "include", headers: { "X-IG-App-ID": "936619743392459", "X-Requested-With": "XMLHttpRequest" } });
   const json = await res.json().catch(() => null);
   if (res.status === 401 || res.status === 403 || json?.require_login || json?.message === "login_required") throw new LoggedOut("instagram");
   if (!res.ok || !json) throw new Error(`Instagram returned HTTP ${res.status}`);
@@ -227,7 +270,81 @@ async function instagramPage(maxId) {
   return { posts, next: json.more_available ? json.next_max_id : null };
 }
 
-const PAGE = { x: xPage, instagram: instagramPage };
+// ---------- Pinterest ----------
+
+/** Pinterest's own web API, as its website calls it, with your sign-in. */
+async function pinResource(name, handler, options) {
+  const u = new URL(`https://www.pinterest.com/resource/${name}/get/`);
+  u.searchParams.set("source_url", "/");
+  u.searchParams.set("data", JSON.stringify({ options, context: {} }));
+  const res = await web(u, {
+    credentials: "include",
+    headers: { accept: "application/json", "X-Requested-With": "XMLHttpRequest", "X-Pinterest-PWS-Handler": handler },
+  });
+  if (res.status === 401 || res.status === 403) throw new LoggedOut("pinterest");
+  if (!res.ok) throw new Error(`Pinterest returned HTTP ${res.status}`);
+  const json = await res.json().catch(() => null);
+  if (!json?.resource_response) throw new Error("Pinterest changed how it loads pins");
+  return json.resource_response;
+}
+
+/** Who you are on Pinterest, from the page Pinterest serves you. */
+async function pinterestUser() {
+  const html = await (await web("https://www.pinterest.com/", { credentials: "include" })).text();
+  const raw = html.match(/<script[^>]+id="__PWS_DATA__"[^>]*>([\s\S]*?)<\/script>/)?.[1];
+  let ctx = null;
+  try {
+    ctx = JSON.parse(raw ?? "null")?.context;
+  } catch {
+    // handled below
+  }
+  const username = ctx?.user?.username;
+  if (!ctx?.is_authenticated || !username) throw new LoggedOut("pinterest");
+  await set("pinUser", username);
+  return username;
+}
+
+/** Your boards, newest pinned-to first, for the popup's board picker. */
+async function pinterestBoards(username) {
+  const r = await pinResource("BoardsResource", "www/[username]/boards.js", {
+    username, page_size: 100, field_set_key: "profile_grid_item", sort: "last_pinned_to", privacy_filter: "all", include_archived: true,
+  });
+  const boards = (r.data ?? [])
+    .filter((b) => b?.id && b.name)
+    .map((b) => ({ id: String(b.id), name: String(b.name).slice(0, 80) }));
+  if (boards.length) await set("pinBoards", boards);
+}
+
+/**
+ * Your pins, newest first: every board, or just the one picked in the popup. Each
+ * comes with its details, which Panel uses for pins it can't read on its own.
+ */
+async function pinterestPage(bookmark) {
+  const username = await pinterestUser();
+  if (!bookmark) await pinterestBoards(username).catch(() => {});
+  const board = await get("pinBoard", null);
+  const r = await pinResource("UserPinsResource", "www/[username]/pins.js", {
+    username, page_size: 25, field_set_key: "grid_item", ...(bookmark ? { bookmarks: [bookmark] } : {}),
+  });
+  const posts = (r.data ?? [])
+    .filter((p) => p?.type === "pin" && p.id && (!board || String(p.board?.id) === board.id))
+    .map((p) => ({ id: String(p.id), url: `https://www.pinterest.com/pin/${p.id}/`, pin: p }));
+  const next = r.bookmark && r.bookmark !== "-end-" && r.data?.length ? r.bookmark : null;
+  // With one board picked, a page can hold none of its pins and still not be the end.
+  return { posts, next, keepGoing: !!board };
+}
+
+/** One pin you just saved, read with your sign-in so a secret board is no problem. */
+async function pinterestPin(id) {
+  try {
+    const r = await pinResource("PinResource", "www/pin/[id].js", { id, field_set_key: "detailed" });
+    return r.data?.id ? r.data : null;
+  } catch {
+    return null;
+  }
+}
+
+const PAGE = { x: xPage, instagram: instagramPage, pinterest: pinterestPage };
 
 const siteOn = async (site) => (await get("sites", {}))[site] !== false;
 
@@ -247,10 +364,10 @@ async function syncSite(site, all = false) {
   let pages = 0;
   try {
     do {
-      const { posts, next } = await PAGE[site](cursor);
+      const { posts, next, keepGoing } = await PAGE[site](cursor);
       const fresh = posts.filter((p) => !seen.has(p.id));
       for (const p of fresh) {
-        if (!(await send(p.url, true)).existing) added++;
+        if (!(await send(p.url, true, p.pin)).existing) added++;
         seen.add(p.id);
       }
       cursor = next;
@@ -258,7 +375,7 @@ async function syncSite(site, all = false) {
       if (all) {
         await setStatus(site, { importing: true, added });
         await sleep(1500); // unhurried, like scrolling
-      } else if (fresh.length < posts.length) break;
+      } else if (fresh.length < posts.length || (!posts.length && !keepGoing)) break;
     } while (cursor && pages < maxPages);
   } finally {
     await set(`seen.${site}`, [...seen].slice(-5000));
@@ -292,6 +409,7 @@ function sync(only, all = false) {
       } catch (e) {
         await setStatus(site, { at: Date.now(), error: e.message, importing: false });
         if (e instanceof PanelDown) break;
+        if (e instanceof Offline) chrome.alarms.create("sync-retry", { delayInMinutes: 1 });
       }
     }
   })().finally(() => (running = null));
@@ -306,9 +424,11 @@ async function state() {
     syncing: !!running,
     status: await get("status", {}),
     pending: (await get("pending", [])).length,
-    sites: { x: await siteOn("x"), instagram: await siteOn("instagram") },
+    sites: { x: await siteOn("x"), instagram: await siteOn("instagram"), pinterest: await siteOn("pinterest") },
     igFolder: await get("igFolder", null),
     igFolders: await get("igFolders", []),
+    pinBoard: await get("pinBoard", null),
+    pinBoards: await get("pinBoards", []),
   };
 }
 
@@ -335,8 +455,12 @@ function sameSiteHeaders() {
     condition: { urlFilter, tabIds: [-1], resourceTypes: ["xmlhttprequest"] },
   });
   return chrome.declarativeNetRequest.updateSessionRules({
-    removeRuleIds: [1, 2],
-    addRules: [rule(1, "||x.com/i/api/", "https://x.com"), rule(2, "||www.instagram.com/api/", "https://www.instagram.com")],
+    removeRuleIds: [1, 2, 3],
+    addRules: [
+      rule(1, "||x.com/i/api/", "https://x.com"),
+      rule(2, "||www.instagram.com/api/", "https://www.instagram.com"),
+      rule(3, "||www.pinterest.com/resource/", "https://www.pinterest.com"),
+    ],
   });
 }
 
@@ -354,7 +478,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 });
 chrome.runtime.onStartup.addListener(schedule);
 chrome.alarms.onAlarm.addListener((a) => {
-  if (a.name === "sync") sync();
+  if (a.name === "sync" || a.name === "sync-retry") sync();
   else if (a.name.startsWith("instagram-")) sync("instagram");
 });
 
@@ -382,6 +506,11 @@ chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
     "ig-folders": () => rememberFolders(msg.folders),
     "ig-folder": async () => {
       await set("igFolder", msg.folder ?? null);
+      return state();
+    },
+    "pin-saved": () => savePin(msg.id, msg.boardId),
+    "pin-board": async () => {
+      await set("pinBoard", msg.board ?? null);
       return state();
     },
     "site-on": async () => {

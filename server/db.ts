@@ -7,7 +7,8 @@ export type MediaType = "image" | "video" | "gif";
 
 export interface RefRow {
   id: string;
-  kind: "x" | "instagram" | "youtube" | "pinterest" | "web" | "upload";
+  /** "account": a person's profile (Instagram, X). "skill": a SKILL.md-style file for AI agents, kept as text. */
+  kind: "x" | "instagram" | "youtube" | "pinterest" | "web" | "upload" | "account" | "skill";
   source_url: string | null;
   source_id: string | null;
   creator_handle: string | null;
@@ -20,6 +21,12 @@ export interface RefRow {
   hidden: number;
   /** A whole website, kept as full-page screenshots (desktop, then phone). */
   site: number;
+  /** Shown under People & Accounts: a profile, or a person's portfolio site. */
+  person: number;
+  /** A person's other places, as a JSON array of URLs (mailto: for email). */
+  links: string | null;
+  /** What each of those links showed when read: JSON { [url]: LinkCard }. */
+  link_profiles: string | null;
   status: RefStatus;
   status_detail: string | null;
   preview_path: string | null;
@@ -126,6 +133,9 @@ const refCols = db.query<{ name: string }, []>("PRAGMA table_info(refs)").all().
 if (!refCols.includes("avatar_path")) db.exec("ALTER TABLE refs ADD COLUMN avatar_path TEXT");
 if (!refCols.includes("hidden")) db.exec("ALTER TABLE refs ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0");
 if (!refCols.includes("site")) db.exec("ALTER TABLE refs ADD COLUMN site INTEGER NOT NULL DEFAULT 0");
+if (!refCols.includes("person")) db.exec("ALTER TABLE refs ADD COLUMN person INTEGER NOT NULL DEFAULT 0");
+if (!refCols.includes("links")) db.exec("ALTER TABLE refs ADD COLUMN links TEXT");
+if (!refCols.includes("link_profiles")) db.exec("ALTER TABLE refs ADD COLUMN link_profiles TEXT");
 const mediaCols = db.query<{ name: string }, []>("PRAGMA table_info(media)").all().map((c) => c.name);
 if (!mediaCols.includes("position")) db.exec("ALTER TABLE media ADD COLUMN position INTEGER");
 
@@ -140,6 +150,47 @@ const tagCols = db.query<{ name: string }, []>("PRAGMA table_info(tags)").all().
 if (!tagCols.includes("group_id")) db.exec("ALTER TABLE tags ADD COLUMN group_id TEXT");
 // Tags made on purpose (from the tag row) stay even while nothing uses them yet.
 if (!tagCols.includes("kept")) db.exec("ALTER TABLE tags ADD COLUMN kept INTEGER NOT NULL DEFAULT 0");
+
+// ---------- Sections ----------
+// Panel has four kinds of page, each with its own tags: the library (posts, images,
+// videos), Sites, People & Accounts, and Skills. A "web" tag on a site and a "web"
+// tag on a person are different tags. Tag groups belong to one section too.
+
+export type Section = "library" | "sites" | "people" | "skills";
+export const SECTIONS: Section[] = ["library", "sites", "people", "skills"];
+
+export function sectionOf(r: Pick<RefRow, "kind" | "person" | "site">): Section {
+  if (r.kind === "skill") return "skills";
+  if (r.person) return "people";
+  if (r.site) return "sites";
+  return "library";
+}
+
+const migratingSections = !tagCols.includes("scope");
+if (migratingSections) {
+  // Tag names were unique across the whole library; now they're unique per section.
+  // SQLite can't change a constraint in place, so the table is rebuilt (same ids, so
+  // every tag stays attached), inside one transaction, after a full backup.
+  db.run(`VACUUM INTO ?`, [`${DB_PATH}.before-sections.bak`]);
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`CREATE TABLE tags_new (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL COLLATE NOCASE,
+      scope TEXT NOT NULL DEFAULT 'library',
+      group_id TEXT,
+      kept INTEGER NOT NULL DEFAULT 0,
+      UNIQUE (scope, name)
+    )`);
+    db.exec("INSERT INTO tags_new (id, name, scope, group_id, kept) SELECT id, name, 'library', group_id, kept FROM tags");
+    db.exec("DROP TABLE tags");
+    db.exec("ALTER TABLE tags_new RENAME TO tags");
+  })();
+  db.exec("PRAGMA foreign_keys = ON");
+  if (db.query("PRAGMA foreign_key_check").all().length) throw new Error("Tag migration left broken links; restore library.sqlite.before-sections.bak");
+}
+const groupCols = db.query<{ name: string }, []>("PRAGMA table_info(tag_groups)").all().map((c) => c.name);
+if (!groupCols.includes("scope")) db.exec("ALTER TABLE tag_groups ADD COLUMN scope TEXT NOT NULL DEFAULT 'library'");
 
 // Posts you deleted. Background syncs (the browser extension) skip these, so a
 // deleted post doesn't come back; saving it again by hand still works.
@@ -176,7 +227,11 @@ export function reindex(refId: string) {
     r.text ?? "",
     r.note,
     // Also index "MunTheShinobi" as "Mun The Shinobi" so partial names match.
-    [r.creator_handle, r.creator_handle?.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_.-]/g, " "), r.creator_name]
+    [
+      r.creator_handle, r.creator_handle?.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_.-]/g, " "), r.creator_name,
+      // Their other places: "instagram.com/name" finds them by that handle too.
+      ...parseLinks(r.links).map((l) => l.replace(/^(https?:\/\/(www\.)?|mailto:)/, "").replace(/[/.@_-]/g, " ")),
+    ]
       .filter(Boolean)
       .join(" "),
     [...tags, ...collections].join(" "),
@@ -191,7 +246,10 @@ export function refreshStatus(refId: string) {
   const media = db.query<MediaRow, [string]>("SELECT * FROM media WHERE ref_id = ?").all(refId);
   let status: RefStatus;
   let detail: string | null = null;
+  const kind = db.query<{ kind: string }, [string]>("SELECT kind FROM refs WHERE id = ?").get(refId)?.kind;
   if (media.some((m) => m.status === "pending")) status = "pending";
+  // Profiles and skills are complete without any media files.
+  else if (media.length === 0 && (kind === "account" || kind === "skill")) status = "archived";
   else if (media.length === 0) {
     status = "link_only";
     detail = "No media was found to save. Only the link and any preview are kept.";
@@ -202,4 +260,84 @@ export function refreshStatus(refId: string) {
     detail = `${failed.length} of ${media.length} file(s) could not be saved: ${failed[0]?.error ?? "unknown error"}`;
   }
   db.run("UPDATE refs SET status = ?, status_detail = ?, updated_at = ? WHERE id = ?", [status, detail, now(), refId]);
+}
+
+// ---------- Tags ----------
+
+/** Give a reference exactly these tags, from the tags of the section it's in. */
+export function setTags(refId: string, names: string[]) {
+  const r = db.query<RefRow, [string]>("SELECT * FROM refs WHERE id = ?").get(refId);
+  if (!r) return;
+  const scope = sectionOf(r);
+  const clean = [...new Set(names.map((n) => n.trim().toLowerCase()).filter(Boolean))];
+  db.transaction(() => {
+    db.run("DELETE FROM ref_tags WHERE ref_id = ?", [refId]);
+    for (const name of clean) {
+      db.run("INSERT OR IGNORE INTO tags (name, scope) VALUES (?, ?)", [name, scope]);
+      const tag = db.query<{ id: number }, [string, string]>("SELECT id FROM tags WHERE scope = ? AND name = ?").get(scope, name)!;
+      db.run("INSERT OR IGNORE INTO ref_tags (ref_id, tag_id, source) VALUES (?, ?, 'user')", [refId, tag.id]);
+    }
+    db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
+  })();
+  reindex(refId);
+}
+
+/**
+ * After a reference moves to another section (a site added to People, say), carry
+ * its tags over by name into that section's tags.
+ */
+export function retag(refId: string) {
+  const r = db.query<RefRow, [string]>("SELECT * FROM refs WHERE id = ?").get(refId);
+  if (!r) return;
+  const tags = db
+    .query<{ name: string; scope: string }, [string]>(
+      "SELECT t.name, t.scope FROM tags t JOIN ref_tags rt ON rt.tag_id = t.id WHERE rt.ref_id = ?",
+    )
+    .all(refId);
+  if (tags.some((t) => t.scope !== sectionOf(r))) setTags(refId, tags.map((t) => t.name));
+}
+
+// First run with sections: sites, people and skills take their tags into their own section.
+if (migratingSections) {
+  const moved = db
+    .query<{ id: string }, []>(
+      "SELECT DISTINCT r.id FROM refs r JOIN ref_tags rt ON rt.ref_id = r.id WHERE r.kind = 'skill' OR r.person = 1 OR r.site = 1",
+    )
+    .all();
+  for (const { id } of moved) retag(id);
+}
+
+/** A person's saved links; tolerant of an empty or damaged value. */
+export function parseLinks(json: string | null): string[] {
+  try {
+    const v = JSON.parse(json ?? "[]");
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Clean up links typed or pasted by hand: "name@site.com" becomes an email link,
+ * "site.com/name" gets https://. Anything that isn't a web or email address is dropped.
+ */
+export function cleanLinks(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const out: string[] = [];
+  for (const raw of input) {
+    if (typeof raw !== "string") continue;
+    let v = raw.trim();
+    if (!v) continue;
+    if (/^[^\s@/:]+@[^\s@/]+\.[a-z]{2,}$/i.test(v)) v = `mailto:${v}`;
+    else if (!/^(https?:|mailto:)/i.test(v)) v = `https://${v.replace(/^\/+/, "")}`;
+    try {
+      const u = new URL(v);
+      if (!/^(https?:|mailto:)$/.test(u.protocol) || (u.protocol !== "mailto:" && !u.hostname.includes("."))) continue;
+      const href = u.protocol === "mailto:" ? `mailto:${u.pathname}` : u.href;
+      if (!out.some((x) => x.replace(/\/$/, "").toLowerCase() === href.replace(/\/$/, "").toLowerCase())) out.push(href);
+    } catch {
+      /* not a link */
+    }
+  }
+  return out.slice(0, 40);
 }

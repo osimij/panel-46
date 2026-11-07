@@ -2,8 +2,9 @@ import { join, normalize, basename } from "node:path";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { HOST, LIBRARY_DIR, MEDIA_DIR, PORT } from "./config.ts";
-import { db, newId, now, refreshStatus, reindex, type MediaRow, type RefRow } from "./db.ts";
-import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, registerLocalFile, retry, upgradeSocialLinks } from "./capture.ts";
+import { cleanLinks, db, newId, now, parseLinks, refreshStatus, reindex, retag, SECTIONS, setTags, type MediaRow, type RefRow, type Section } from "./db.ts";
+import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, enrichLinks, registerLocalFile, retry, saveSkillText, upgradeSocialLinks, type LinkCard } from "./capture.ts";
+import { parseSocial, rememberPin } from "./social.ts";
 import { abs } from "./media.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
@@ -12,6 +13,18 @@ const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
 
 // ---------- Serialization ----------
+
+/** A person's link cards, with their saved photo or icon as a URL. */
+function linkCards(json: string | null) {
+  try {
+    const cards = JSON.parse(json ?? "{}") as Record<string, LinkCard>;
+    return Object.fromEntries(
+      Object.entries(cards).map(([url, c]) => [url, { ...c, avatar: undefined, avatar_url: c.avatar ? `/media/${c.avatar}` : null }]),
+    );
+  } catch {
+    return {};
+  }
+}
 
 interface TagRow { ref_id: string; name: string; source: string }
 interface ColRow { ref_id: string; id: string; name: string }
@@ -41,6 +54,9 @@ function hydrate(refs: RefRow[], full = false) {
       favorite: !!r.favorite,
       hidden: !!r.hidden,
       site: !!r.site,
+      person: !!r.person,
+      links: parseLinks(r.links),
+      link_cards: linkCards(r.link_profiles),
       preview_url: r.preview_path ? `/media/${r.preview_path}` : null,
       avatar_url: r.avatar_path ? `/media/${r.avatar_path}` : null,
       media: (full ? own : own.slice(0, 1)).map((m) => ({
@@ -115,6 +131,10 @@ function listRefs(params: URLSearchParams) {
   where.push(params.get("hidden") === "1" ? "r.hidden = 1" : "r.hidden = 0");
   if (params.get("favorite") === "1") where.push("r.favorite = 1");
   if (params.get("site") === "1") where.push("r.site = 1");
+  // People & Accounts and Skills are pages of their own, apart from the main library.
+  if (params.get("person") === "1") where.push("r.person = 1");
+  if (params.get("skill") === "1") where.push("r.kind = 'skill'");
+  if (params.get("library") === "1") where.push("r.person = 0 AND r.kind != 'skill'");
   const type = params.get("type");
   if (type === "video") where.push("EXISTS (SELECT 1 FROM media m WHERE m.ref_id = r.id AND m.type IN ('video','gif'))");
   if (type === "image")
@@ -150,9 +170,10 @@ function stats() {
   );
   // Counts describe what the views show, so hidden references only count towards Hidden.
   const totals = db
-    .query<{ n: number; fav: number; hidden: number; sites: number }, []>(
-      `SELECT COALESCE(SUM(hidden = 0),0) n, COALESCE(SUM(favorite = 1 AND hidden = 0),0) fav, COALESCE(SUM(hidden),0) hidden,
-         COALESCE(SUM(site = 1 AND hidden = 0),0) sites FROM refs`,
+    .query<{ n: number; fav: number; hidden: number; sites: number; people: number; skills: number }, []>(
+      `SELECT COALESCE(SUM(hidden = 0 AND person = 0 AND kind != 'skill'),0) n, COALESCE(SUM(favorite = 1 AND hidden = 0),0) fav,
+         COALESCE(SUM(hidden),0) hidden, COALESCE(SUM(site = 1 AND hidden = 0 AND person = 0),0) sites,
+         COALESCE(SUM(person = 1 AND hidden = 0),0) people, COALESCE(SUM(kind = 'skill' AND hidden = 0),0) skills FROM refs`,
     )
     .get()!;
   const videos = db
@@ -175,26 +196,14 @@ function stats() {
     /* not available on this filesystem */
   }
   return {
-    total: totals.n, favorites: totals.fav, hidden: totals.hidden, sites: totals.sites, videos, byStatus,
+    total: totals.n, favorites: totals.fav, hidden: totals.hidden, sites: totals.sites, people: totals.people, skills: totals.skills,
+    videos, byStatus,
     bytes: saved.bytes, files: saved.files, videoBytes: saved.videoBytes, diskFree, libraryDir: LIBRARY_DIR,
   };
 }
 
 // ---------- Tags & collections ----------
 
-function setTags(refId: string, names: string[]) {
-  const clean = [...new Set(names.map((n) => n.trim().toLowerCase()).filter(Boolean))];
-  db.transaction(() => {
-    db.run("DELETE FROM ref_tags WHERE ref_id = ?", [refId]);
-    for (const name of clean) {
-      db.run("INSERT OR IGNORE INTO tags (name) VALUES (?)", [name]);
-      const tag = db.query<{ id: number }, [string]>("SELECT id FROM tags WHERE name = ?").get(name)!;
-      db.run("INSERT OR IGNORE INTO ref_tags (ref_id, tag_id, source) VALUES (?, ?, 'user')", [refId, tag.id]);
-    }
-    db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
-  })();
-  reindex(refId);
-}
 
 function setCollections(refId: string, ids: string[]) {
   db.transaction(() => {
@@ -311,10 +320,15 @@ async function handle(req: Request): Promise<Response> {
   }
 
   if (path === "/api/capture" && m === "POST") {
-    const body = (await req.json().catch(() => ({}))) as { url?: string; note?: string; auto?: boolean };
+    const body = (await req.json().catch(() => ({}))) as { url?: string; note?: string; auto?: boolean; person?: boolean; pin?: unknown };
     if (!body.url) return bad("Paste a link to save.");
+    // The extension sends a pin's details along, read while you're signed in to Pinterest.
+    if (body.pin) {
+      const social = parseSocial(body.url);
+      if (social?.kind === "pinterest") rememberPin(social.id, body.pin);
+    }
     try {
-      const result = await capture(body.url, body.note ?? "", { auto: !!body.auto });
+      const result = await capture(body.url, body.note ?? "", { auto: !!body.auto, person: !!body.person });
       if (!result.id) return json(result);
       return json({ ...result, ref: hydrate([getRef(result.id)!], true)[0] });
     } catch (e) {
@@ -328,6 +342,15 @@ async function handle(req: Request): Promise<Response> {
     if (!files.length) return bad("No files");
     const ids: string[] = [];
     for (const file of files) {
+      // A Markdown file is a skill: kept as text, under Skills.
+      if (/\.(md|markdown)$/i.test(file.name)) {
+        const id = newId();
+        const ts = now();
+        db.run(`INSERT INTO refs (id, kind, status, created_at, updated_at) VALUES (?, 'skill', 'pending', ?, ?)`, [id, ts, ts]);
+        saveSkillText(id, await file.text(), file.name);
+        ids.push(id);
+        continue;
+      }
       const mime = file.type || mimeFromExt(file.name);
       if (!mime.startsWith("image/") && !mime.startsWith("video/")) continue;
       const id = newId();
@@ -359,7 +382,15 @@ async function handle(req: Request): Promise<Response> {
       return json(hydrate([getRef(id)!], true)[0]);
     }
     if (!action && m === "PATCH") {
-      const body = (await req.json()) as Partial<{ title: string; note: string; favorite: boolean; hidden: boolean }>;
+      const body = (await req.json()) as Partial<{ title: string; note: string; favorite: boolean; hidden: boolean; person: boolean; links: string[] }>;
+      if (body.links !== undefined) {
+        db.run("UPDATE refs SET links = ? WHERE id = ?", [JSON.stringify(cleanLinks(body.links)), id]);
+        void enrichLinks(id); // read the new ones in the background: photo, name, icon
+      }
+      if (body.person !== undefined) {
+        db.run("UPDATE refs SET person = ? WHERE id = ?", [body.person ? 1 : 0, id]);
+        retag(id);
+      }
       if (body.title !== undefined) db.run("UPDATE refs SET title = ? WHERE id = ?", [body.title, id]);
       if (body.note !== undefined) db.run("UPDATE refs SET note = ? WHERE id = ?", [body.note, id]);
       if (body.favorite !== undefined) db.run("UPDATE refs SET favorite = ? WHERE id = ?", [body.favorite ? 1 : 0, id]);
@@ -405,13 +436,17 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // Every tag and tag group belongs to one section (library, sites, people, skills); `?scope=` picks it.
+  const scope: Section = SECTIONS.includes(url.searchParams.get("scope") as Section) ? (url.searchParams.get("scope") as Section) : "library";
+  const tagId = (name: string) => db.query<{ id: number }, [string, string]>("SELECT id FROM tags WHERE scope = ? AND name = ?").get(scope, name);
+
   if (path === "/api/tags" && m === "GET") {
     return json(
       db
-        .query<{ name: string; n: number; group_id: string | null }, []>(
-          "SELECT t.name, COUNT(rt.ref_id) n, t.group_id FROM tags t LEFT JOIN ref_tags rt ON rt.tag_id = t.id GROUP BY t.id ORDER BY n DESC, t.name",
+        .query<{ name: string; n: number; group_id: string | null }, [string]>(
+          "SELECT t.name, COUNT(rt.ref_id) n, t.group_id FROM tags t LEFT JOIN ref_tags rt ON rt.tag_id = t.id WHERE t.scope = ? GROUP BY t.id ORDER BY n DESC, t.name",
         )
-        .all(),
+        .all(scope),
     );
   }
   if (path === "/api/tags" && m === "POST") {
@@ -419,23 +454,29 @@ async function handle(req: Request): Promise<Response> {
     const name = body.name?.trim().toLowerCase();
     if (!name) return bad("Name required");
     // Creating one that already exists just keeps it; no error for a duplicate.
-    db.run("INSERT INTO tags (name, kept) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET kept = 1", [name]);
-    return json(db.query<{ name: string }, [string]>("SELECT name FROM tags WHERE name = ?").get(name)!);
+    db.run("INSERT INTO tags (name, scope, kept) VALUES (?, ?, 1) ON CONFLICT(scope, name) DO UPDATE SET kept = 1", [name, scope]);
+    return json({ name });
   }
 
   // ---- Tag groups ----
   if (path === "/api/tag-groups" && m === "GET") {
-    return json(db.query<{ id: string; name: string; position: number }, []>("SELECT id, name, position FROM tag_groups ORDER BY position, name COLLATE NOCASE").all());
+    return json(
+      db
+        .query<{ id: string; name: string; position: number }, [string]>(
+          "SELECT id, name, position FROM tag_groups WHERE scope = ? ORDER BY position, name COLLATE NOCASE",
+        )
+        .all(scope),
+    );
   }
   if (path === "/api/tag-groups" && m === "POST") {
     const body = (await req.json()) as { name?: string; tags?: string[] };
     const name = body.name?.trim();
     if (!name) return bad("Name required");
     const id = newId();
-    const position = db.query<{ p: number }, []>("SELECT COALESCE(MAX(position), -1) + 1 p FROM tag_groups").get()!.p;
+    const position = db.query<{ p: number }, [string]>("SELECT COALESCE(MAX(position), -1) + 1 p FROM tag_groups WHERE scope = ?").get(scope)!.p;
     db.transaction(() => {
-      db.run("INSERT INTO tag_groups (id, name, position, created_at) VALUES (?, ?, ?, ?)", [id, name, position, now()]);
-      for (const t of body.tags ?? []) db.run("UPDATE tags SET group_id = ? WHERE name = ?", [id, t]);
+      db.run("INSERT INTO tag_groups (id, name, position, scope, created_at) VALUES (?, ?, ?, ?, ?)", [id, name, position, scope, now()]);
+      for (const t of body.tags ?? []) db.run("UPDATE tags SET group_id = ? WHERE scope = ? AND name = ?", [id, scope, t]);
     })();
     return json({ id, name, position });
   }
@@ -459,13 +500,13 @@ async function handle(req: Request): Promise<Response> {
     const body = (await req.json()) as { groupId: string | null };
     const exists = body.groupId === null || db.query("SELECT 1 FROM tag_groups WHERE id = ?").get(body.groupId);
     if (!exists) return bad("No such group", 404);
-    db.run("UPDATE tags SET group_id = ? WHERE name = ?", [body.groupId, decodeURIComponent(tagGroupMatch[1]!)]);
+    db.run("UPDATE tags SET group_id = ? WHERE scope = ? AND name = ?", [body.groupId, scope, decodeURIComponent(tagGroupMatch[1]!)]);
     return json({ ok: true });
   }
 
   const tagMatch = path.match(/^\/api\/tags\/(.+)$/);
   if (tagMatch && m === "DELETE") {
-    const tag = db.query<{ id: number }, [string]>("SELECT id FROM tags WHERE name = ?").get(decodeURIComponent(tagMatch[1]!));
+    const tag = tagId(decodeURIComponent(tagMatch[1]!));
     if (!tag) return bad("Not found", 404);
     const refIds = db.query<{ ref_id: string }, [number]>("SELECT ref_id FROM ref_tags WHERE tag_id = ?").all(tag.id);
     db.run("DELETE FROM tags WHERE id = ?", [tag.id]); // ref_tags rows go with it
@@ -477,11 +518,11 @@ async function handle(req: Request): Promise<Response> {
     const body = (await req.json()) as { name?: string };
     const to = body.name?.trim().toLowerCase();
     if (!to) return bad("Name required");
-    const old = db.query<{ id: number }, [string]>("SELECT id FROM tags WHERE name = ?").get(from);
+    const old = tagId(from);
     if (!old) return bad("Not found", 404);
     const refIds = db.query<{ ref_id: string }, [number]>("SELECT ref_id FROM ref_tags WHERE tag_id = ?").all(old.id);
     db.transaction(() => {
-      const target = db.query<{ id: number }, [string]>("SELECT id FROM tags WHERE name = ?").get(to);
+      const target = tagId(to);
       if (target && target.id !== old.id) {
         // Renaming onto an existing tag merges the two.
         db.run("INSERT OR IGNORE INTO ref_tags (ref_id, tag_id, source) SELECT ref_id, ?, source FROM ref_tags WHERE tag_id = ?", [target.id, old.id]);
@@ -548,6 +589,11 @@ async function handle(req: Request): Promise<Response> {
 
 // Anything left mid-download when the companion last stopped gets resumed.
 for (const { id } of db.query<{ id: string }, []>("SELECT id FROM refs WHERE status = 'pending'").all()) retry(id);
+// People whose added links were never read (added before links were read, or Panel quit meanwhile).
+for (const { id } of db
+  .query<{ id: string }, []>("SELECT id FROM refs WHERE person = 1 AND status != 'pending' AND links IS NOT NULL AND links != '[]'")
+  .all())
+  void enrichLinks(id);
 fixEscapedText();
 void backfillAvatars();
 void upgradeSocialLinks();

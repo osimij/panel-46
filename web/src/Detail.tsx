@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Marked, type Tokens } from "marked";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  api, atHandle, displayTitle, formatBytes, formatDuration, site, sourceLabel, STATUS_LABEL, timeAgo,
-  type Collection, type Media, type Ref,
+  api, atHandle, describeLink, displayTitle, personFace, profileParts, type LinkCard, formatBytes, formatDuration, SECTION_UI, sectionOf, site, skillParts, sourceLabel, STATUS_LABEL, timeAgo,
+  type Collection, type Media, type Ref, type Section,
 } from "./api.ts";
-import { Avatar, FadeImg } from "./Grid.tsx";
+import { Avatar, FadeImg, PersonAvatar } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { VideoPlayer } from "./VideoPlayer.tsx";
 
 export function Detail(props: {
   initial: Ref;
   collections: Collection[];
-  allTags: string[];
   onClose: () => void;
   onPrev?: () => void;
   onNext?: () => void;
   onChanged: () => Promise<void>;
   onDeleted: () => void;
-  onTag: (name: string) => void;
+  onTag: (name: string, section: Section) => void;
 }) {
   const { initial, onClose, onPrev, onNext, onChanged } = props;
   const [ref, setRef] = useState<Ref>(initial);
@@ -25,6 +25,10 @@ export function Detail(props: {
   const id = initial.id;
 
   const load = useCallback(() => api.ref(id).then(setRef).catch((e) => setError(e.message)), [id]);
+
+  // Posted, saved copy, on disk, size: rarely needed, so behind the ⓘ button (or I). Remembered between items.
+  const [showInfo, setShowInfo] = useState(() => remembered("panel.showInfo"));
+  const toggleInfo = useCallback(() => setShowInfo((v) => remember("panel.showInfo", !v)), []);
 
   useEffect(() => {
     setRef(initial);
@@ -59,15 +63,26 @@ export function Detail(props: {
         return;
       }
       if (e.key === "Escape") onClose();
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // ⌘K, ⌘F etc. aren't ours
       // Shift+arrows belong to the video player (jump 5s).
       if (e.key === "ArrowLeft" && !e.shiftKey) onPrev?.();
       if (e.key === "ArrowRight" && !e.shiftKey) onNext?.();
       if (e.key === "f") void apply(api.update(ref.id, { favorite: !ref.favorite }));
       if (e.key === "h") void apply(api.update(ref.id, { hidden: !ref.hidden }));
+      if (e.key === "i") toggleInfo();
+      // T: straight into this item's tags (Tab completes, Enter adds, Esc leaves).
+      if (e.key === "t" || e.key === "T") {
+        const input = document.querySelector<HTMLInputElement>(".detail-panel .tag-editor input");
+        if (input) {
+          e.preventDefault();
+          input.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          input.focus({ preventScroll: true });
+        }
+      }
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [onClose, onPrev, onNext, ref, apply]);
+  }, [onClose, onPrev, onNext, ref, apply, toggleInfo]);
 
   const current = ref.media[active];
 
@@ -123,6 +138,15 @@ export function Detail(props: {
           </button>
           <div className="detail-bar-right">
             <button
+              className={`round-btn ${showInfo ? "on" : ""}`}
+              onClick={toggleInfo}
+              aria-pressed={showInfo}
+              aria-label={showInfo ? "Hide details" : "Show details"}
+              title="Details: when it was posted and saved, files on disk, size (I)"
+            >
+              <Icon name="info" size={14} />
+            </button>
+            <button
               className={`round-btn ${ref.favorite ? "fav-on" : ""}`}
               onClick={() => apply(api.update(ref.id, { favorite: !ref.favorite }))}
               aria-label={ref.favorite ? "Remove from favorites" : "Add to favorites"}
@@ -140,6 +164,16 @@ export function Detail(props: {
             >
               <Icon name={ref.hidden ? "eye" : "eye-off"} size={14} />
             </button>
+            {ref.kind !== "skill" && ref.kind !== "account" && (
+              <button
+                className={`round-btn ${ref.person ? "on" : ""}`}
+                onClick={() => apply(api.update(ref.id, { person: !ref.person }))}
+                aria-label={ref.person ? "Remove from People & Accounts" : "Add to People & Accounts"}
+                title={ref.person ? "In People & Accounts (click to remove)" : "Add to People & Accounts"}
+              >
+                <Icon name={ref.person ? "user-check" : "user"} size={14} />
+              </button>
+            )}
             <button className="round-btn" onClick={onPrev} disabled={!onPrev} aria-label="Previous" title="Previous (←)">
               <Icon name="arrow-left" size={14} />
             </button>
@@ -151,12 +185,16 @@ export function Detail(props: {
 
         <div className="detail-scroll" key={ref.id}>
           {error && <div className="inline-error">{error}</div>}
-          <Info ref_={ref} {...props} apply={apply} reload={load} />
+          <Info ref_={ref} {...props} apply={apply} reload={load} showInfo={showInfo} />
         </div>
       </aside>
 
       <div className="detail-stage" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-        {ref.site && ref.media.length ? (
+        {ref.kind === "skill" && ref.status !== "pending" ? (
+          <SkillStage r={ref} />
+        ) : ref.person && ref.status !== "pending" ? (
+          <PersonStage r={ref} />
+        ) : ref.site && ref.media.length ? (
           <SiteStage r={ref} />
         ) : current ? (
           <Stage key={current.id} m={current} hero={active === 0} />
@@ -210,6 +248,159 @@ export function Detail(props: {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Rendered Markdown, never raw HTML from the file: a skill file is text, not a web page. */
+const escapeHtml = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const md = new Marked({ gfm: true, breaks: false });
+md.use({
+  renderer: {
+    html: ({ text }: Tokens.HTML | Tokens.Tag) => escapeHtml(text),
+    link(this: { parser: { parseInline: (t: Tokens.Generic[]) => string } }, { href, tokens }: Tokens.Link) {
+      const inner = this.parser.parseInline(tokens);
+      return /^(https?:|mailto:|#)/i.test(href) ? `<a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${inner}</a>` : inner;
+    },
+    // Pictures in a skill file would reach out to the network; show their description instead.
+    image: ({ text }: Tokens.Image) => (text ? `[${escapeHtml(text)}]` : ""),
+  },
+});
+
+/** A skill file, read like a document: its frontmatter as facts, then the instructions. */
+function SkillStage({ r }: { r: Ref }) {
+  const text = r.text ?? "";
+  const { fields, body } = useMemo(() => skillParts(text), [text]);
+  const html = useMemo(() => md.parse(body, { async: false }) as string, [body]);
+  const [copied, setCopied] = useState(false);
+  const fileName = r.source_url ? decodeURIComponent(r.source_url.split("/").pop() ?? "SKILL.md") : "SKILL.md";
+  const copy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
+  };
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/markdown" }));
+    a.download = fileName;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  return (
+    <div className="doc-stage">
+      <div className="site-top">
+        <span className="doc-file"><Icon name="file" size={14} />{fileName}</span>
+        <div className="doc-actions">
+          <button className="cover-btn" onClick={copy}>
+            <Icon name={copied ? "check" : "copy"} size={12} /> {copied ? "Copied" : "Copy"}
+          </button>
+          <button className="cover-btn" onClick={download}>
+            <Icon name="download" size={12} /> Download
+          </button>
+        </div>
+      </div>
+      <article className="doc" style={{ viewTransitionName: "hero" }}>
+        {fields.length > 0 && (
+          <dl className="doc-fields">
+            {fields.map(([k, v]) => (
+              <div key={k}>
+                <dt>{k}</dt>
+                <dd>{v}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+        <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />
+      </article>
+    </div>
+  );
+}
+
+/**
+ * A person, big: who they are, then a card for each place they're at. A person
+ * saved from their website can switch to the site itself, scrolled like the real thing.
+ */
+function PersonStage({ r }: { r: Ref }) {
+  const f = personFace(r);
+  const hasSite = r.site && r.media.length > 0;
+  const [view, setView] = useState<"person" | "site">("person");
+  const places = [
+    ...(r.source_url ? [r.source_url] : []),
+    ...r.links.filter((l) => l !== r.source_url),
+  ];
+  return (
+    <div className="person-wrap">
+      {hasSite && (
+        <div className="seg person-seg" role="tablist" aria-label="Show">
+          <button role="tab" aria-selected={view === "person"} className={view === "person" ? "on" : ""} onClick={() => setView("person")}>
+            <Icon name="user" size={13} /> Person
+          </button>
+          <button role="tab" aria-selected={view === "site"} className={view === "site" ? "on" : ""} onClick={() => setView("site")}>
+            <Icon name="monitor" size={13} /> Website
+          </button>
+        </div>
+      )}
+      {view === "site" && hasSite ? (
+        <SiteStage r={r} />
+      ) : (
+        <div className={`person-stage ${f.cover ? "has-cover" : ""}`} style={{ viewTransitionName: "hero" }}>
+          {f.cover && <img className="person-stage-cover" src={f.cover} alt="" draggable={false} />}
+          <PersonAvatar r={r} size={148} />
+          <h2>{f.name}</h2>
+          {f.sub && <div className="person-meta">{f.sub}</div>}
+          {f.bio && <p className="person-stage-bio">{f.bio}</p>}
+          {f.stats && <div className="person-stats">{f.stats}</div>}
+          {places.length > 0 && (
+            <div className="place-cards">
+              {places.map((url) => (
+                <PlaceCard key={url} r={r} url={url} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * One place a person is at, as a small card. A profile shows their photo, name and
+ * counts; a website its icon and title; LinkedIn or email just say what they are.
+ * The link they were saved from describes itself from the person.
+ */
+function PlaceCard({ r, url, onRemove }: { r: Ref; url: string; onRemove?: () => void }) {
+  const d = describeLink(url);
+  const main = url === r.source_url;
+  const card: LinkCard | null = main
+    ? r.kind === "account"
+      ? { kind: "profile", platform: null, name: r.creator_name, handle: r.creator_handle, bio: null, stats: profileParts(r).stats, avatar_url: r.avatar_url }
+      : { kind: "site", platform: null, name: r.title, handle: d.text, bio: null, stats: null, avatar_url: r.avatar_url }
+    : r.link_cards?.[url] ?? null;
+  const reading = !main && !d.email && !card;
+  const img = card?.avatar_url;
+  return (
+    <div className={`place-card ${card?.kind ?? (d.email ? "email" : "plain")}`}>
+      <a href={url} target={d.email ? undefined : "_blank"} rel="noreferrer" title={url}>
+        <span className={`place-icon ${card?.kind === "site" ? "logo" : ""}`}>
+          {img ? <img src={img} alt="" draggable={false} /> : <Icon name={d.email ? "mail" : "link"} size={14} />}
+        </span>
+        <span className="place-text">
+          <span className="place-top">
+            <span className="place-kind">{d.kind}</span>
+            {main && <span className="place-main">Saved from</span>}
+          </span>
+          <span className="place-name">{card?.name && card.kind === "profile" ? card.name : d.text}</span>
+          <span className="place-sub">
+            {reading ? "Reading…" : card?.kind === "profile" && card.name ? [d.text, card.stats].filter(Boolean).join(" · ") : card?.name && card.kind === "site" ? card.name : ""}
+          </span>
+        </span>
+        <Icon name="arrow-up-right" size={11} />
+      </a>
+      {onRemove && (
+        <button className="pill-x" onClick={onRemove} aria-label={`Remove ${d.kind} link`}>
+          <Icon name="x" size={10} />
+        </button>
+      )}
     </div>
   );
 }
@@ -389,19 +580,146 @@ function ClampedText({ text }: { text: string }) {
   );
 }
 
+/**
+ * A person's other places: their Instagram, LinkedIn, email, website… Paste or type
+ * one and press Enter (several at once work too). The link they were saved from comes first.
+ */
+function LinksField({ r, apply, reload }: { r: Ref; apply: (p: Promise<Ref>) => Promise<void>; reload: () => Promise<void> }) {
+  const [draft, setDraft] = useState("");
+  const [bad, setBad] = useState(false);
+  // New links are read in the background (photo, name, icon); look again while any are still being read.
+  const unread = r.links.some((l) => l !== r.source_url && !l.startsWith("mailto:") && !r.link_cards?.[l]);
+  useEffect(() => {
+    if (!unread) return;
+    const t = setInterval(() => void reload(), 1500);
+    const stop = setTimeout(() => clearInterval(t), 30_000);
+    return () => {
+      clearInterval(t);
+      clearTimeout(stop);
+    };
+  }, [unread, reload]);
+  const save = (links: string[]) => apply(api.update(r.id, { links }));
+  const add = () => {
+    const items = draft.split(/[\s,]+/).map((x) => x.trim()).filter(Boolean);
+    if (!items.length) return;
+    // Something that can't be a link or an email address stays in the field so it can be fixed.
+    const ok = items.filter((x) => /^[^\s@/:]+@[^\s@/]+\.[a-z]{2,}$/i.test(x) || /^(https?:\/\/|mailto:)?[^\s/@]+\.[a-z]{2,}(\/|$|[?#])/i.test(x) || /^https?:\/\//i.test(x));
+    if (ok.length < items.length) {
+      setBad(true);
+      return;
+    }
+    setDraft("");
+    void save([...r.links, ...ok]);
+  };
+  return (
+    <section className="field">
+      <div className="field-label">Links</div>
+      <div className="link-list">
+        {r.source_url && <PlaceCard r={r} url={r.source_url} />}
+        {r.links
+          .filter((l) => l !== r.source_url)
+          .map((l) => (
+            <PlaceCard key={l} r={r} url={l} onRemove={() => save(r.links.filter((x) => x !== l))} />
+          ))}
+        <input
+          className={`link-input ${bad ? "bad" : ""}`}
+          value={draft}
+          placeholder="Add Instagram, X, LinkedIn, email, website…"
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setBad(false);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              add();
+            }
+            if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+          }}
+          onBlur={() => draft.trim() && add()}
+          aria-invalid={bad}
+        />
+        {bad && <p className="link-hint">That doesn’t look like a link or an email address.</p>}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The two things most often wanted from a saved item, side by side: the original
+ * where it came from, and its files on this Mac.
+ */
+function SourceButtons({ r }: { r: Ref }) {
+  const s = site(r);
+  const host = r.source_url ? new URL(r.source_url).hostname.replace(/^www\./, "") : null;
+  const label = s?.name ?? host;
+  // Profiles and skill files have nothing worth opening in Finder; everything else that was saved does.
+  const files = r.kind !== "account" && r.kind !== "skill" && r.media.some((m) => m.status === "archived");
+  if (!r.source_url && !files) return null;
+  return (
+    <div className="source-buttons">
+      {r.source_url && (
+        <a className="source-btn" href={r.source_url} target="_blank" rel="noreferrer" title={r.source_url}>
+          <Icon name="arrow-up-right" size={13} />
+          <span>Open on {label}</span>
+        </a>
+      )}
+      {files && (
+        <button className="source-btn" onClick={() => api.reveal(r.id)} title="Show the saved files in Finder">
+          <Icon name="folder" size={13} />
+          <span>Show in Finder</span>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A remembered on/off preference; private windows and blocked storage just don't remember. */
+function remembered(key: string) {
+  try {
+    return localStorage.getItem(key) === "1";
+  } catch {
+    return false;
+  }
+}
+function remember(key: string, on: boolean) {
+  try {
+    localStorage.setItem(key, on ? "1" : "0");
+  } catch {
+    /* not remembered, still works */
+  }
+  return on;
+}
+
 function Info({
-  ref_: r, collections, allTags, apply, reload, onDeleted, onTag, onChanged,
+  ref_: r, collections, apply, reload, onDeleted, onTag, onChanged, showInfo,
 }: {
+  showInfo: boolean;
   ref_: Ref;
   collections: Collection[];
-  allTags: string[];
   apply: (p: Promise<Ref>) => Promise<void>;
   reload: () => Promise<void>;
   onDeleted: () => void;
-  onTag: (name: string) => void;
+  onTag: (name: string, section: Section) => void;
   onChanged: () => Promise<void>;
 }) {
+  // Sites, people and skills each get their own tags, note and fields; only the library has collections.
+  const section = sectionOf(r);
+  const ui = SECTION_UI[section];
+  const [sectionTags, setSectionTags] = useState<string[]>([]);
+  const tagKey = r.tags.join("|");
+  useEffect(() => {
+    let live = true;
+    api.tags(section).then((ts) => live && setSectionTags(ts.map((t) => t.name))).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [section, tagKey]);
+  // Tags already made on this page first, then ready-made ideas for it.
+  const allTags = [...sectionTags, ...ui.starters.filter((t) => !sectionTags.includes(t))];
   const [note, setNote] = useState(r.note);
+  // Collections fold away (remembered); folded, they still say which ones this is in.
+  const [colsOpen, setColsOpen] = useState(() => remembered("panel.collectionsOpen"));
   const [tagDraft, setTagDraft] = useState("");
   const [newCol, setNewCol] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -427,7 +745,27 @@ function Info({
     if (names.length) void apply(api.setTags(r.id, [...r.tags, ...names]));
   };
   const draft = tagDraft.trim().toLowerCase();
-  const suggestions = allTags.filter((t) => !r.tags.includes(t) && (!draft || t.includes(draft)));
+  // While typing, tags that start with the text come first, then ones with a word starting with it, then the rest.
+  const rank = (t: string) => (t.startsWith(draft) ? 0 : new RegExp(`[\\s_-]${draft.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`).test(t) ? 1 : 2);
+  const suggestions = allTags
+    .filter((t) => !r.tags.includes(t) && (!draft || t.includes(draft)))
+    .map((t, i) => ({ t, i, rank: draft ? rank(t) : 0 }))
+    .sort((a, b) => a.rank - b.rank || a.i - b.i)
+    .map((x) => x.t);
+  // The suggestion Tab will add: the best match, or one picked with ↑/↓. Only while typing a single tag.
+  const [pick, setPick] = useState(0);
+  useEffect(() => setPick(0), [draft]);
+  const completing = draft && !tagDraft.includes(",") ? suggestions[Math.min(pick, suggestions.length - 1)] ?? null : null;
+  // Greyed-out rest of the word, shown right after what you typed.
+  const ghost = completing?.startsWith(tagDraft.toLowerCase()) ? completing.slice(tagDraft.length) : "";
+  const suggestionsRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    suggestionsRef.current?.querySelector(".pill.suggested")?.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }, [completing]);
+  const addSuggestion = (t: string) => {
+    setTagDraft("");
+    void apply(api.setTags(r.id, [...r.tags, t]));
+  };
   const toggleCollection = (cid: string) => {
     const ids = r.collections.map((c) => c.id);
     void apply(api.setCollections(r.id, ids.includes(cid) ? ids.filter((x) => x !== cid) : [...ids, cid]));
@@ -440,14 +778,81 @@ function Info({
     await apply(api.setCollections(r.id, [...r.collections.map((x) => x.id), c.id]));
   };
 
-  // Without a custom title, the post's first line already is the title; don't repeat it.
-  const body = r.title ? r.text : r.text?.split("\n").slice(1).join("\n").trim();
+  // Without a custom title, a post's first line is shown bold as its title and the rest below it.
+  // A one-line post is just its text: no bold line, so it doesn't read as a title with nothing under it.
+  const isPost = r.kind === "x" || r.kind === "instagram" || r.kind === "pinterest";
+  const restLines = r.text?.split("\n").slice(1).join("\n").trim();
+  const plainPost = isPost && !r.title && !restLines;
+  const body =
+    plainPost ? r.text :
+    r.kind === "skill" ? skillParts(r.text ?? "").description
+    : r.kind === "account" ? null
+    : r.title ? r.text : r.text?.split("\n").slice(1).join("\n").trim();
   const archived = r.media.filter((m) => m.status === "archived");
   const bytes = archived.reduce((s, m) => s + (m.bytes ?? 0), 0);
   const first = r.media[0];
   const fmtDate = (iso: string) => new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
   const sourceHost = r.source_url ? new URL(r.source_url).hostname.replace(/^www\./, "") : null;
   const s = site(r);
+
+  // Something went wrong: always shown. Everything else about the copy is behind ⓘ.
+  const problemBlock = (
+    <>
+      {(r.status === "failed" || r.status === "link_only") && (
+        <div className={`callout ${r.status}`}>
+          <p>{r.status_detail ?? (r.status === "failed" ? "The media wasn’t saved." : "Only the link is kept.")}</p>
+          {r.media.filter((m) => m.status === "failed").map((m) => (
+            <p key={m.id} className="callout-file">
+              {m.type === "image" ? "Image" : "Video"} {m.idx + 1}: {m.error}
+            </p>
+          ))}
+          {r.kind !== "upload" && (
+            <button className="text-btn" onClick={() => apply(api.retry(r.id))}>
+              <Icon name="refresh" size={13} /> Try again
+            </button>
+          )}
+        </div>
+      )}
+    </>
+  );
+  const detailsBlock = (
+    <>
+      {r.status === "archived" && r.kind === "skill" && (
+        <p className="archived-note">
+          The whole file is kept in your library and is searchable.
+          {r.source_url && (
+            <>
+              {" "}
+              <button className="text-btn inline" onClick={() => apply(api.retry(r.id))} title="Download the file again from its link">
+                Get latest version
+              </button>
+            </>
+          )}
+        </p>
+      )}
+      {r.status === "archived" && r.kind === "account" && (
+        <p className="archived-note">
+          Name, photo and bio as of when you saved it.{" "}
+          <button className="text-btn inline" onClick={() => apply(api.retry(r.id))} title="Read the profile again">
+            Refresh profile
+          </button>
+        </p>
+      )}
+      {r.status === "archived" && r.kind !== "skill" && r.kind !== "account" && (
+        <p className="archived-note">
+          {r.site ? "Kept on this Mac as it looked when you saved it." : "Plays offline, even if the original post disappears."}
+          {r.site && (
+            <>
+              {" "}
+              <button className="text-btn inline" onClick={() => apply(api.retry(r.id))} title="Replace these screenshots with the site as it is today">
+                Take new screenshots
+              </button>
+            </>
+          )}
+        </p>
+      )}
+    </>
+  );
 
   return (
     <>
@@ -476,15 +881,17 @@ function Info({
             </div>
           </div>
         </div>
-        <EditableTitle
-          value={r.title ?? ""}
-          fallback={displayTitle(r)}
-          onSave={(title) => apply(api.update(r.id, { title }))}
-        />
+        {!plainPost && (
+          <EditableTitle value={r.title ?? ""} fallback={displayTitle(r)} onSave={(title) => apply(api.update(r.id, { title }))} />
+        )}
         {body && <ClampedText text={body} />}
       </div>
 
-      <dl className="facts">
+      <SourceButtons r={r} />
+
+      {showInfo && (
+        <div className="details-block">
+      {section === "library" && <dl className="facts">
         {r.posted_at && (
           <div>
             <dt>Posted</dt>
@@ -513,46 +920,21 @@ function Info({
             </dd>
           </div>
         )}
-      </dl>
+      </dl>}
 
-      {(r.status === "failed" || r.status === "link_only") && (
-        <div className={`callout ${r.status}`}>
-          <p>{r.status_detail ?? (r.status === "failed" ? "The media wasn’t saved." : "Only the link is kept.")}</p>
-          {r.media.filter((m) => m.status === "failed").map((m) => (
-            <p key={m.id} className="callout-file">
-              {m.type === "image" ? "Image" : "Video"} {m.idx + 1}: {m.error}
-            </p>
-          ))}
-          {r.kind !== "upload" && (
-            <button className="text-btn" onClick={() => apply(api.retry(r.id))}>
-              <Icon name="refresh" size={13} /> Try again
-            </button>
-          )}
+          {detailsBlock}
         </div>
       )}
-      {r.status === "archived" && (
-        <p className="archived-note">
-          {r.site ? "Kept on this Mac as it looked when you saved it." : "Plays offline, even if the original post disappears."}{" "}
-          <button className="text-btn inline" onClick={() => api.reveal(r.id)}>Show in Finder</button>
-          {r.site && (
-            <>
-              {" · "}
-              <button className="text-btn inline" onClick={() => apply(api.retry(r.id))} title="Replace these screenshots with the site as it is today">
-                Take new screenshots
-              </button>
-            </>
-          )}
-        </p>
-      )}
+      {problemBlock}
 
       <section className="field">
         <div className="field-label">
-          Note
+          {ui.noteLabel}
           <span className={`note-state ${noteState}`}>{noteState === "saving" ? "Saving…" : noteState === "saved" ? "Saved" : ""}</span>
         </div>
         <textarea
           value={note}
-          placeholder="What do you like about it? e.g. love how this menu opens"
+          placeholder={ui.notePlaceholder}
           rows={3}
           onChange={(e) => {
             setNote(e.target.value);
@@ -562,32 +944,86 @@ function Info({
       </section>
 
       <section className="field">
-        <div className="field-label">Tags</div>
+        <div className="field-label">{ui.tagsLabel}</div>
         <div className="tag-editor">
           {r.tags.map((t) => (
             <span key={t} className="pill solid">
-              <button className="pill-link" onClick={() => onTag(t)} title={`Show everything tagged ${t}`}>{t}</button>
+              <button className="pill-link" onClick={() => onTag(t, section)} title={`Show everything tagged ${t}`}>{t}</button>
               <button className="pill-x" onClick={() => apply(api.setTags(r.id, r.tags.filter((x) => x !== t)))} aria-label={`Remove ${t}`}>
                 <Icon name="x" size={10} />
               </button>
             </span>
           ))}
-          <input
-            value={tagDraft}
-            placeholder={r.tags.length ? "Add…" : "typography, menu, dark…"}
-            onChange={(e) => setTagDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === ",") {
-                e.preventDefault();
-                addTag();
-              }
-              if (e.key === "Backspace" && !tagDraft && r.tags.length) void apply(api.setTags(r.id, r.tags.slice(0, -1)));
-            }}
-            onBlur={addTag}
-          />
+          <span className="tag-input">
+            {ghost && (
+              <span className="tag-ghost" aria-hidden>
+                <span>{tagDraft}</span>
+                {ghost}
+              </span>
+            )}
+            <input
+              value={tagDraft}
+              placeholder={r.tags.length ? "Add…" : ui.tagsPlaceholder}
+              onChange={(e) => setTagDraft(e.target.value)}
+              aria-autocomplete="inline"
+              aria-describedby={completing ? `tab-hint-${r.id}` : undefined}
+              onKeyDown={(e) => {
+                // Enter takes the highlighted suggestion; ⇧Enter adds exactly what was typed,
+                // for a new tag that starts like an existing one.
+                if (e.key === "Enter" && !e.shiftKey && completing) {
+                  e.preventDefault();
+                  addSuggestion(completing);
+                  return;
+                }
+                // Tab moves to the next suggestion and ⇧Tab to the previous one, wrapping around.
+                // With nothing typed Tab moves focus as usual.
+                if (e.key === "Tab" && completing) {
+                  e.preventDefault();
+                  const n = Math.min(pick, suggestions.length - 1) + (e.shiftKey ? -1 : 1);
+                  setPick((n + suggestions.length) % suggestions.length);
+                  return;
+                }
+                if ((e.key === "ArrowDown" || e.key === "ArrowUp") && completing && suggestions.length > 1) {
+                  e.preventDefault();
+                  const n = Math.min(pick, suggestions.length - 1) + (e.key === "ArrowDown" ? 1 : -1);
+                  setPick((n + suggestions.length) % suggestions.length);
+                  return;
+                }
+                // ← → walk along the suggestion chips, while the cursor sits at the end of what you typed.
+                // On the first chip ← moves the cursor as usual, so the text can still be edited.
+                const input = e.currentTarget;
+                const atEnd = input.selectionStart === input.value.length && input.selectionEnd === input.value.length;
+                const at = Math.min(pick, suggestions.length - 1);
+                if (completing && atEnd && !e.shiftKey && !e.metaKey && !e.altKey) {
+                  if (e.key === "ArrowRight" && at < suggestions.length - 1) {
+                    e.preventDefault();
+                    setPick(at + 1);
+                    return;
+                  }
+                  if (e.key === "ArrowLeft" && at > 0) {
+                    e.preventDefault();
+                    setPick(at - 1);
+                    return;
+                  }
+                }
+                if (e.key === "Enter" || e.key === ",") {
+                  e.preventDefault();
+                  addTag();
+                }
+                if (e.key === "Backspace" && !tagDraft && r.tags.length) void apply(api.setTags(r.id, r.tags.slice(0, -1)));
+              }}
+              onBlur={addTag}
+            />
+          </span>
+          {completing && (
+            <kbd className="tab-hint" id={`tab-hint-${r.id}`} title={`Enter adds “${completing}”; Tab moves to the next suggestion; ⇧Enter adds what you typed`}>
+              Enter
+            </kbd>
+          )}
         </div>
         {suggestions.length > 0 && (
           <div
+            ref={suggestionsRef}
             className="tag-suggestions"
             onWheel={(e) => {
               if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY;
@@ -596,13 +1032,10 @@ function Info({
             {suggestions.map((t) => (
               <button
                 key={t}
-                className="pill"
+                className={`pill ${t === completing ? "suggested" : ""}`}
                 // Keep focus in the input so a half-typed draft isn't saved as its own tag.
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setTagDraft("");
-                  void apply(api.setTags(r.id, [...r.tags, t]));
-                }}
+                onClick={() => addSuggestion(t)}
               >
                 <Icon name="plus" size={10} />
                 {t}
@@ -612,8 +1045,31 @@ function Info({
         )}
       </section>
 
-      <section className="field">
-        <div className="field-label">Collections</div>
+      {section === "people" && <LinksField r={r} apply={apply} reload={reload} />}
+
+
+
+      {ui.collections && <section className={`field cols-field ${colsOpen ? "open" : ""}`}>
+        <button
+          className="field-label field-toggle"
+          onClick={() => setColsOpen(remember("panel.collectionsOpen", !colsOpen))}
+          aria-expanded={colsOpen}
+        >
+          <span className="with-icon">
+            Collections
+            <span className={`chev ${colsOpen ? "open" : ""}`}><Icon name="chevron-down" size={12} /></span>
+          </span>
+          <span className="field-summary" aria-hidden={colsOpen}>{r.collections.map((c) => c.name).join(", ") || "None"}</span>
+        </button>
+        {/* Always rendered so it can fold open and shut; inert while folded so Tab skips it. */}
+        <div
+          className="cols-body"
+          inert={!colsOpen}
+          onTransitionEnd={(e) => {
+            if (colsOpen && e.target === e.currentTarget && e.propertyName === "grid-template-rows")
+              e.currentTarget.scrollIntoView({ block: "nearest", behavior: "smooth" });
+          }}
+        >
         <div className="collection-list">
           {collections.map((c) => {
             const on = r.collections.some((x) => x.id === c.id);
@@ -636,7 +1092,8 @@ function Info({
             onKeyDown={(e) => e.key === "Enter" && createCollection()}
           />
         </div>
-      </section>
+        </div>
+      </section>}
 
       <div className="detail-foot">
         {confirmDelete ? (
@@ -646,13 +1103,13 @@ function Info({
             <button className="text-btn" onClick={() => setConfirmDelete(false)}>Cancel</button>
           </div>
         ) : (
-          <button className="text-btn muted" onClick={() => setConfirmDelete(true)}>
-            <Icon name="trash" size={13} /> Remove
-          </button>
+          <>
+            <button className="text-btn muted" onClick={() => setConfirmDelete(true)}>Remove</button>
+            <button className="text-btn muted" onClick={() => reload().then(onChanged)} title="Re-check files on disk">
+              <Icon name="refresh" size={13} /> Re-check
+            </button>
+          </>
         )}
-        <button className="text-btn muted" onClick={() => reload().then(onChanged)} title="Re-check files on disk">
-          <Icon name="refresh" size={13} /> Re-check
-        </button>
       </div>
     </>
   );

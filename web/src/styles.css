@@ -13,6 +13,8 @@
   --scrim: oklch(1 0 0 / 0.72);
   --glass: oklch(0 0 0 / 0.45);
   --accent: #ff5b2e;
+  /* Favorites: the warm pink-red of Apple's Health heart, not a warning red. */
+  --heart: #ff2d55;
   --ok: oklch(0.66 0.15 150);
   --warn: oklch(0.76 0.15 75);
   --bad: oklch(0.62 0.2 25);
@@ -42,6 +44,7 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
+    --heart: #ff375f;
     --bg: oklch(0.155 0 0);
     --text: oklch(0.95 0 0);
     --muted: oklch(1 0 0 / 0.5);
@@ -272,7 +275,7 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .round-btn:disabled { opacity: 0.35; cursor: default; }
 .round-btn.small { width: 24px; height: 24px; color: var(--muted); }
 .round-btn.on { background: var(--text); color: var(--bg); }
-.round-btn.fav-on { color: var(--accent); }
+.round-btn.fav-on { color: var(--heart); }
 
 .filters { display: flex; align-items: center; gap: 8px; margin-top: 12px; min-width: 0; }
 .segment { position: relative; display: flex; flex: none; background: var(--fill); border-radius: 999px; padding: 0; }
@@ -427,7 +430,7 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .card:hover .glass-btn:nth-child(3) { transition-delay: 60ms; }
 .glass-btn.delete.armed, .glass-btn.delete.armed:hover { background: oklch(0.58 0.2 27 / 0.92); color: #fff; }
 .glass-btn:hover { background: oklch(0 0 0 / 0.65); }
-.glass-btn.on { color: var(--accent); }
+.glass-btn.on { color: var(--heart); }
 /* Short cards: the three top buttons and the bottom one still fit, slightly smaller and closer. */
 .card .thumb { container-type: size; }
 @container (max-height: 175px) {
@@ -506,6 +509,31 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .shimmer { background: linear-gradient(100deg, transparent 30%, var(--fill) 50%, transparent 70%) var(--card); background-size: 250% 100%; animation: shimmer 1.4s linear infinite; }
 @keyframes shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
 
+/* People & Accounts, and Skills: cards made of text rather than a picture. */
+.face { position: absolute; inset: 0; display: flex; flex-direction: column; overflow: hidden; }
+.person-face {
+  align-items: center; justify-content: center; gap: 4px; padding: 20px 18px; text-align: center;
+  background: radial-gradient(120% 70% at 50% 0%, var(--fill) 0%, transparent 70%), var(--card);
+}
+.person-face .avatar { margin-bottom: 10px; box-shadow: 0 0 0 1px var(--line), 0 10px 24px -12px oklch(0 0 0 / 0.4); }
+.person-name { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.person-meta { font-size: 12px; color: var(--muted); }
+.person-bio {
+  margin: 8px 0 0; font-size: 12px; line-height: 1.45; color: var(--text); opacity: 0.8;
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+.person-stats { margin-top: 6px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.skill-face { gap: 8px; padding: 18px 18px 56px; background: var(--card); }
+.skill-label {
+  align-self: flex-start; font: 500 10.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.02em;
+  color: var(--muted); padding: 4px 6px; border-radius: 4px; background: var(--fill);
+}
+.skill-name { margin-top: 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.25; word-break: break-word; }
+.skill-desc {
+  margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
+}
+
 /* ============ Empty ============ */
 
 .empty { padding: 80px 0; color: var(--muted); text-align: center; animation: title-in var(--slow) var(--ease); }
@@ -522,6 +550,46 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 /* ============ Detail ============ */
 
 .detail { position: fixed; inset: 0 0 0 var(--side); z-index: 20; display: flex; }
+
+/*
+ * While something is open, the sidebar tucks away and a thin strip stays on the left
+ * edge with the logo half-hidden in it. Hovering the strip brings the sidebar back
+ * (App sets .side-peek, with a short hover pause each way) and it pushes the open item
+ * right, back to the normal layout. Sidebar and item move together on the same curve.
+ */
+:root {
+  --rail: 26px; --peek: 0.42s cubic-bezier(0.32, 0.72, 0, 1);
+  /* The badge is a quiet light grey: there when you look for it, not a dark blot on the edge. */
+  --handle: oklch(0.93 0 0); --handle-hover: oklch(0.89 0 0); --handle-ink: oklch(0.55 0 0);
+}
+@media (prefers-color-scheme: dark) { :root { --handle: oklch(0.24 0 0); --handle-hover: oklch(0.29 0 0); --handle-ink: oklch(0.62 0 0); } }
+/* Same paper as the sidebar it stands in for. */
+.side-rail {
+  position: fixed; top: 0; bottom: 0; left: 0; width: var(--rail); z-index: 24; overflow: clip;
+  background: var(--bg); animation: fade-in 0.3s var(--ease);
+}
+/* About 65% of the badge shows (18 of its 28px); the rest tucks behind the edge. Hover slides it out. */
+.side-rail-handle {
+  position: absolute; top: 50%; left: -10px; transform: translateY(-50%);
+  transition: transform var(--med) var(--ease), opacity var(--med) var(--ease);
+}
+.rail-badge { fill: var(--handle); transition: fill var(--med) var(--ease); }
+.rail-mark { fill: var(--handle-ink); transition: fill var(--med) var(--ease); }
+.side-rail:hover .side-rail-handle { transform: translate(3px, -50%); }
+.side-rail:hover .rail-badge { fill: var(--handle-hover); }
+.side-rail:hover .rail-mark { fill: var(--text); }
+.app.side-peek .side-rail-handle { opacity: 0; }
+
+/* Closing the item slides the sidebar back in rather than snapping it there. */
+.sidebar { transition: left var(--peek); }
+/* Both move by position (not one by transform), so they're laid out together every frame and can't drift apart. */
+.app.detail-open .sidebar {
+  left: calc(-1 * var(--side)); visibility: hidden;
+  transition: left var(--peek), visibility 0s linear 0.42s;
+}
+.app.detail-open.side-peek .sidebar { left: 0; visibility: visible; transition: left var(--peek), visibility 0s; }
+.app.detail-open .detail { left: var(--rail); transition: left var(--peek); }
+.app.detail-open.side-peek .detail { left: var(--side); }
 .detail-scrim {
   position: absolute; inset: 0; background: var(--scrim);
   -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);
@@ -598,20 +666,36 @@ textarea.detail-title {
 .note-state { color: var(--faint); transition: opacity var(--med) var(--ease); }
 .note-state.idle { opacity: 0; }
 .note-state.saved { color: var(--ok); }
+/* No resize handle: the note grows with what you write (and scrolls past a point). */
 .field textarea {
-  resize: vertical; min-height: 64px; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); border: 0; background: var(--fill);
+  resize: none; field-sizing: content; min-height: 64px; max-height: 320px; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); border: 0; background: var(--fill);
   padding: 9px 11px; outline: none; line-height: 1.45;
   transition: background-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
 }
 .field textarea:hover { background: var(--fill-hover); }
 .field textarea:focus { background: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
 
+/* Concentric with the capsule tags inside: their radius (13px) plus the 5px around them.
+   One row reads as a capsule; wrapped rows keep every corner matching the tag beside it. */
 .tag-editor {
-  display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 5px; min-height: 38px;
-  border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); transition: background-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+  display: flex; flex-wrap: wrap; gap: 5px; align-items: center; padding: 5px; min-height: 36px;
+  border-radius: 18px; corner-shape: round; background: var(--fill); transition: background-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
 }
 .tag-editor:focus-within { background: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
-.tag-editor input { flex: 1; min-width: 70px; border: 0; outline: 0; background: none; padding: 0 6px; height: 26px; }
+.tag-input { position: relative; flex: 1; min-width: 70px; display: flex; }
+.tag-editor input { position: relative; flex: 1; width: 100%; min-width: 0; border: 0; outline: 0; background: none; padding: 0 8px; height: 26px; }
+/* The rest of the suggested tag, greyed out after the text you typed (which is drawn invisibly to line it up). */
+.tag-ghost {
+  position: absolute; inset: 0; padding: 0 8px; display: flex; align-items: center; pointer-events: none;
+  white-space: pre; overflow: hidden; color: var(--faint); font: inherit;
+}
+.tag-ghost > span { visibility: hidden; }
+.tab-hint {
+  flex: none; height: 20px; padding: 0 7px; margin-right: 3px; display: inline-grid; place-items: center; border-radius: 999px;
+  font: 500 10.5px/1 inherit; color: var(--muted); background: var(--fill); box-shadow: inset 0 0 0 1px var(--line);
+  animation: pop-in 0.2s var(--spring);
+}
+.tag-suggestions .pill.suggested { color: var(--text); background: var(--fill-hover); box-shadow: inset 0 0 0 1px var(--faint); }
 .pill.solid { height: 26px; padding: 0 3px 0 10px; gap: 1px; background: var(--text); color: var(--bg); animation: pop-in 0.26s var(--spring); }
 .pill.solid:hover { background: var(--text); }
 .pill-link { color: inherit; }
@@ -643,8 +727,33 @@ textarea.detail-title {
 
 .detail-foot { display: flex; justify-content: space-between; align-items: center; padding-top: 10px; border-top: 1px solid var(--line); margin-top: auto; }
 .detail-foot .text-btn { margin: 0; }
+/* Pull the end buttons out by their padding so the words line up with the fields above. */
+.detail-foot > .text-btn:first-child { margin-left: -8px; }
+.detail-foot > .text-btn:last-child, .confirm .text-btn:last-child { margin-right: -8px; }
+/* Collections waits at the bottom of the panel, right above Remove / Re-check, open or folded,
+   so it never jumps between places: opening grows the list upward from where it sits. */
+.cols-field { margin-top: auto; gap: 0; --fold: 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
+.cols-field + .detail-foot { margin-top: 0; }
+.cols-body {
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows var(--fold), opacity 0.2s var(--ease);
+}
+.cols-body > .collection-list { min-height: 0; overflow: hidden; transform: translateY(4px); transition: transform var(--fold); }
+/* The rows' hover backgrounds reach 6px past the text on each side; give the clipped fold that room. */
+.cols-body > .collection-list { padding-inline: 6px; margin-inline: -6px; }
+/* The space under the label lives inside the fold (padding would stay behind when it shuts). */
+.cols-body > .collection-list::before { content: ""; flex: none; height: 6px; }
+.cols-field.open .cols-body { grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows var(--fold), opacity 0.28s var(--ease) 0.06s; }
+.cols-field.open .cols-body > .collection-list { transform: none; }
+.cols-field .field-summary { transition: opacity 0.2s var(--ease); }
+.cols-field.open .field-summary { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .cols-body, .cols-body > .collection-list, .cols-field .field-summary { transition: none; }
+}
 .confirm { display: flex; align-items: center; gap: 4px; animation: field-in var(--med) var(--ease); }
-.confirm span { margin-right: 4px; }
+.confirm span { margin-right: auto; white-space: nowrap; }
+.confirm { flex: 1; }
+.confirm .text-btn { white-space: nowrap; }
 .inline-error { color: var(--bad); }
 
 .detail-stage {
@@ -712,6 +821,48 @@ a.cover-btn { text-decoration: none; }
 .site-scroll img { display: block; width: 100%; height: auto; }
 .site-scroll .stage-empty { margin: auto; }
 
+/* ============ Skill files and profiles in the detail view ============ */
+
+.doc-stage { display: flex; flex-direction: column; gap: 12px; width: min(100%, 760px); height: 100%; min-height: 0; }
+.doc-file { display: inline-flex; align-items: center; gap: 6px; font: 500 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.doc-actions { display: flex; gap: 6px; }
+.doc {
+  flex: 1; min-height: 0; overflow: auto; padding: 36px 44px 56px; background: var(--raised);
+  border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 24px 60px -20px oklch(0 0 0 / 0.3), 0 0 0 1px var(--line);
+}
+.doc-fields { margin: 0 0 28px; padding: 14px 16px; border-radius: 8px; background: var(--fill); display: grid; gap: 8px; font-size: 12.5px; }
+.doc-fields div { display: grid; grid-template-columns: 110px 1fr; gap: 12px; }
+.doc-fields dt { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; padding-top: 1px; }
+.doc-fields dd { margin: 0; line-height: 1.5; word-break: break-word; }
+.markdown { font-size: 14px; line-height: 1.65; color: var(--text); word-break: break-word; }
+.markdown > :first-child { margin-top: 0; }
+.markdown h1, .markdown h2, .markdown h3, .markdown h4 { line-height: 1.3; letter-spacing: -0.015em; margin: 1.6em 0 0.5em; }
+.markdown h1 { font-size: 22px; } .markdown h2 { font-size: 18px; } .markdown h3 { font-size: 15px; } .markdown h4 { font-size: 14px; }
+.markdown p, .markdown ul, .markdown ol, .markdown blockquote, .markdown pre, .markdown table { margin: 0 0 1em; }
+.markdown ul, .markdown ol { padding-left: 1.4em; }
+.markdown li + li { margin-top: 0.25em; }
+.markdown a { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.markdown code { font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; background: var(--fill); padding: 1px 5px; border-radius: 4px; }
+.markdown pre { background: var(--fill); padding: 14px 16px; border-radius: 8px; overflow: auto; }
+.markdown pre code { background: none; padding: 0; font-size: 12px; }
+.markdown blockquote { padding-left: 14px; border-left: 3px solid var(--line); color: var(--muted); }
+.markdown hr { border: 0; border-top: 1px solid var(--line); margin: 2em 0; }
+.markdown table { border-collapse: collapse; font-size: 13px; display: block; overflow: auto; }
+.markdown th, .markdown td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+
+.person-stage { display: flex; flex-direction: column; align-items: center; gap: 6px; text-align: center; max-width: 440px; }
+.person-stage .avatar { margin-bottom: 14px; box-shadow: 0 0 0 1px var(--line), 0 24px 50px -20px oklch(0 0 0 / 0.45); }
+.person-stage h2 { margin: 0; font-size: 24px; font-weight: 600; letter-spacing: -0.02em; }
+.person-stage-bio { margin: 10px 0 0; font-size: 14px; line-height: 1.55; white-space: pre-line; }
+.person-stage .person-stats { margin: 4px 0 14px; font-size: 12.5px; }
+.round-btn.on { color: var(--accent); }
+
+@media (max-width: 820px) {
+  .doc { padding: 22px 20px 40px; }
+  .doc-fields div { grid-template-columns: 1fr; gap: 2px; }
+}
+
 /* ============ Video player ============ */
 
 .player { position: absolute; inset: 0; background: #000; --p: 0; user-select: none; -webkit-user-select: none; }
@@ -776,14 +927,9 @@ a.cover-btn { text-decoration: none; }
 }
 @keyframes flash { 0% { opacity: 0; transform: scale(0.7); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1.25); } }
 
-/* Favorite heart: a quick spring with a ring burst. */
+/* Favorite heart: a quick spring. */
 .pop { display: grid; place-items: center; position: relative; animation: heart 0.45s var(--spring); }
-.pop::after {
-  content: ""; position: absolute; inset: -6px; border-radius: 50%; border: 1.5px solid var(--accent);
-  animation: burst 0.45s var(--ease) forwards;
-}
 @keyframes heart { 0% { transform: scale(0.6); } 60% { transform: scale(1.25); } 100% { transform: scale(1); } }
-@keyframes burst { from { transform: scale(0.4); opacity: 0.9; } to { transform: scale(1.4); opacity: 0; } }
 
 /* ============ View transition: card media morphs into the stage ============ */
 
@@ -825,7 +971,8 @@ a.cover-btn { text-decoration: none; }
 /* ============ Small screens & reduced motion ============ */
 
 @media (max-width: 820px) {
-  .sidebar { display: none; }
+  .sidebar, .side-rail { display: none; }
+  .app.detail-open .detail { left: 0; }
   .main { margin-left: 0; padding: 0 12px 40px; }
   .masonry, .masonry-col { gap: 8px; }
   .detail { inset: 0; flex-direction: column-reverse; overflow-y: auto; }
@@ -842,3 +989,88 @@ a.cover-btn { text-decoration: none; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
+
+/* Sites, people and skills: the save status sits quietly under the fields instead of above them. */
+.section-status { margin-top: 4px; }
+.section-status .archived-note { color: var(--faint); }
+
+/* A profile with a banner or a piece of their work: it fills the top of the card, the photo overlaps its edge. */
+.person-face.has-cover { justify-content: flex-start; padding-top: 0; }
+.person-face .person-cover { position: relative; flex: none; width: calc(100% + 36px); height: 42%; margin: 0 -18px; object-fit: cover; }
+.person-face.has-cover .avatar { position: relative; margin-top: -44px; width: 72px !important; height: 72px !important; box-shadow: 0 0 0 3px var(--card), 0 10px 24px -12px oklch(0 0 0 / 0.4); }
+.person-stage.has-cover { width: min(100%, 560px); max-width: none; }
+.person-stage-cover { width: 100%; aspect-ratio: 3 / 1; object-fit: cover; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); box-shadow: 0 0 0 1px var(--line); }
+.person-stage.has-cover .avatar { margin-top: -74px; box-shadow: 0 0 0 4px var(--bg), 0 24px 50px -20px oklch(0 0 0 / 0.45); }
+
+/* A person's links: one row per place, the network on the left, the handle or address after it. */
+.link-list { display: flex; flex-direction: column; gap: 2px; }
+.link-row { display: flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 6px; margin: 0 -6px; border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner); }
+.link-row:hover { background: var(--fill); }
+.link-row a { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; color: var(--text); }
+.link-row a .icon { flex: none; color: var(--faint); }
+.link-kind { flex: none; width: 76px; color: var(--muted); font-size: 12px; }
+.link-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-main { flex: none; font-size: 11px; color: var(--faint); }
+.link-row .pill-x { color: var(--muted); opacity: 0; }
+.link-row:hover .pill-x, .link-row .pill-x:focus-visible { opacity: 1; }
+.link-row .pill-x:hover { background: var(--fill-hover); }
+.link-input { margin-top: 4px; height: 36px; padding: 0 14px; border: 0; outline: 0; border-radius: 18px; corner-shape: round; background: var(--fill); color: var(--text); }
+.link-input:focus { background: var(--bg); box-shadow: inset 0 0 0 1px var(--text); }
+.link-input.bad { box-shadow: inset 0 0 0 1px var(--bad); }
+.link-hint { margin: 4px 0 0; font-size: 12px; color: var(--bad); }
+.person-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 4px; }
+
+/* A website standing in for a face: its icon on a tile, not cropped into a circle. */
+.avatar.logo { border-radius: 24%; background: #fff; overflow: hidden; display: grid; place-items: center; }
+.avatar.logo img { width: 62%; height: 62%; object-fit: contain; }
+/* Where a person is, along the bottom of their card. */
+.person-places { margin-top: 10px; display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+.person-places span { font-size: 10.5px; line-height: 1; padding: 4px 7px; border-radius: 999px; background: var(--fill); color: var(--muted); }
+
+/* The big view of a person: who they are, then a card per place. */
+.person-wrap { display: flex; flex-direction: column; align-items: center; gap: 14px; width: 100%; height: 100%; min-height: 0; justify-content: center; }
+.person-wrap .site-stage { flex: 1; min-height: 0; }
+.person-seg { flex: none; }
+.place-cards { margin-top: 18px; width: min(100%, 520px); display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 8px; text-align: left; }
+.place-cards .place-card { background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+
+.place-card { position: relative; display: flex; align-items: center; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); transition: background-color var(--fast) var(--ease); }
+.place-card:hover { background: var(--fill); }
+.place-card > a { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 8px 10px; color: var(--text); }
+.place-card > a > .icon { flex: none; color: var(--faint); }
+.place-icon { flex: none; width: 34px; height: 34px; border-radius: 50%; overflow: hidden; display: grid; place-items: center; background: var(--fill); color: var(--muted); }
+.place-icon img { width: 100%; height: 100%; object-fit: cover; }
+.place-icon.logo { border-radius: 24%; background: #fff; }
+.place-icon.logo img { width: 66%; height: 66%; object-fit: contain; }
+.place-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.place-top { display: flex; align-items: center; gap: 6px; }
+.place-kind { font-size: 11px; color: var(--muted); }
+.place-main { font-size: 10px; color: var(--faint); }
+.place-name { font-size: 13px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-sub { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.place-sub:empty { display: none; }
+.place-card .pill-x { position: absolute; top: 6px; right: 6px; color: var(--muted); opacity: 0; background: var(--raised); }
+.place-card:hover .pill-x, .place-card .pill-x:focus-visible { opacity: 1; }
+.link-list .place-card { margin: 0 -8px; }
+
+/* The original, and the files on this Mac: side by side under the title. */
+.source-buttons { display: flex; gap: 6px; }
+.source-btn {
+  flex: 1; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 10px;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); color: var(--text); font-size: 12.5px; font-weight: 500;
+  transition: background-color var(--fast) var(--ease);
+}
+.source-btn:hover { background: var(--fill-hover); }
+.source-btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.source-btn .icon { flex: none; color: var(--muted); }
+
+/* Details behind ⓘ: they open in place, gently. */
+.details-block { display: flex; flex-direction: column; gap: 16px; animation: field-in 0.28s var(--ease); }
+.details-block .archived-note { margin: 0; }
+
+/* A field whose title folds it away. */
+.field-toggle { width: 100%; align-items: center; gap: 10px; text-align: left; cursor: pointer; }
+.field-toggle:hover { color: var(--text); }
+.chev { display: inline-grid; place-items: center; transform: rotate(-90deg); transition: transform 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
+.chev.open { transform: none; }
+.field-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 12px; }

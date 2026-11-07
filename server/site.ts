@@ -116,14 +116,27 @@ async function shootOne(cdp: Cdp, url: string, vp: Viewport, rel: string) {
       await s("Emulation.setUserAgentOverride", { userAgent: PHONE_UA, platform: "iPhone" });
       await s("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
     }
-    // A slow page still gets its picture taken with whatever has arrived by then.
-    const loaded = cdp.waitFor("Page.loadEventFired", sessionId, 30_000);
-    const nav = await Promise.race([
-      s<{ errorText?: string }>("Page.navigate", { url }),
-      Bun.sleep(45_000).then(() => ({ errorText: "The site took too long to answer." })),
-    ]);
-    if (nav.errorText) throw new Error(friendlyNetError(nav.errorText));
-    await loaded;
+    await s("Network.enable");
+    const net = trackNetwork(cdp, sessionId);
+    try {
+      // A slow page still gets its picture taken with whatever has arrived by then.
+      const loaded = cdp.waitFor("Page.loadEventFired", sessionId, 30_000);
+      const nav = await Promise.race([
+        s<{ errorText?: string }>("Page.navigate", { url }),
+        Bun.sleep(45_000).then(() => ({ errorText: "The site took too long to answer." })),
+      ]);
+      if (nav.errorText) throw new Error(friendlyNetError(nav.errorText));
+      await loaded;
+
+      // "Loaded" is often only the start: preloaders count to 100%, WebGL scenes fetch
+      // textures and models, intro animations play. Wait for the site the way a person
+      // would see it, within a time limit, so a stuck page still gets captured.
+      await net.idle(1, 700, 15_000);
+      await evaluate(s, READY_SCRIPT, 40_000).catch(() => {});
+      await net.idle(1, 500, 8_000);
+    } finally {
+      net.stop();
+    }
 
     // Walk down the page so lazy images and scroll animations show, then go back up.
     await evaluate(s, SETTLE_SCRIPT, 45_000).catch(() => {});
@@ -177,6 +190,156 @@ async function evaluate<T>(s: (m: string, p?: object) => Promise<unknown>, expre
   if (r.exceptionDetails) throw new Error("Page script failed");
   return r.result?.value as T;
 }
+
+/**
+ * Follows the page's requests so we can wait for it to stop fetching things.
+ * WebSockets and long-lived streams don't count, and neither does a request
+ * that has been open for over 10s (polling, analytics beacons that never close).
+ */
+function trackNetwork(cdp: Cdp, sessionId: string) {
+  const open = new Map<string, number>();
+  const offs = [
+    cdp.on("Network.requestWillBeSent", sessionId, (p) => {
+      const { requestId, type } = p as { requestId: string; type?: string };
+      if (type !== "WebSocket" && type !== "EventSource") open.set(requestId, Date.now());
+    }),
+    cdp.on("Network.loadingFinished", sessionId, (p) => open.delete((p as { requestId: string }).requestId)),
+    cdp.on("Network.loadingFailed", sessionId, (p) => open.delete((p as { requestId: string }).requestId)),
+  ];
+  const busy = () => {
+    const now = Date.now();
+    let n = 0;
+    for (const t of open.values()) if (now - t < 10_000) n++;
+    return n;
+  };
+  return {
+    /** Resolves once at most `max` requests have been open for `quietMs` in a row, or at `timeout`. */
+    async idle(max: number, quietMs: number, timeout: number) {
+      const end = Date.now() + timeout;
+      let since = Date.now();
+      while (Date.now() < end) {
+        if (busy() > max) since = Date.now();
+        else if (Date.now() - since >= quietMs) return true;
+        await Bun.sleep(100);
+      }
+      return false;
+    },
+    stop: () => offs.forEach((off) => off()),
+  };
+}
+
+/**
+ * Wait until the page is showing itself rather than a loading screen:
+ * - a preloader is up: a progress count ("42%") that's still moving, a layer
+ *   covering most of the screen named like one (loader, preloader, splash,
+ *   intro…), or <html>/<body> marked as loading. Wait for it to leave.
+ * - a "click to enter" gate: press its button (it's a throwaway browser).
+ * - then let the page calm down: no elements added or removed, and no
+ *   one-off CSS animations still running, for a moment. Endless ones
+ *   (marquees, spinning things, shaders) don't count.
+ * - a <canvas> (WebGL, shaders) gets a little longer to draw its first frames.
+ * Gives up after ~30s and lets the capture go ahead with what's there.
+ */
+const READY_SCRIPT = `(async () => {
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const start = Date.now();
+  const vw = innerWidth, vh = innerHeight;
+  const shown = (el) => {
+    for (let e = el; e && e !== document.documentElement; e = e.parentElement) {
+      const cs = getComputedStyle(e);
+      if (cs.display === "none" || cs.visibility === "hidden" || +cs.opacity < 0.05) return false;
+    }
+    const r = el.getBoundingClientRect();
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0 && r.top < vh && r.left < vw;
+  };
+  const covers = (el, share) => {
+    const r = el.getBoundingClientRect();
+    const w = Math.min(r.right, vw) - Math.max(r.left, 0), h = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+    return w > 0 && h > 0 && w * h >= vw * vh * share;
+  };
+  const nameOf = (el) => el.id + " " + (el.getAttribute("class") || "");
+  const LOADER = /(^|[-_\\s])(pre-?loader|preloading|loader|loading|loading-?screen|splash|splash-?screen|intro-?(screen|overlay|loader)|curtain|page-?loader)([-_\\s]|$)/i;
+
+  const seen = new Map();
+  const percentMoving = () => {
+    if (!document.body) return false;
+    const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let n, i = 0, moving = false;
+    while ((n = walk.nextNode()) && i++ < 20000) {
+      const t = n.textContent;
+      if (t.length > 8 || !/^\\s*\\d{1,3}\\s*%\\s*$/.test(t)) continue;
+      const el = n.parentElement;
+      if (!el || !shown(el)) continue;
+      // Keyed by element: many loaders replace the text node on every tick.
+      const before = seen.get(el);
+      seen.set(el, t);
+      if (before !== undefined && before !== t) moving = true;
+      // A count sitting on a full-screen layer is a loader even while it's stuck.
+      if (before !== undefined) for (let e = el; e && e !== document.body; e = e.parentElement) {
+        const p = getComputedStyle(e).position;
+        if ((p === "fixed" || p === "absolute") && covers(e, 0.8) && parseFloat(t) < 100) { moving = true; break; }
+      }
+    }
+    return moving;
+  };
+  const loaderLayer = () => {
+    for (const el of document.querySelectorAll("body *")) {
+      if (!LOADER.test(nameOf(el))) continue;
+      if (covers(el, 0.6) && shown(el)) return true;
+    }
+    return false;
+  };
+  const rootLoading = () => /(^|\\s)(is-)?(pre)?loading(\\s|$)/i.test(document.documentElement.className + " " + (document.body?.className || ""));
+  const loading = () => percentMoving() || loaderLayer() || rootLoading();
+
+  const ENTER = /^(enter|enter site|enter website|enter the site|explore|start|begin|click to enter|tap to enter|let'?s go|continue)$/i;
+  const pressEnter = () => {
+    for (const el of document.querySelectorAll('button, [role="button"]')) {
+      if (!ENTER.test((el.innerText || "").trim()) || !shown(el)) continue;
+      for (let e = el.parentElement; e && e !== document.body; e = e.parentElement) {
+        const p = getComputedStyle(e).position;
+        if ((p === "fixed" || p === "absolute") && covers(e, 0.6)) { el.click(); return true; }
+      }
+    }
+    return false;
+  };
+
+  // 1. The loading screen.
+  percentMoving();
+  await wait(400);
+  let pressed = false;
+  while (Date.now() - start < 30000) {
+    if (!pressed && pressEnter()) { pressed = true; await wait(800); continue; }
+    if (!loading()) break;
+    await wait(300);
+  }
+  const loaderGone = Date.now();
+
+  // 2. Calm: nothing added or removed for a moment, and one-off animations done.
+  let lastChange = Date.now();
+  const mo = new MutationObserver((list) => {
+    if (list.some((m) => m.type === "childList" || m.type === "characterData" || m.attributeName === "class")) lastChange = Date.now();
+  });
+  mo.observe(document.documentElement, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class"] });
+  const finiteRunning = () => {
+    try {
+      return document.getAnimations().some((a) => a.playState === "running" && a.effect?.getComputedTiming().iterations !== Infinity
+        && (a.effect.getComputedTiming().endTime ?? 0) < 8000);
+    } catch { return false; }
+  };
+  const calmBy = loaderGone + 8000;
+  while (Date.now() < calmBy && Date.now() - start < 38000) {
+    if (Date.now() - lastChange >= 700 && !finiteRunning()) break;
+    await wait(150);
+  }
+  mo.disconnect();
+
+  // 3. Shaders and 3D scenes need a few frames after they get their textures.
+  const canvas = [...document.querySelectorAll("canvas")].some((c) => shown(c) && covers(c, 0.15));
+  const minAfterLoader = canvas ? 2000 : 800;
+  await wait(Math.max(400, loaderGone + minAfterLoader - Date.now()));
+  return { waited: Date.now() - start, pressed, canvas };
+})()`;
 
 /**
  * Scroll through once so lazy content loads, wait for fonts and images, then
@@ -262,6 +425,7 @@ class Cdp {
   private next = 1;
   private calls = new Map<number, { ok: (v: unknown) => void; fail: (e: Error) => void }>();
   private waiters: { method: string; sessionId?: string; ok: () => void }[] = [];
+  private listeners = new Set<{ method: string; sessionId?: string; fn: (params: unknown) => void }>();
 
   connect(url: string) {
     return new Promise<void>((ok, fail) => {
@@ -274,8 +438,11 @@ class Cdp {
       };
       this.ws.onmessage = (e) => {
         const msg = JSON.parse(String(e.data)) as {
-          id?: number; result?: unknown; error?: { message: string }; method?: string; sessionId?: string;
+          id?: number; result?: unknown; error?: { message: string }; method?: string; sessionId?: string; params?: unknown;
         };
+        if (msg.method)
+          for (const l of this.listeners)
+            if (l.method === msg.method && (!l.sessionId || l.sessionId === msg.sessionId)) l.fn(msg.params);
         if (msg.id) {
           const c = this.calls.get(msg.id);
           this.calls.delete(msg.id);
@@ -298,6 +465,13 @@ class Cdp {
       this.calls.set(id, { ok: ok as (v: unknown) => void, fail });
       this.ws.send(JSON.stringify({ id, method, params, sessionId }));
     });
+  }
+
+  /** Calls `fn` for every such event until the returned function is called. */
+  on(method: string, sessionId: string | undefined, fn: (params: unknown) => void) {
+    const l = { method, sessionId, fn };
+    this.listeners.add(l);
+    return () => void this.listeners.delete(l);
   }
 
   /** Resolves true when the event arrives, false when it doesn't in time. Never rejects. */

@@ -25,7 +25,18 @@ function render(st) {
   if (document.activeElement !== select) select.value = st.igFolder?.id ?? "";
   $("#folder-hint").hidden = st.igFolders.length > 0;
 
-  for (const site of ["x", "instagram"]) {
+  const boardSelect = $("#board");
+  const boards = [{ id: "", name: "All boards" }, ...st.pinBoards];
+  if (st.pinBoard && !st.pinBoards.some((b) => b.id === st.pinBoard.id)) boards.push(st.pinBoard);
+  const boardKey = JSON.stringify(boards);
+  if (boardSelect.dataset.key !== boardKey) {
+    boardSelect.replaceChildren(...boards.map((b) => new Option(b.name, b.id)));
+    boardSelect.dataset.key = boardKey;
+  }
+  if (document.activeElement !== boardSelect) boardSelect.value = st.pinBoard?.id ?? "";
+  $("#board-hint").hidden = st.pinBoards.length > 0;
+
+  for (const site of ["x", "instagram", "pinterest"]) {
     $(`[data-site="${site}"]`).classList.toggle("off", !st.sites[site]);
     $(`[data-on="${site}"]`).checked = st.sites[site];
     const s = st.status[site] ?? {};
@@ -75,9 +86,15 @@ $("#folder").addEventListener("change", async (e) => {
   render(await ask({ type: "ig-folder", folder }));
 });
 
+$("#board").addEventListener("change", async (e) => {
+  const picked = [...e.target.options].find((o) => o.value === e.target.value);
+  const board = picked?.value ? { id: picked.value, name: picked.text } : null;
+  render(await ask({ type: "pin-board", board }));
+});
+
 // ---------- This page ----------
 
-const POST = /^https:\/\/(x\.com|twitter\.com)\/[^/]+\/status\/|^https:\/\/www\.instagram\.com\/(p|reel)\//;
+const POST = /^https:\/\/(x\.com|twitter\.com)\/[^/]+\/status\/|^https:\/\/www\.instagram\.com\/(p|reel)\/|^https:\/\/([a-z]+\.)?pinterest\.[a-z.]+\/pin\//;
 
 async function showPage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -119,5 +136,9 @@ async function showPage() {
 }
 
 showPage();
-refresh();
+// An old error (say, from a check that ran while offline) is retried when you look.
+ask({ type: "state" }).then((st) => {
+  render(st);
+  if (st.panel && !st.syncing && Object.values(st.status).some((s) => s.error)) ask({ type: "sync" });
+});
 setInterval(refresh, 1000);

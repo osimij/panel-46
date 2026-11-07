@@ -1,10 +1,10 @@
 import { rmSync } from "node:fs";
-import { db, newId, now, refreshStatus, reindex, type MediaRow, type MediaType, type RefRow } from "./db.ts";
+import { db, newId, now, parseLinks, refreshStatus, reindex, retag, type MediaRow, type MediaType, type RefRow } from "./db.ts";
 import {
   abs, describeLocal, downloadTo, fetchWithTimeout, makeThumb, mediaTypeFor, probe, run, ytDlp, type YtInfo,
 } from "./media.ts";
 import { shootSite, type Viewport } from "./site.ts";
-import { expandShortLink, fetchPost, parseSocial, SITE_NAME, type Post, type PostItem, type SocialKind } from "./social.ts";
+import { expandShortLink, fetchPost, forgetPin, parsePinterestBoard, parseSocial, readBoard, SITE_NAME, type Post, type PostItem, type SocialKind } from "./social.ts";
 
 // ---------- URL parsing ----------
 
@@ -19,6 +19,327 @@ export function parseXStatus(input: string): { id: string; url: string } | null 
   } catch {
     return null;
   }
+}
+
+// ---------- Profiles and skill files ----------
+
+/**
+ * Networks a person can be saved from, by their profile link. Each knows which
+ * part of the address is the handle and what isn't a profile (their own pages).
+ */
+export type ProfilePlatform =
+  | "instagram" | "x" | "threads" | "tiktok" | "youtube" | "linkedin" | "dribbble" | "behance"
+  | "pinterest" | "vimeo" | "arena" | "bluesky" | "github";
+
+const reserved = (words: string) => new Set(words.split(" "));
+const IG_RESERVED = reserved("p reel reels tv explore stories accounts direct about legal developer web challenge");
+const X_RESERVED = reserved(
+  "home explore i search settings notifications messages compose intent share hashtag login signup logout tos privacy jobs lists communities premium account",
+);
+const DRIBBBLE_RESERVED = reserved(
+  "shots designers jobs tags search signup session stories learn hiring pro about colors following uploads resources freelance-jobs places teams pros account settings messages notifications marketplace",
+);
+const BEHANCE_RESERVED = reserved("gallery search joblist galleries assets about hire live onboarding for_you moodboards misc blog features privacy");
+const PINTEREST_RESERVED = reserved("pin ideas search today business settings _ explore login signup about news homefeed");
+const VIMEO_RESERVED = reserved(
+  "channels groups categories watch search upload features pricing about log_in join blog help stock ott enterprise solutions create manage live showcase solutions",
+);
+const ARENA_RESERVED = reserved("about explore search sign_up log_in settings pricing blog notifications feed");
+const GITHUB_RESERVED = reserved(
+  "features pricing about orgs topics explore marketplace settings login join sponsors trending collections enterprise team customer-stories security readme pulls issues notifications new codespaces apps",
+);
+
+/** A person's profile link on one of the networks above (not one of their posts). */
+export function parseProfile(input: string): { platform: ProfilePlatform; handle: string; url: string } | null {
+  let u: URL;
+  try {
+    u = new URL(input.trim());
+  } catch {
+    return null;
+  }
+  const host = u.hostname.toLowerCase().replace(/^(www\.|m\.|mobile\.)/, "");
+  const parts = u.pathname.split("/").filter(Boolean).map((p) => decodeURIComponent(p));
+  const one = parts.length === 1 ? parts[0]! : null;
+  const ok = (h: string | null | undefined, set?: Set<string>): h is string => !!h && !(set?.has(h.toLowerCase()));
+  const at = (h: string | null | undefined) => (h?.startsWith("@") && h.length > 1 ? h.slice(1) : null);
+
+  if (host === "instagram.com" && ok(one, IG_RESERVED) && /^[\w.]{1,30}$/.test(one))
+    return { platform: "instagram", handle: one, url: `https://www.instagram.com/${one}/` };
+  if ((host === "x.com" || host === "twitter.com") && ok(parts[0], X_RESERVED) && /^\w{1,15}$/.test(parts[0]!) &&
+    (parts.length === 1 || (parts.length === 2 && /^(with_replies|media|highlights|articles)$/.test(parts[1]!))))
+    return { platform: "x", handle: parts[0]!, url: `https://x.com/${parts[0]}` };
+  if ((host === "threads.net" || host === "threads.com") && parts.length === 1 && at(one))
+    return { platform: "threads", handle: at(one)!, url: `https://www.threads.net/@${at(one)}` };
+  if (host === "tiktok.com" && parts.length === 1 && at(one))
+    return { platform: "tiktok", handle: at(one)!, url: `https://www.tiktok.com/@${at(one)}` };
+  if (host === "youtube.com" && parts.length >= 1 && parts.length <= 2 && (parts.length === 1 || /^(videos|featured|shorts|streams|about|playlists)$/.test(parts[1]!))) {
+    if (at(parts[0])) return { platform: "youtube", handle: at(parts[0])!, url: `https://www.youtube.com/@${at(parts[0])}` };
+  }
+  if (host === "youtube.com" && parts.length >= 2 && /^(channel|c|user)$/.test(parts[0]!))
+    return { platform: "youtube", handle: parts[1]!, url: `https://www.youtube.com/${parts[0]}/${parts[1]}` };
+  if (host.endsWith("linkedin.com") && parts.length >= 2 && (parts[0] === "in" || parts[0] === "company"))
+    return { platform: "linkedin", handle: parts[1]!, url: `https://www.linkedin.com/${parts[0]}/${parts[1]}/` };
+  if (host === "dribbble.com" && ok(one, DRIBBBLE_RESERVED))
+    return { platform: "dribbble", handle: one, url: `https://dribbble.com/${one}` };
+  if (host === "behance.net" && ok(one, BEHANCE_RESERVED))
+    return { platform: "behance", handle: one, url: `https://www.behance.net/${one}` };
+  if (/^([a-z]{2}\.)?pinterest\.[a-z.]+$/.test(host) && ok(one, PINTEREST_RESERVED))
+    return { platform: "pinterest", handle: one, url: `https://www.pinterest.com/${one}/` };
+  if (host === "vimeo.com" && ok(one, VIMEO_RESERVED) && !/^\d+$/.test(one))
+    return { platform: "vimeo", handle: one, url: `https://vimeo.com/${one}` };
+  if (host === "are.na" && ok(one, ARENA_RESERVED))
+    return { platform: "arena", handle: one, url: `https://www.are.na/${one}` };
+  if (host === "bsky.app" && parts.length === 2 && parts[0] === "profile")
+    return { platform: "bluesky", handle: parts[1]!, url: `https://bsky.app/profile/${parts[1]}` };
+  if (host === "github.com" && ok(one, GITHUB_RESERVED) && /^[\w-]{1,39}$/.test(one))
+    return { platform: "github", handle: one, url: `https://github.com/${one}` };
+  return null;
+}
+
+/** A link to a Markdown file. GitHub page links are turned into the raw file. */
+export function skillUrl(input: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(input.trim());
+  } catch {
+    return null;
+  }
+  if (!/\.(md|markdown)$/i.test(u.pathname)) return null;
+  if (u.hostname === "github.com") {
+    const m = u.pathname.match(/^\/([^/]+)\/([^/]+)\/(?:blob|raw)\/(.+)$/);
+    if (m) return `https://raw.githubusercontent.com/${m[1]}/${m[2]}/${m[3]}`;
+  }
+  return u.href;
+}
+
+/** A skill's name and one-line description, from its frontmatter, else its first heading and paragraph. */
+export function readSkill(markdown: string, fileName = "") {
+  const fm = markdown.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  const field = (k: string) => {
+    const m = fm?.[1]!.match(new RegExp(`^${k}:\\s*(.+(?:\\n[ \\t]+.+)*)`, "mi"));
+    return m ? m[1]!.replace(/\s*\n\s*/g, " ").replace(/^["'>|-]\s*|["']$/g, "").trim() || null : null;
+  };
+  const rest = fm ? markdown.slice(fm[0].length) : markdown;
+  const heading = rest.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim() ?? null;
+  const para = rest
+    .split(/\n\s*\n/)
+    .map((b) => b.trim())
+    .find((b) => b && !/^(#|```|[-*]\s|\d+\.\s|>|\|)/.test(b));
+  const base = fileName.replace(/\.(md|markdown)$/i, "");
+  return {
+    title: field("name") ?? field("title") ?? heading ?? (base && !/^(skill|readme)$/i.test(base) ? base : null),
+    description: field("description") ?? para?.replace(/\s+/g, " ").slice(0, 400) ?? null,
+  };
+}
+
+/** Store a skill file's text; the whole file is searchable. */
+export function saveSkillText(refId: string, markdown: string, fileName: string) {
+  const { title } = readSkill(markdown, fileName);
+  db.run("UPDATE refs SET title = COALESCE(title, ?), text = ?, updated_at = ? WHERE id = ?", [title, markdown, now(), refId]);
+  reindex(refId);
+  refreshStatus(refId);
+}
+
+async function captureSkillUrl(refId: string, url: string) {
+  try {
+    const res = await fetchWithTimeout(url);
+    if (!res.ok) return markFailed(refId, `${new URL(url).host} returned HTTP ${res.status}`);
+    const text = await res.text();
+    if (/^\s*<(!doctype|html)/i.test(text)) return markFailed(refId, "That link is a web page, not a Markdown file.");
+    db.run("UPDATE refs SET creator_handle = ? WHERE id = ?", [new URL(url).hostname.replace(/^www\./, ""), refId]);
+    saveSkillText(refId, text, decodeURIComponent(new URL(url).pathname.split("/").pop() ?? ""));
+  } catch (e) {
+    markFailed(refId, `Couldn't download the file: ${(e as Error).message}`);
+  }
+}
+
+/** What we learn about a person from their profile. `stats` is a line like "12K followers · 300 following". */
+interface Profile {
+  name: string | null;
+  handle: string;
+  bio: string | null;
+  stats: string | null;
+  avatar: string | null;
+  /** A banner or a piece of their work, shown behind them on the card. */
+  cover: string | null;
+}
+
+const BOT_UA = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
+
+/**
+ * A person's profile: name, photo and bio, as each network shares them with
+ * logged-out visitors. Bluesky, GitHub and X (through a public mirror) have
+ * open APIs; the rest describe profiles to link previews.
+ */
+async function captureAccount(refId: string, platform: ProfilePlatform, handle: string) {
+  // Keep the handle from the link, so a profile that can't be read still shows who it is.
+  db.run("UPDATE refs SET creator_handle = COALESCE(creator_handle, ?) WHERE id = ?", [handle, refId]);
+  try {
+    const p = await readProfile(platform, handle, db.query<{ source_url: string }, [string]>("SELECT source_url FROM refs WHERE id = ?").get(refId)!.source_url);
+    if (!p) {
+      markFailed(refId, `${PLATFORM_NAME[platform]} didn't share this profile. It may be private, gone, or need a login.`);
+      // Their other links can still fill in the card.
+      void enrichLinks(refId);
+      return;
+    }
+    db.run("UPDATE refs SET creator_handle = ?, creator_name = ?, title = COALESCE(title, ?), text = ?, updated_at = ? WHERE id = ?", [
+      p.handle, p.name, p.name ?? `@${p.handle}`, [p.bio, p.stats].filter(Boolean).join("\n\n") || null, now(), refId,
+    ]);
+    reindex(refId);
+    // A refresh starts clean: no photo or cover is kept from before unless the network still has one.
+    db.run("UPDATE refs SET avatar_path = NULL, preview_path = NULL WHERE id = ?", [refId]);
+    await saveAvatar(refId, p.avatar ?? undefined);
+    if (p.cover) {
+      try {
+        const saved = await downloadTo(p.cover, `${refId}/cover`);
+        db.run("UPDATE refs SET preview_path = ? WHERE id = ?", [saved.rel, refId]);
+      } catch {
+        /* a cover is decoration */
+      }
+    }
+    refreshStatus(refId);
+    void enrichLinks(refId);
+  } catch (e) {
+    markFailed(refId, `Couldn't read the profile: ${(e as Error).message}`);
+  }
+}
+
+export const PLATFORM_NAME: Record<ProfilePlatform, string> = {
+  instagram: "Instagram", x: "X", threads: "Threads", tiktok: "TikTok", youtube: "YouTube", linkedin: "LinkedIn",
+  dribbble: "Dribbble", behance: "Behance", pinterest: "Pinterest", vimeo: "Vimeo", arena: "Are.na", bluesky: "Bluesky", github: "GitHub",
+};
+
+async function readProfile(platform: ProfilePlatform, handle: string, url: string): Promise<Profile | null> {
+  const json = async <T>(u: string, headers: Record<string, string> = {}) => {
+    const res = await fetchWithTimeout(u, { headers: { "user-agent": "Panel/1.0", accept: "application/json", ...headers } });
+    return res.ok ? ((await res.json()) as T) : null;
+  };
+  const stats = (...parts: (string | false | null | undefined)[]) => parts.filter(Boolean).join(" · ") || null;
+
+  if (platform === "x") {
+    // A browser user agent gets redirected to x.com itself; ask as an app.
+    const u = await json<{
+      name?: string; screen_name?: string; description?: string; profile_image_url?: string;
+      followers_count?: number; following_count?: number; location?: string;
+    }>(`https://api.vxtwitter.com/${encodeURIComponent(handle)}`);
+    if (!u?.screen_name) return null;
+    return {
+      name: u.name ?? null, handle: u.screen_name, bio: (await expandTco(u.description ?? "")) || null,
+      stats: stats(u.followers_count != null && `${compact(u.followers_count)} followers`, u.following_count != null && `${compact(u.following_count)} following`, u.location),
+      avatar: u.profile_image_url?.replace(/_normal(\.\w+)$/, "_400x400$1") ?? null, cover: null,
+    };
+  }
+  if (platform === "bluesky") {
+    const u = await json<{
+      handle?: string; displayName?: string; description?: string; avatar?: string; banner?: string;
+      followersCount?: number; followsCount?: number; postsCount?: number;
+    }>(`https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(handle)}`);
+    if (!u?.handle) return null;
+    return {
+      name: u.displayName || null, handle: u.handle, bio: u.description?.trim() || null,
+      stats: stats(u.followersCount != null && `${compact(u.followersCount)} followers`, u.followsCount != null && `${compact(u.followsCount)} following`),
+      avatar: u.avatar ?? null, cover: u.banner ?? null,
+    };
+  }
+  if (platform === "github") {
+    const u = await json<{
+      login?: string; name?: string; bio?: string; avatar_url?: string; followers?: number; public_repos?: number;
+      location?: string; blog?: string; company?: string;
+    }>(`https://api.github.com/users/${encodeURIComponent(handle)}`, { accept: "application/vnd.github+json" });
+    if (!u?.login) return null;
+    return {
+      name: u.name || null, handle: u.login, bio: [u.bio?.trim(), u.company].filter(Boolean).join(" · ") || null,
+      stats: stats(u.followers != null && `${compact(u.followers)} followers`, u.public_repos != null && `${u.public_repos} repos`, u.location,
+        u.blog?.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, "")),
+      avatar: u.avatar_url ?? null, cover: null,
+    };
+  }
+
+  // Everyone else: the profile's link preview. Instagram, Threads and TikTok only describe profiles to
+  // preview bots; the rest give browsers more (the real profile photo, a fuller headline).
+  let html = "";
+  const botFirst = platform === "instagram" || platform === "threads" || platform === "tiktok";
+  for (const ua of botFirst ? [BOT_UA, undefined] : [undefined, BOT_UA]) {
+    const res = await fetchWithTimeout(url, ua ? { headers: { "user-agent": ua } } : {});
+    html = res.ok ? await res.text() : "";
+    if (/og:title/.test(html)) break;
+  }
+  const meta = (k: string) => {
+    const m =
+      html.match(new RegExp(`<meta[^>]+(?:property|name)="og:${k}"[^>]*content="([^"]*)"`, "i")) ??
+      html.match(new RegExp(`<meta[^>]+content="([^"]*)"[^>]*(?:property|name)="og:${k}"`, "i"));
+    return m ? decodeEntities(m[1]!).trim() || null : null;
+  };
+  const title = meta("title");
+  if (!title) return null;
+  if (platform === "instagram" && meta("type") !== "profile") return null;
+  const desc = meta("description");
+  const image = meta("image");
+
+  // Names come wrapped in the network's own words; unwrap them.
+  let name = title
+    .split(/\s+\|\s+/)[0]!
+    .replace(/\s+on TikTok$/i, "")
+    .replace(/\s*\((?:&#064;|@)?[\w.-]+\)\s*.*$/, "")
+    .replace(/\s+[•·]\s+.*$/, "")
+    .trim();
+  let headline: string | null = null;
+  if (platform === "linkedin" || platform === "behance" || platform === "pinterest") {
+    const [n, ...rest] = name.split(" - ");
+    name = n!.trim();
+    headline = rest.join(" - ").replace(/\s{2,}/g, " ").trim() || null;
+    if (platform === "pinterest" && headline === "Profile") headline = null;
+  }
+
+  let bio: string | null = desc;
+  let line: string | null = null;
+  if (platform === "instagram") {
+    line = desc?.replace(/\s*-\s*See Instagram photos.*$/i, "").trim() ?? null;
+    bio = null;
+  } else if (platform === "threads" && desc) {
+    // "5.8M Followers • 174 Threads • Their bio. See the latest conversations with @zuck."
+    const [followers, threads, ...rest] = desc.replace(/\s*See the latest conversations.*$/i, "").split(/\s+•\s+/);
+    line = stats(followers, threads);
+    bio = rest.join(" • ").trim() || null;
+  } else if (platform === "tiktok" && desc) {
+    // "@name 163.0m Followers, 82 Following, 2693.4m Likes - Watch awesome short videos…"
+    line = desc.replace(/^@[\w.]+\s+/, "").replace(/\s+-\s+Watch.*$/i, "").replace(/,\s*/g, " · ").trim() || null;
+    bio = null;
+  } else if (platform === "linkedin" && desc) {
+    bio = desc.replace(/\s*·\s*(Experience|Education|Location|Connections):.*$/i, "").trim();
+  }
+  // Don't say the headline twice when the description starts with it.
+  if (headline && bio?.startsWith(headline)) bio = bio.slice(headline.length).replace(/^\s*[·|•-]\s*/, "").trim() || null;
+  if (bio && /^(Pinterest \| Find your reason|Discover|Watch|See|Explore)\b/i.test(bio)) bio = null;
+
+  // Where the preview image is their work rather than their face, it's the cover, and the face is found on the page.
+  let avatar: string | null = image;
+  let cover: string | null = null;
+  if (platform === "dribbble" || platform === "behance") {
+    // Dribbble's is one of their shots; Behance's is a generated card with their name printed on it.
+    cover = platform === "dribbble" ? image : null;
+    avatar = html.match(/https:\/\/cdn\.dribbble\.com\/users\/\d+\/avatars\/[^"'?\s]+/)?.[0]?.replace("/avatars/normal/", "/avatars/original/") ??
+      html.match(/https:\/\/mir-s3-cdn-cf\.behance\.net\/user\/\d+\/[^"'\\\s]+/)?.[0] ?? null;
+  }
+  if (avatar && /default_open_graph|static\.licdn\.com\/aero|ghost/i.test(avatar)) avatar = null;
+
+  return { name: name || null, handle, bio: [headline, bio].filter(Boolean).join("\n") || null, stats: line, avatar, cover };
+}
+
+const compact = (n: number) => new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);
+
+/** X shortens every link in a bio to t.co; show where they really go. */
+async function expandTco(text: string) {
+  for (const link of new Set(text.match(/https:\/\/t\.co\/\w+/g) ?? [])) {
+    try {
+      const res = await fetchWithTimeout(link, { method: "HEAD" }, 8000);
+      const to = res.url !== link ? res.url : null;
+      if (to) text = text.replaceAll(link, to.replace(/^https?:\/\/(www\.)?/, "").replace(/\/$/, ""));
+    } catch {
+      /* keep the short link */
+    }
+  }
+  return text;
 }
 
 // ---------- Job queue (a few downloads at a time) ----------
@@ -53,20 +374,26 @@ function pump() {
 export async function capture(
   input: string,
   note = "",
-  { auto = false } = {},
-): Promise<{ id: string; existing: boolean } | { id: null; skipped: true }> {
+  { auto = false, person = false } = {},
+): Promise<{ id: string; existing: boolean } | { id: null; skipped: true } | { id: null; board: { name: string; pins: number } }> {
   input = await expandShortLink(input);
+  const board = parsePinterestBoard(input);
+  if (board) return { id: null, board: await captureBoard(board) };
   const x = parseXStatus(input);
   const social = x ? null : parseSocial(input);
+  const profile = x || social ? null : parseProfile(input);
+  const skill = x || social || profile ? null : skillUrl(input);
   let url: URL;
   try {
-    url = new URL(x?.url ?? social?.url ?? input.trim());
+    url = new URL(x?.url ?? social?.url ?? profile?.url ?? input.trim());
     if (!/^https?:$/.test(url.protocol)) throw new Error();
   } catch {
     throw new Error("That doesn't look like a link.");
   }
-  const kind = x ? "x" : social ? social.kind : "web";
-  const sourceId = x ? x.id : social ? social.id : url.href;
+  const kind = x ? "x" : social ? social.kind : profile ? "account" : skill ? "skill" : "web";
+  const sourceId = x ? x.id : social ? social.id : profile ? `${profile.platform}:${profile.handle.toLowerCase()}` : url.href;
+  // Profiles always belong under People & Accounts; any other link does when saved from there.
+  person ||= !!profile;
 
   if (db.query("SELECT 1 FROM dismissed WHERE kind = ? AND source_id = ?").get(kind, sourceId)) {
     if (auto) return { id: null, skipped: true };
@@ -77,6 +404,7 @@ export async function capture(
     .query<RefRow, [string, string]>("SELECT * FROM refs WHERE kind = ? AND source_id = ?")
     .get(kind, sourceId);
   if (existing) {
+    if (person && !existing.person) db.run("UPDATE refs SET person = 1, updated_at = ? WHERE id = ?", [now(), existing.id]);
     if (existing.status === "failed") retry(existing.id);
     return { id: existing.id, existing: true };
   }
@@ -84,18 +412,42 @@ export async function capture(
   const id = newId();
   const ts = now();
   db.run(
-    `INSERT INTO refs (id, kind, source_url, source_id, note, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-    [id, kind, url.href, sourceId, note, ts, ts],
+    `INSERT INTO refs (id, kind, source_url, source_id, note, person, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    [id, kind, url.href, sourceId, note, person ? 1 : 0, ts, ts],
   );
   reindex(id);
-  enqueue(() => (x ? captureX(id, x.id) : social ? captureSocial(id, social.kind, social.id, social.url) : captureWeb(id, url.href)));
+  // Profiles and skill files are one quick request each: don't make them wait behind downloads and screenshots.
+  if (profile) void captureAccount(id, profile.platform, profile.handle);
+  else if (skill) void captureSkillUrl(id, skill);
+  else enqueue(() => (x ? captureX(id, x.id) : social ? captureSocial(id, social.kind, social.id, social.url) : captureWeb(id, url.href)));
   return { id, existing: false };
+}
+
+/**
+ * A Pinterest board: every pin on it, each saved like a pasted pin. Answers with the
+ * board's name and size right away and reads the pins in the background. Oldest go in
+ * first so the board's newest pins end up on top in Panel too. Pins you removed from
+ * Panel before stay out.
+ */
+async function captureBoard(board: { username: string; slug: string }) {
+  const b = await readBoard(board);
+  void (async () => {
+    try {
+      for (const pin of (await b.pins()).reverse()) {
+        await capture(pin.url, "", { auto: true });
+        await Bun.sleep(2); // each its own moment, so they keep the board's order
+      }
+    } catch (e) {
+      console.error(`Board ${board.username}/${board.slug}:`, (e as Error).message);
+    }
+  })();
+  return { name: b.name, pins: b.count };
 }
 
 export function retry(refId: string) {
   const ref = db.query<RefRow, [string]>("SELECT * FROM refs WHERE id = ?").get(refId);
-  if (!ref || ref.kind === "upload") return;
+  if (!ref || ref.kind === "upload" || (ref.kind === "skill" && !ref.source_url)) return;
   const media = db.query<MediaRow, [string]>("SELECT * FROM media WHERE ref_id = ? ORDER BY idx").all(refId);
   const failed = media.filter((m) => m.status === "failed" && m.remote_url);
   db.run("UPDATE refs SET status = 'pending', status_detail = NULL, updated_at = ? WHERE id = ?", [now(), refId]);
@@ -116,7 +468,13 @@ export function retry(refId: string) {
   } else {
     // We never got the post's contents: start over.
     db.run("DELETE FROM media WHERE ref_id = ?", [refId]);
+    db.run("UPDATE refs SET link_profiles = NULL WHERE id = ?", [refId]); // their files go with the folder; read again after
     rmSync(abs(refId), { recursive: true, force: true });
+    // The saved link, not the lowercased key: some handles (YouTube channel ids) are case-sensitive.
+    const profile = ref.kind === "account" ? parseProfile(ref.source_url ?? "") : null;
+    if (profile) return void captureAccount(refId, profile.platform, profile.handle);
+    if (ref.kind === "account") return markFailed(refId, "This profile link isn't one Panel can read any more.");
+    if (ref.kind === "skill") return void captureSkillUrl(refId, skillUrl(ref.source_url!) ?? ref.source_url!);
     enqueue(() =>
       ref.kind === "x"
         ? captureX(refId, ref.source_id!)
@@ -279,6 +637,7 @@ async function captureSocial(refId: string, kind: SocialKind, id: string, url: s
   let post: Post;
   try {
     post = await fetchPost(kind, id, url);
+    if (kind === "pinterest") forgetPin(id);
   } catch (e) {
     const why = (e as Error).message;
     if (redo) {
@@ -325,7 +684,7 @@ async function saveItem(mediaId: string, refId: string, idx: number, item: PostI
   db.run("UPDATE media SET remote_url = ? WHERE id = ?", [item.url, mediaId]);
   let why = "The site did not provide a downloadable file";
   if (item.page) {
-    const r = await ytDlp(item.page, refId, { name: String(idx), sort: item.sort, timeoutMs: 30 * 60_000 });
+    const r = await ytDlp(item.page, refId, { name: String(idx), sort: item.sort, format: item.format, timeoutMs: item.timeoutMs ?? 30 * 60_000 });
     if (r.files[0]) {
       for (const extra of r.files.slice(1)) rmSync(abs(extra), { force: true });
       return verifyAndStore(mediaId, await describeLocal(r.files[0], mimeFromExt(r.files[0])), item.type);
@@ -472,6 +831,7 @@ async function captureSite(refId: string, url: string): Promise<boolean> {
     return true;
   }
   db.run("UPDATE refs SET site = 1 WHERE id = ?", [refId]);
+  retag(refId); // now a site: any tags it got while saving belong to Sites
   const { shots, info, errors } = result;
   if (info) {
     // The page as Chrome saw it fills anything the plain fetch couldn't read.
@@ -504,6 +864,7 @@ async function captureSite(refId: string, url: string): Promise<boolean> {
     }
   }
   refreshStatus(refId);
+  void enrichLinks(refId);
   return true;
 }
 
@@ -538,7 +899,9 @@ function readMeta(html: string, base: string) {
 function decodeEntities(s: string) {
   return s
     .replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&#x27;/g, "'")
-    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+    .replace(/&#x([\da-f]+);/gi, (_, n) => String.fromCodePoint(parseInt(n, 16)));
 }
 
 // ---------- Saving + verification ----------
@@ -585,3 +948,98 @@ export function mimeFromExt(path: string) {
   return map[ext] ?? "application/octet-stream";
 }
 
+
+// ---------- A person's other links ----------
+
+/** What one of a person's links showed: a profile (with their face) or a website (with its icon). */
+export interface LinkCard {
+  kind: "profile" | "site";
+  platform: string | null;
+  name: string | null;
+  handle: string | null;
+  bio: string | null;
+  stats: string | null;
+  /** Photo or icon, saved under media/<ref>/links/. */
+  avatar: string | null;
+}
+
+const enriching = new Map<string, Promise<void>>();
+
+/**
+ * Read each link added to a person (profiles for their photo, name and bio; websites
+ * for their title and icon) so they can be shown as cards and give the person a face.
+ * Links already read are kept; removed ones are forgotten. One run per person at a time.
+ */
+export function enrichLinks(refId: string): Promise<void> {
+  const run = (enriching.get(refId) ?? Promise.resolve()).then(() => enrichNow(refId)).catch((e) => console.error("[links]", e));
+  enriching.set(refId, run);
+  return run;
+}
+
+async function enrichNow(refId: string) {
+  const row = db.query<{ links: string | null; link_profiles: string | null; source_url: string | null }, [string]>(
+    "SELECT links, link_profiles, source_url FROM refs WHERE id = ?",
+  ).get(refId);
+  if (!row) return;
+  const links = parseLinks(row.links).filter((l) => l !== row.source_url && !l.startsWith("mailto:"));
+  let known: Record<string, LinkCard> = {};
+  try {
+    known = JSON.parse(row.link_profiles ?? "{}");
+  } catch {
+    /* read them again */
+  }
+  const next: Record<string, LinkCard> = {};
+  for (const url of links) {
+    if (known[url]) {
+      next[url] = known[url]!;
+      continue;
+    }
+    const card = await readLink(refId, url).catch(() => null);
+    if (card) next[url] = card;
+    // Save as we go, so cards appear one by one; stop if the person was deleted meanwhile.
+    if (!db.query("SELECT 1 FROM refs WHERE id = ?").get(refId)) return;
+    db.run("UPDATE refs SET link_profiles = ? WHERE id = ?", [JSON.stringify(next), refId]);
+  }
+  db.run("UPDATE refs SET link_profiles = ?, updated_at = ? WHERE id = ?", [JSON.stringify(next), now(), refId]);
+}
+
+async function readLink(refId: string, url: string): Promise<LinkCard | null> {
+  const file = `${refId}/links/${new Bun.CryptoHasher("sha1").update(url).digest("hex").slice(0, 12)}`;
+  const keep = async (src: string | null) => {
+    if (!src) return null;
+    try {
+      return (await downloadTo(src, file)).rel;
+    } catch {
+      return null;
+    }
+  };
+  const profile = parseProfile(url);
+  if (profile) {
+    const p = await readProfile(profile.platform, profile.handle, profile.url);
+    if (!p) return { kind: "profile", platform: profile.platform, name: null, handle: profile.handle, bio: null, stats: null, avatar: null };
+    return { kind: "profile", platform: profile.platform, name: p.name, handle: p.handle, bio: p.bio, stats: p.stats, avatar: await keep(p.avatar) };
+  }
+  // A website: its name and icon.
+  const res = await fetchWithTimeout(url, {}, 15_000);
+  const html = res.ok && (res.headers.get("content-type") ?? "").includes("html") ? await res.text() : "";
+  const meta = readMeta(html, res.url || url);
+  const icon = pageIcon(html, res.url || url);
+  return {
+    kind: "site", platform: null, name: meta.siteName ?? meta.title, handle: new URL(url).hostname.replace(/^www\./, ""),
+    bio: meta.description, stats: null, avatar: await keep(icon),
+  };
+}
+
+/** The biggest square-ish icon a page offers, else /favicon.ico. */
+function pageIcon(html: string, base: string) {
+  const icons = [...html.matchAll(/<link[^>]+rel=["'][^"']*(?:icon|apple-touch-icon)[^"']*["'][^>]*>/gi)]
+    .map((m) => {
+      const tag = m[0];
+      const href = tag.match(/href=["']([^"']+)["']/i)?.[1];
+      const size = parseInt(tag.match(/sizes=["'](\d+)/i)?.[1] ?? (/apple-touch/i.test(tag) ? "180" : "16"), 10);
+      return href && !href.startsWith("data:") && !/\.svg(\?|$)/i.test(href) ? { href: new URL(href, base).href, size } : null;
+    })
+    .filter((x): x is { href: string; size: number } => !!x)
+    .sort((a, b) => b.size - a.size);
+  return icons[0]?.href ?? new URL("/favicon.ico", base).href;
+}

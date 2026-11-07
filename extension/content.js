@@ -1,6 +1,23 @@
-// Notices when you bookmark a post on X or save one on Instagram and sends it to Panel.
-// On X it asks first: a bookmark there isn't always a design reference.
+// Notices when you bookmark a post on X, save one on Instagram or save a pin on
+// Pinterest and sends it to Panel. On X it asks first: a bookmark there isn't always
+// a design reference.
 const onX = location.hostname === "x.com";
+const onPinterest = /(^|\.)pinterest\.com$/.test(location.hostname);
+
+/**
+ * Talks to the extension. After the extension is reloaded or updated, a page that was
+ * already open keeps this script but loses the extension, and Chrome throws right away
+ * ("Extension context invalidated") instead of failing the promise; this turns that
+ * into a normal failure so the page just asks to be reloaded.
+ */
+function tell(message) {
+  try {
+    if (!chrome.runtime?.id) throw new Error("Extension context invalidated.");
+    return chrome.runtime.sendMessage(message);
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
 
 document.addEventListener(
   "click",
@@ -9,11 +26,10 @@ document.addEventListener(
     if (onX) {
       const url = xBookmarked(e.target);
       if (url)
-        chrome.runtime
-          .sendMessage({ type: "is-on", site: "x" })
+        tell({ type: "is-on", site: "x" })
           .then((r) => r?.on && askAboutBookmark(url))
           .catch(() => toast("Reload this page to keep saving to Panel", "bad"));
-    } else {
+    } else if (!onPinterest) {
       const url = instagramSaved(e.target);
       if (url) save(url);
     }
@@ -44,10 +60,10 @@ function instagramSaved(target) {
   return /^\/(?:[^/]+\/)?(p|reels?)\/[\w-]+/.test(location.pathname) ? location.href : null;
 }
 
-async function save(url) {
+async function save(url, message = { type: "save", url, site: onX ? "x" : "instagram" }) {
   let reply = null;
   try {
-    reply = await chrome.runtime.sendMessage({ type: "save", url, site: onX ? "x" : "instagram" });
+    reply = await tell(message);
   } catch {
     // The extension was reloaded since this page opened.
   }
@@ -63,11 +79,18 @@ async function save(url) {
 if (onX)
   window.addEventListener("message", (e) => {
     if (e.source !== window || e.data?.panel !== "x-bookmarks") return;
-    chrome.runtime.sendMessage({ type: "x-template", template: e.data.template }).catch(() => {});
+    tell({ type: "x-template", template: e.data.template }).catch(() => {});
+  });
+
+// pin-page.js (inside Pinterest's own page) sees each save go through; send that pin.
+if (onPinterest)
+  window.addEventListener("message", (e) => {
+    if (e.source !== window || e.data?.panel !== "pin-saved") return;
+    save(null, { type: "pin-saved", id: e.data.id, boardId: e.data.boardId });
   });
 
 // Your Saved page lists your folders; remember them so the popup can offer them.
-if (!onX) {
+if (!onX && !onPinterest) {
   let last = "";
   setInterval(() => {
     if (!location.pathname.includes("/saved/")) return;
@@ -79,7 +102,7 @@ if (!onX) {
     const key = JSON.stringify(folders);
     if (!folders.length || key === last) return;
     last = key;
-    chrome.runtime.sendMessage({ type: "ig-folders", folders }).catch(() => {});
+    tell({ type: "ig-folders", folders }).catch(() => {});
   }, 2000);
 }
 
@@ -92,7 +115,7 @@ function askAboutBookmark(url) {
   const root = ui();
   const ask = root.querySelector(".ask");
   ask.cancel?.();
-  const bar = ask.querySelector(".bar");
+  const ring = ask.querySelector(".ring .fill");
   let left = ASK_SECONDS * 1000;
   let last = performance.now();
   let paused = false;
@@ -103,7 +126,7 @@ function askAboutBookmark(url) {
     ask.classList.remove("in");
     ask.onmouseenter = ask.onmouseleave = null;
     if (add) save(url);
-    else chrome.runtime.sendMessage({ type: "skip", url }).catch(() => {});
+    else tell({ type: "skip", url }).catch(() => {});
   };
   // Hovering holds the clock, so reaching for the button never loses the race.
   ask.onmouseenter = () => (paused = true);
@@ -114,7 +137,7 @@ function askAboutBookmark(url) {
   const tick = (now) => {
     if (!paused) left -= now - last;
     last = now;
-    bar.style.transform = `scaleX(${Math.max(0, left) / (ASK_SECONDS * 1000)})`;
+    ring.style.strokeDashoffset = String(100 * (1 - Math.max(0, left) / (ASK_SECONDS * 1000)));
     if (left <= 0) return finish(false);
     frame = requestAnimationFrame(tick);
   };
@@ -123,7 +146,7 @@ function askAboutBookmark(url) {
   // A newer bookmark replaces this question; this one counts as a no.
   ask.cancel = () => finish(false);
   toastEl?.classList.remove("in");
-  bar.style.transform = "scaleX(1)";
+  ring.style.strokeDashoffset = "0";
   requestAnimationFrame(() => ask.classList.add("in"));
   frame = requestAnimationFrame(tick);
 }
@@ -148,21 +171,23 @@ function ui() {
     .t { padding: 9px 14px 9px 11px; }
     .t.in, .ask.in { opacity: 1; transform: translate(-50%, 0); }
     .ask.in { pointer-events: auto; }
-    .ask { padding: 6px 6px 6px 16px; gap: 12px; overflow: hidden; }
+    .ask { padding: 6px 6px 6px 16px; gap: 12px; }
     .ask button { all: unset; cursor: pointer; height: 30px; padding: 0 14px; border-radius: 999px; font-weight: 550;
       display: inline-flex; align-items: center; transition: background .12s; }
     .ask .yes { color: #111; background: #fff; }
     .ask .yes:hover { background: #e9e9e9; }
-    .ask .no { color: rgb(255 255 255 / 0.7); margin-left: -8px; }
+    .ask .no { color: rgb(255 255 255 / 0.7); margin-left: -8px; gap: 8px; padding: 0 10px 0 12px; }
     .ask .no:hover { color: #fff; background: rgb(255 255 255 / 0.1); }
-    .ask .bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgb(255 255 255 / 0.55);
-      transform-origin: left; }
+    .ring { width: 16px; height: 16px; flex: none; transform: rotate(-90deg); overflow: visible; }
+    .ring circle { fill: none; stroke-width: 2; }
+    .ring .track { stroke: rgb(255 255 255 / 0.16); }
+    .ring .fill { stroke: currentColor; stroke-linecap: round; stroke-dasharray: 100; }
     .d { width: 7px; height: 7px; border-radius: 50%; flex: none; }
     .ok .d { background: #3ecf8e; } .wait .d { background: #f5b83d; } .bad .d { background: #ff6b5e; }
   </style>
   <div class="t"><span class="d"></span><span class="m"></span></div>
   <div class="ask" role="dialog" aria-label="Add this bookmark to Panel?">
-    <span>Add to Panel?</span><button class="yes">Add</button><button class="no">Skip</button><span class="bar"></span>
+    <span>Add to Panel?</span><button class="yes">Add</button><button class="no">Skip<svg class="ring" viewBox="0 0 16 16" aria-hidden="true"><circle class="track" cx="8" cy="8" r="6.5"/><circle class="fill" cx="8" cy="8" r="6.5" pathLength="100"/></svg></button>
   </div>`;
   document.documentElement.append(host);
   toastEl = rootEl.querySelector(".t");
