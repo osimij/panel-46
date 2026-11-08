@@ -201,6 +201,97 @@ db.exec(`CREATE TABLE IF NOT EXISTS dismissed (
   PRIMARY KEY (kind, source_id)
 )`);
 
+// ---------- Design reads ----------
+// Each reference is read once by an AI model: what it is, its colors (measured from
+// the pixels), type, layout, motion and mood. That profile is what search and any AI
+// tool use to find references by feeling, not just by title.
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS reads (
+  ref_id TEXT PRIMARY KEY REFERENCES refs(id) ON DELETE CASCADE,
+  -- queued: waiting to be sent · sent: in a batch at Anthropic · done · failed
+  state TEXT NOT NULL,
+  -- batch: half price, back within the hour (24h at most) · now: right away, full price
+  mode TEXT NOT NULL DEFAULT 'batch',
+  model TEXT,
+  batch_id TEXT,
+  palette TEXT,
+  signals TEXT,
+  profile TEXT,
+  error TEXT,
+  cost REAL,
+  queued_at TEXT,
+  read_at TEXT
+);
+CREATE INDEX IF NOT EXISTS reads_state ON reads(state);
+
+CREATE TABLE IF NOT EXISTS read_batches (
+  id TEXT PRIMARY KEY,
+  model TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  ended_at TEXT
+);
+
+-- Every call to the AI, with what it cost, so spending is measured, not estimated.
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id INTEGER PRIMARY KEY,
+  at TEXT NOT NULL,
+  ref_id TEXT,
+  model TEXT NOT NULL,
+  mode TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  cost REAL NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+`);
+
+export function getSetting(key: string): string | null {
+  return db.query<{ value: string }, [string]>("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? null;
+}
+export function setSetting(key: string, value: string) {
+  db.run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
+}
+
+// The search index gained a column for the design read. FTS tables can't take a new
+// column, so it's rebuilt once; reindexAll() below fills it again.
+const ftsCols = db.query<{ name: string }, []>("PRAGMA table_info(refs_fts)").all().map((c) => c.name);
+const rebuildingSearch = !ftsCols.includes("design");
+if (rebuildingSearch) {
+  db.exec("DROP TABLE IF EXISTS refs_fts");
+  db.exec(`CREATE VIRTUAL TABLE refs_fts USING fts5(
+    ref_id UNINDEXED, title, text, note, creator, tags, design,
+    tokenize = 'unicode61 remove_diacritics 2'
+  )`);
+}
+
+/** The words a design read adds to search: mood, type, colors by name, what's worth taking. */
+export function designText(refId: string): string {
+  const row = db.query<{ profile: string | null; palette: string | null }, [string]>("SELECT profile, palette FROM reads WHERE ref_id = ?").get(refId);
+  if (!row?.profile) return "";
+  const words: string[] = [];
+  const walk = (v: unknown) => {
+    if (typeof v === "string") words.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.entries(v).forEach(([k, x]) => k !== "hex" && walk(x));
+  };
+  try {
+    walk(JSON.parse(row.profile));
+    for (const s of JSON.parse(row.palette ?? "[]") as { name: string }[]) words.push(s.name);
+  } catch {
+    /* a damaged profile just isn't searchable */
+  }
+  return words.filter((w) => !["none", "n/a"].includes(w.toLowerCase())).join(" ");
+}
+
 export const now = () => new Date().toISOString();
 export const newId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 
@@ -221,7 +312,7 @@ export function reindex(refId: string) {
     )
     .all(refId)
     .map((c) => c.name);
-  db.run("INSERT INTO refs_fts (ref_id, title, text, note, creator, tags) VALUES (?, ?, ?, ?, ?, ?)", [
+  db.run("INSERT INTO refs_fts (ref_id, title, text, note, creator, tags, design) VALUES (?, ?, ?, ?, ?, ?, ?)", [
     refId,
     r.title ?? "",
     r.text ?? "",
@@ -235,7 +326,12 @@ export function reindex(refId: string) {
       .filter(Boolean)
       .join(" "),
     [...tags, ...collections].join(" "),
+    designText(refId),
   ]);
+}
+
+if (rebuildingSearch) {
+  for (const { id } of db.query<{ id: string }, []>("SELECT id FROM refs").all()) reindex(id);
 }
 
 /**

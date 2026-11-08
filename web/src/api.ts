@@ -50,6 +50,68 @@ export interface Ref {
   has_video: boolean;
   tags: string[];
   collections: { id: string; name: string }[];
+  /** The AI's design read. Only on a single reference (api.ref), not in lists. */
+  read?: DesignRead | null;
+}
+
+export interface Swatch {
+  hex: string;
+  share: number;
+  name: string;
+}
+
+/** What the AI wrote about a reference. Every field can be missing on an older or damaged read. */
+export interface Profile {
+  summary?: string;
+  format?: string[];
+  mood?: string[];
+  style_references?: string[];
+  color?: { summary?: string; temperature?: string; contrast?: string; saturation?: string; roles?: { hex: string; role: string }[] };
+  typography?: { present?: boolean; summary?: string; classification?: string[]; likely_fonts?: string[]; case?: string; scale_contrast?: string; tracking?: string };
+  layout?: { summary?: string; density?: string; whitespace?: string; notable?: string[] };
+  imagery?: { summary?: string; style?: string[] };
+  motion?: { present?: boolean; summary?: string; pace?: string; techniques?: string[]; confidence?: string };
+  components?: string[];
+  worth_taking?: string[];
+  search_terms?: string[];
+  limits?: string;
+}
+
+export interface DesignRead {
+  state: "queued" | "sent" | "done" | "failed";
+  mode: "batch" | "now" | "subscription";
+  model: string | null;
+  model_label: string | null;
+  palette: Swatch[];
+  profile: Profile | null;
+  /** The pictures the AI was shown. */
+  visuals: { url: string; label: string }[];
+  video: { duration: number; cuts: number; seconds_checked: number } | null;
+  error: string | null;
+  cost: number | null;
+  read_at: string | null;
+}
+
+export interface ReadingStatus {
+  key: boolean;
+  /** "claude-code": through your Claude subscription. "api": an API key, in batches. */
+  provider: "claude-code" | "api";
+  /** Is the claude command line installed? */
+  claude_code: boolean;
+  effort: "low" | "medium" | "high" | "xhigh" | "max";
+  subscription_reads: number;
+  model: string;
+  models: { id: string; label: string }[];
+  auto: boolean;
+  cap: number;
+  spent_this_month: number;
+  per_read: { cost: number; input_tokens: number; output_tokens: number; reads: number } | null;
+  queued: number;
+  sent: number;
+  done: number;
+  failed: number;
+  unread: number;
+  problem: string | null;
 }
 
 /** One of a person's links, read: a profile with their face, or a website with its icon. */
@@ -188,6 +250,12 @@ export const api = {
     call<{ ok: boolean }>(`/api/tags/${encodeURIComponent(name)}?scope=${scope}`, { method: "DELETE" }),
   renameTag: (scope: Section, from: string, name: string) =>
     call<{ name: string }>(`/api/tags/${encodeURIComponent(from)}?scope=${scope}`, { method: "PATCH", body: body({ name }) }),
+  ai: () => call<ReadingStatus>("/api/ai"),
+  aiSettings: (patch: Partial<Pick<ReadingStatus, "model" | "auto" | "cap" | "provider" | "effort">>) =>
+    call<ReadingStatus>("/api/ai", { method: "PATCH", body: body(patch) }),
+  /** Read these references, or the next `limit` unread ones. "now" is full price, right away. */
+  aiRead: (opts: { ids?: string[]; limit?: number; mode?: "batch" | "now" }) =>
+    call<ReadingStatus & { added: number }>("/api/ai/read", { method: "POST", body: body(opts) }),
   deleteCollection:(id: string) => call<{ ok: boolean }>(`/api/collections/${id}`, { method: "DELETE" }),
 };
 

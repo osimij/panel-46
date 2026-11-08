@@ -52,6 +52,23 @@ A reference only counts as **Archived** when every file was fully downloaded (si
 
 Removing a reference moves its files to the macOS Trash.
 
+### Design reads (AI)
+
+Each reference can be read once by Claude (Sonnet 5.5 by default) into a **design profile**: what it is, mood, color (hex values measured from the pixels, not guessed), typography, layout, imagery, motion, and the 1–3 ideas worth taking. The profile shows in the detail panel and feeds search, so "olive", "editorial" or "kinetic type" find references whose titles never said so.
+
+- **What the model sees** is prepared first, at about 1.2 megapixels per picture: up to 4 images; a 3×3 grid of frames for a video or GIF, plus a count of hard cuts; for a site, the first screen, the whole page folded into columns, the second screen and the phone version. The prepared pictures are kept in `media/<refId>/read/`.
+- **Batches** by default: half price, usually back within the hour, 24 hours at most. **Read now** in the detail panel reads one right away at full price.
+- **New saves are read by themselves** (grouped into a batch every ~20 minutes). The library you had before is read only when you ask: Library settings → *Read 10 to test*, then *Read the other N*.
+- **Spending is measured**, from the token counts the API returns, and capped per month (default $20, changeable in Library settings). Nothing is sent past the cap.
+
+The key lives in the macOS Keychain. Add it once (paste it when asked); Panel picks it up within a minute:
+
+```bash
+security add-generic-password -s "Panel Anthropic API key" -a panel -w
+```
+
+`PANEL_ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY` also work.
+
 ## Not built yet
 
-AI tagging and search (Sonnet 5.5 / Haiku 5.5 / Apple Foundation Models with a strict offline mode), the Dock app wrapper, a capture extension or bookmarks import, backup to the external SSD, export, and cloud sync.
+An MCP server so any AI tool can search and see the library, a Brief view that pulls references by facet and suggests combinations, Apple Foundation Models with a strict offline mode, the Dock app wrapper, backup to the external SSD, export, and cloud sync.

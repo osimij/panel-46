@@ -1074,3 +1074,79 @@ a.cover-btn { text-decoration: none; }
 .chev { display: inline-grid; place-items: center; transform: rotate(-90deg); transition: transform 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
 .chev.open { transform: none; }
 .field-summary { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--faint); font-size: 12px; }
+
+/* ============ Design reads ============ */
+
+.read-field .field-label { align-items: baseline; }
+.read-meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
+.read-body { display: flex; flex-direction: column; gap: 12px; animation: field-in 0.28s var(--ease); }
+.read-summary { margin: 0; line-height: 1.45; text-wrap: pretty; }
+.read-wait { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.read-error { margin: 0; color: var(--bad); font-size: 12px; }
+.read-hint { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.45; }
+
+.swatch-wrap { display: flex; flex-direction: column; gap: 6px; }
+.swatches {
+  display: flex; height: 28px; border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); overflow: hidden;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+/* Widths are fixed by share and never change on hover, so the bar can't shift under the cursor. */
+.swatch {
+  flex-basis: 0; flex-shrink: 1; min-width: 10px; height: 100%; padding: 0; border: 0; cursor: copy; position: relative;
+  transition: opacity 0.22s var(--ease), filter 0.22s var(--ease);
+}
+.swatch::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  box-shadow: inset 0 0 0 1.5px oklch(1 0 0 / 0.85), inset 0 0 0 2.5px oklch(0 0 0 / 0.18);
+  opacity: 0; transition: opacity 0.22s var(--ease);
+}
+.swatches.has-active .swatch:not(.active) { opacity: 0.42; filter: saturate(0.7); }
+.swatch.active::after, .swatch:focus-visible::after { opacity: 1; }
+.swatch:focus-visible { outline: none; }
+.swatch:first-child::after { border-radius: inherit; }
+.swatch-info { height: 18px; font-size: 12px; overflow: hidden; }
+.swatch-line { display: flex; align-items: center; gap: 7px; white-space: nowrap; animation: swatch-line-in 0.18s var(--ease); }
+.swatch-line i { width: 10px; height: 10px; border-radius: 3px; flex: none; box-shadow: inset 0 0 0 1px var(--line); }
+.swatch-line code { font: 500 11.5px/1 ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: 0.02em; }
+.swatch-line .faint, .swatch-line.faint { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+@keyframes swatch-line-in { from { opacity: 0; transform: translateY(2px); } }
+@media (prefers-reduced-motion: reduce) { .swatch, .swatch::after { transition: none; } .swatch-line { animation: none; } }
+
+.read-pills { display: flex; flex-wrap: wrap; gap: 4px; }
+.read-pills .pill { cursor: default; }
+
+.read-rows { margin: 0; display: flex; flex-direction: column; }
+.read-rows > div { display: grid; grid-template-columns: 64px 1fr; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); }
+.read-rows > div:first-child { border-top: 0; padding-top: 2px; }
+.read-rows dt { color: var(--muted); }
+.read-rows dd { margin: 0; line-height: 1.45; min-width: 0; }
+.read-bits { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+
+.read-take { border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); padding: 10px 12px; }
+.read-take-label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.read-take ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; line-height: 1.45; }
+
+.read-actions { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.read-actions .text-btn { margin-left: -8px; }
+.read-cost { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
+.read-seen-btn { margin-left: auto !important; }
+.read-seen { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; animation: field-in 0.28s var(--ease); }
+.read-seen a { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.read-seen img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; object-position: top; border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); }
+.read-seen span { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.read-seen .read-hint { grid-column: 1 / -1; }
+
+.reading-settings { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.reading-head { display: flex; align-items: baseline; justify-content: space-between; }
+.reading-head h3 { margin: 0; font-size: 13px; font-weight: 500; }
+.read-key { display: flex; flex-direction: column; gap: 8px; }
+.read-key p { margin: 0; line-height: 1.45; }
+.read-key code {
+  display: block; padding: 8px 10px; border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); background: var(--fill);
+  font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; word-break: break-all; user-select: all;
+}
+.cap-input { width: 4ch; field-sizing: content; min-width: 2ch; background: none; border: 0; padding: 0; font: inherit; color: inherit; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; outline: none; }
+.cap-input:focus { text-decoration-color: currentColor; }
+.model-select { background: none; border: 0; font: inherit; color: inherit; text-align: right; cursor: pointer; padding: 0; }
+.reading-note { margin: -4px 0 0; font-size: 12px; }
+.btn-wide:disabled { opacity: 0.5; }

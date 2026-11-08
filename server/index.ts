@@ -2,10 +2,11 @@ import { join, normalize, basename } from "node:path";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { HOST, LIBRARY_DIR, MEDIA_DIR, PORT } from "./config.ts";
-import { cleanLinks, db, newId, now, parseLinks, refreshStatus, reindex, retag, SECTIONS, setTags, type MediaRow, type RefRow, type Section } from "./db.ts";
+import { cleanLinks, db, newId, now, parseLinks, refreshStatus, reindex, retag, SECTIONS, setSetting, setTags, type MediaRow, type RefRow, type Section } from "./db.ts";
 import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, enrichLinks, registerLocalFile, retry, saveSkillText, upgradeSocialLinks, type LinkCard } from "./capture.ts";
 import { parseSocial, rememberPin } from "./social.ts";
 import { abs } from "./media.ts";
+import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
 
@@ -79,6 +80,7 @@ function hydrate(refs: RefRow[], full = false) {
       has_video: own.some((m) => m.type !== "image"),
       tags: tags.filter((t) => t.ref_id === r.id).map((t) => t.name),
       collections: cols.filter((c) => c.ref_id === r.id).map((c) => ({ id: c.id, name: c.name })),
+      read: full ? readOf(r.id) : undefined,
     };
   });
 }
@@ -120,7 +122,7 @@ function listRefs(params: URLSearchParams) {
       from = "refs r JOIN refs_fts f ON f.ref_id = r.id";
       where.push("refs_fts MATCH ?");
       args.push(match);
-      order = "bm25(refs_fts, 0, 4, 2, 3, 2, 3), r.created_at DESC";
+      order = "bm25(refs_fts, 0, 4, 2, 3, 2, 3, 1.5), r.created_at DESC";
     }
   }
   const status = params.get("status");
@@ -291,6 +293,37 @@ async function handle(req: Request): Promise<Response> {
   }
 
   if (path === "/api/refs" && m === "GET") return json(listRefs(url.searchParams));
+
+  // ---- Design reads (AI) ----
+  if (path === "/api/ai" && m === "GET") return json(await readingStatus());
+  if (path === "/api/ai" && m === "PATCH") {
+    const body = (await req.json().catch(() => ({}))) as { model?: string; auto?: boolean; cap?: number; provider?: string; effort?: string };
+    if (body.provider !== undefined) {
+      if (!["claude-code", "api"].includes(body.provider)) return bad("Unknown provider");
+      setSetting("ai_provider", body.provider);
+    }
+    if (body.effort !== undefined) {
+      if (!["low", "medium", "high", "xhigh", "max"].includes(body.effort)) return bad("Unknown effort");
+      setSetting("ai_effort", body.effort);
+    }
+    if (body.model !== undefined) {
+      if (!(body.model in MODELS)) return bad("Unknown model");
+      setSetting("ai_model", body.model);
+    }
+    if (body.auto !== undefined) setSetting("ai_auto", body.auto ? "1" : "0");
+    if (body.cap !== undefined) {
+      if (!(Number(body.cap) >= 0)) return bad("The budget has to be a number of dollars.");
+      setSetting("ai_cap", String(Number(body.cap)));
+    }
+    return json(await readingStatus());
+  }
+  // Read these (ids), or the next `limit` unread ones. mode "now" is full price, right away.
+  if (path === "/api/ai/read" && m === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { ids?: string[]; limit?: number; mode?: "batch" | "now" };
+    const ids = body.ids?.length ? body.ids.filter((id) => typeof id === "string" && getRef(id)) : unreadIds(Math.max(0, Math.min(Number(body.limit ?? 10), 5000)));
+    queue(ids, body.mode === "now" ? "now" : "batch");
+    return json({ ...(await readingStatus()), added: ids.length });
+  }
 
   if (path === "/api/refs/delete" && m === "POST") {
     const body = (await req.json().catch(() => ({}))) as { ids?: string[] };
@@ -597,6 +630,7 @@ for (const { id } of db
 fixEscapedText();
 void backfillAvatars();
 void upgradeSocialLinks();
+startReading();
 
 Bun.serve({
   hostname: HOST,

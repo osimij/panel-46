@@ -7,6 +7,7 @@ import {
 import { Avatar, FadeImg, PersonAvatar } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { VideoPlayer } from "./VideoPlayer.tsx";
+import { DesignReadField, readable } from "./Reading.tsx";
 
 export function Detail(props: {
   initial: Ref;
@@ -1044,6 +1045,8 @@ function Info({
           </div>
         )}
       </section>
+
+      {readable(r) && <DesignReadField r={r} reload={reload} />}
 
       {section === "people" && <LinksField r={r} apply={apply} reload={reload} />}
 

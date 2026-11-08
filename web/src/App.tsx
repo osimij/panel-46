@@ -8,6 +8,7 @@ import {
 import { Detail } from "./Detail.tsx";
 import { Masonry } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
+import { ReadingSettings } from "./Reading.tsx";
 import { InlineName } from "./InlineName.tsx";
 import { Popover, TagRow } from "./TagRow.tsx";
 
@@ -980,6 +981,8 @@ function Settings({ stats, online, onClose }: { stats: Stats; online: boolean; o
             <dd title={stats.libraryDir}>{stats.libraryDir.replace(/^\/Users\/[^/]+/, "~")}</dd>
           </div>
         </dl>
+
+        <ReadingSettings />
 
         <button className="btn-wide" onClick={() => api.revealLibrary()}>
           <Icon name="folder" size={14} /> Show library in Finder
