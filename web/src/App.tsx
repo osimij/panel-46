@@ -230,6 +230,7 @@ export function App() {
   }, [filters, section, refreshProjects]);
 
   const say = useCallback((text: string, tone?: "error") => setToast({ id: Date.now(), text, tone }), []);
+  const sayError = useCallback((text: string) => say(text, "error"), [say]);
 
   useEffect(() => {
     refresh().catch((e) => say(`Can't reach the Panel companion. ${e.message}`, "error"));
@@ -706,7 +707,7 @@ export function App() {
               id={scope.id}
               dock={dockSlot}
               onOpenRef={openFromAsk}
-              onError={(t) => say(t, "error")}
+              onError={sayError}
               onRenamed={refreshProjects}
               onDeleted={leaveProject}
             />

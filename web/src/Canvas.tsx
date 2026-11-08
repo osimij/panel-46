@@ -371,7 +371,15 @@ export default function ProjectCanvas(props: CanvasProps) {
 /** This window, so it can tell its own changes from everyone else's on the live stream. */
 const CLIENT = localId();
 
-function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasProps) {
+function Board({ id, dock, ...handlers }: CanvasProps) {
+  // The app's callbacks, held steady: a new function from a parent redraw must never
+  // look like a new project (that reloaded the whole canvas, entrance and all, on every redraw).
+  const latest = useRef(handlers);
+  latest.current = handlers;
+  const onOpenRef = useCallback((refId: string) => latest.current.onOpenRef(refId), []);
+  const onError = useCallback((t: string) => latest.current.onError(t), []);
+  const onRenamed = useCallback(() => latest.current.onRenamed(), []);
+  const onDeleted = useCallback(() => latest.current.onDeleted(), []);
   const flow = useReactFlow<AnyNode, Edge>();
   const [nodes, setNodes] = useState<AnyNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
