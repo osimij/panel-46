@@ -10,6 +10,8 @@ import { Masonry } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { ReadingSettings } from "./Reading.tsx";
 import { InlineName } from "./InlineName.tsx";
+import { Assistant, type AssistantHandle } from "./Assistant.tsx";
+import { Mark } from "./Glow.tsx";
 import { Popover, TagRow } from "./TagRow.tsx";
 
 type Scope =
@@ -20,11 +22,21 @@ type Scope =
   | { kind: "skills" }
   | { kind: "hidden" }
   | { kind: "status"; status: RefStatus }
-  | { kind: "collection"; id: string };
+  | { kind: "collection"; id: string }
+  /** Saves the assistant brought up, shown together in the grid. */
+  | { kind: "picked"; ids: string[]; title: string };
 type MediaFilter = "all" | "image" | "video";
 
 const sameScope = (a: Scope, b: Scope) => JSON.stringify(a) === JSON.stringify(b);
 const looksLikeUrl = (s: string) => /^https?:\/\/\S+$/i.test(s.trim());
+/** Search text that reads like a question for the assistant rather than words to match. */
+const looksLikeQuestion = (s: string) => {
+  const t = s.trim();
+  if (!t || looksLikeUrl(t)) return false;
+  const words = t.split(/\s+/).length;
+  return (t.endsWith("?") && words >= 2) ||
+    (words >= 4 && /^(what|which|how|why|where|who|find|show|give|suggest|gather|get|any|is|are|do|does|can|could|should|would|help|compare|pair|recommend|i need|i want|i'm|im|make|build|design)\b/i.test(t));
+};
 
 /** Run a DOM change as a View Transition when the browser supports it. */
 function transition(update: () => void) {
@@ -79,6 +91,24 @@ export function App() {
   const [saving, setSaving] = useState<"idle" | "busy" | "done">("idle");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  // The assistant: open beside the library, remembered between visits.
+  const [askOpen, setAskOpenState] = useState(() => {
+    try {
+      return localStorage.getItem("panel.ask.open") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setAskOpen = useCallback((v: boolean) => {
+    setAskOpenState(v);
+    try {
+      localStorage.setItem("panel.ask.open", v ? "1" : "0");
+    } catch {
+      /* not remembered, that's all */
+    }
+  }, []);
+  const [askRunning, setAskRunning] = useState(false);
+  const askRef = useRef<AssistantHandle>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [confirmRemove, setConfirmRemove] = useState(false);
   const anchor = useRef<string | null>(null);
@@ -100,6 +130,7 @@ export function App() {
       library: scope.kind === "all" || scope.kind === "sites" || undefined,
       status: scope.kind === "status" ? scope.status : undefined,
       collection: scope.kind === "collection" ? scope.id : undefined,
+      ids: scope.kind === "picked" ? scope.ids : undefined,
       type: media === "all" ? undefined : media,
       tags: selectedTags.length ? selectedTags : undefined,
       tagMode,
@@ -238,6 +269,19 @@ export function App() {
         searchRef.current?.select();
         return;
       }
+      // ⌘J: the assistant, open or closed.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        setAskOpenState((v) => {
+          try {
+            localStorage.setItem("panel.ask.open", v ? "0" : "1");
+          } catch {
+            /* fine */
+          }
+          return !v;
+        });
+        return;
+      }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "u") {
         e.preventDefault();
         fileInputRef.current?.click();
@@ -327,6 +371,30 @@ export function App() {
       }
     });
   }, [open?.id]);
+
+  // ---- From the assistant ----
+
+  const openFromAsk = useCallback((id: string) => {
+    api.ref(id).then((r) => transition(() => setOpen(r))).catch(() => say("That save isn't in the library any more.", "error"));
+  }, [say]);
+
+  const showPicked = useCallback((ids: string[], title: string) => {
+    setOpen(null);
+    setSelectedTags([]);
+    setMedia("all");
+    setQuery("");
+    setScope({ kind: "picked", ids, title });
+    window.scrollTo({ top: 0 });
+  }, []);
+
+  const askFromSearch = () => {
+    const text = query.trim();
+    if (!text) return;
+    setQuery("");
+    setAskOpen(true);
+    searchRef.current?.blur();
+    askRef.current?.ask(text);
+  };
 
   const toggleFavorite = async (r: Ref) => {
     setRefs((list) => list?.map((x) => (x.id === r.id ? { ...x, favorite: !x.favorite } : x)) ?? null);
@@ -481,7 +549,7 @@ export function App() {
   );
 
   return (
-    <div className={`app ${open ? "detail-open" : ""} ${open && peek ? "side-peek" : ""}`} {...dropHandlers}>
+    <div className={`app ${open ? "detail-open" : ""} ${open && peek ? "side-peek" : ""} ${askOpen ? "chat-open" : ""}`} {...dropHandlers}>
       {/* While something is open the sidebar tucks away to this strip; hover it to bring the sidebar back. */}
       {open && (
         <div className="side-rail" aria-hidden onMouseEnter={() => peekTo(true, 70)} onMouseLeave={() => peekTo(false, 220)}>
@@ -531,7 +599,11 @@ export function App() {
 
         {debounced && refs && (
           <p className="results-note">
-            {refs.length ? `${refs.length} match${refs.length === 1 ? "" : "es"} for “${debounced}”` : `Nothing matches “${debounced}” yet.`}
+            {refs.length
+              ? `${refs.length} match${refs.length === 1 ? "" : "es"} for “${debounced}”`
+              : looksLikeQuestion(debounced)
+                ? "No save matches those exact words. Press ⇥ to ask instead: Ask reads the whole library."
+                : `Nothing matches “${debounced}” yet.`}
           </p>
         )}
 
@@ -589,6 +661,8 @@ export function App() {
               value={query}
               setValue={setQuery}
               isUrl={isUrl}
+              question={looksLikeQuestion(query)}
+              onAsk={askFromSearch}
               saving={saving}
               onSave={() => {
                 void saveLink(query.trim());
@@ -596,6 +670,16 @@ export function App() {
               }}
             />
             <AddFiles onFiles={uploadFiles} skills={scope.kind === "skills"} inputRef={fileInputRef} />
+            <button
+              className={`round-btn ask-btn ${askOpen ? "on" : ""}`}
+              onClick={() => setAskOpen(!askOpen)}
+              aria-pressed={askOpen}
+              aria-label="Ask"
+              title="Ask about your library (⌘J)"
+              aria-keyshortcuts="Meta+J"
+            >
+              <Mark size={24} active={askRunning} />
+            </button>
           </>
         )}
       </div>
@@ -624,6 +708,17 @@ export function App() {
           }}
         />
       )}
+
+      <Assistant
+        handle={askRef}
+        open={askOpen}
+        onClose={() => setAskOpen(false)}
+        looking={open}
+        onOpenRef={openFromAsk}
+        onShowInGrid={showPicked}
+        onRunning={setAskRunning}
+        onLibraryChanged={() => void refresh()}
+      />
 
       {settingsOpen && stats && <Settings stats={stats} online={online} onClose={() => setSettingsOpen(false)} />}
 
@@ -663,6 +758,11 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
           pending: "Downloading and checking files…",
         }[scope.status],
       };
+    case "picked":
+      return {
+        title: "From Ask",
+        subtitle: `${scope.ids.length} saves · ${scope.title.length > 60 ? `${scope.title.slice(0, 59)}…` : scope.title}`,
+      };
     case "collection": {
       const c = collections.find((x) => x.id === scope.id);
       return { title: c?.name ?? "Collection", subtitle: c ? `${c.n} reference${c.n === 1 ? "" : "s"}` : "" };
@@ -678,10 +778,12 @@ function Command(props: {
   value: string;
   setValue: (v: string) => void;
   isUrl: boolean;
+  question: boolean;
+  onAsk: () => void;
   saving: "idle" | "busy" | "done";
   onSave: () => void;
 }) {
-  const { value, setValue, isUrl, saving } = props;
+  const { value, setValue, isUrl, saving, question } = props;
   return (
     <div className={`command ${isUrl ? "is-url" : ""} ${value ? "has-value" : ""}`}>
       {/* No magnifier for now (trying the field without it); still show when a link is
@@ -701,12 +803,22 @@ function Command(props: {
             (e.target as HTMLInputElement).blur();
           }
           if (e.key === "Enter" && isUrl) props.onSave();
+          // A question goes to the assistant: Tab, or Enter when it plainly is one.
+          if (question && (e.key === "Tab" || (e.key === "Enter" && value.trim().endsWith("?")))) {
+            e.preventDefault();
+            props.onAsk();
+          }
         }}
         placeholder={props.placeholder}
         spellCheck={false}
         aria-label="Search your library or paste a link to save"
       />
-      {isUrl ? (
+      {question && !isUrl ? (
+        <button className="command-ask" onClick={props.onAsk} title="Ask about your library (Tab)">
+          <Mark size={15} active />
+          Ask <kbd>⇥</kbd>
+        </button>
+      ) : isUrl ? (
         <button className="command-save" onClick={props.onSave}>
           Save <kbd>↵</kbd>
         </button>

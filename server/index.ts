@@ -9,6 +9,7 @@ import { abs } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
+import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat } from "./chat.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
 
@@ -143,6 +144,13 @@ function listRefs(params: URLSearchParams) {
   if (type === "video") where.push("EXISTS (SELECT 1 FROM media m WHERE m.ref_id = r.id AND m.type IN ('video','gif'))");
   if (type === "image")
     where.push("EXISTS (SELECT 1 FROM media m WHERE m.ref_id = r.id) AND NOT EXISTS (SELECT 1 FROM media m WHERE m.ref_id = r.id AND m.type IN ('video','gif'))");
+  // A set picked elsewhere (by the assistant): just those, in the order given.
+  const ids = (params.get("ids") ?? "").split(",").filter((x) => /^[0-9a-f]{16}$/.test(x));
+  if (ids.length) {
+    where.push(`r.id IN (${ids.map(() => "?").join(",")})`);
+    args.push(...ids);
+    order = `instr('${ids.join(",")}', r.id)`;
+  }
   const collection = params.get("collection");
   if (collection) {
     where.push("EXISTS (SELECT 1 FROM ref_collections rc WHERE rc.ref_id = r.id AND rc.collection_id = ?)");
@@ -298,6 +306,46 @@ async function handle(req: Request): Promise<Response> {
     });
     await createMcpServer().connect(transport);
     return transport.handleRequest(req);
+  }
+
+  // ---- The assistant ----
+  if (path === "/api/chats" && m === "GET") return json(listChats());
+  if (path === "/api/chats" && m === "POST") return json(createChat());
+  if (path === "/api/chat/settings" && m === "GET") return json({ model: chatSettings.model(), effort: chatSettings.effort() });
+  if (path === "/api/chat/settings" && m === "PATCH") {
+    setChatSettings((await req.json().catch(() => ({}))) as { model?: string; effort?: string });
+    return json({ model: chatSettings.model(), effort: chatSettings.effort() });
+  }
+  if (path === "/api/cards" && m === "GET") {
+    const ids = (url.searchParams.get("ids") ?? "").split(",").filter((x) => /^[0-9a-f]{16}$/.test(x)).slice(0, 200);
+    return json(cards(ids));
+  }
+  const chatRoute = path.match(/^\/api\/chats\/([0-9a-f]{16})(\/messages|\/stream|\/stop)?$/);
+  if (chatRoute) {
+    const [, id, sub] = chatRoute as unknown as [string, string, string | undefined];
+    if (!sub && m === "GET") {
+      const c = getChat(id);
+      return c ? json(c) : bad("That conversation is gone.", 404);
+    }
+    if (!sub && m === "DELETE") {
+      deleteChat(id);
+      return json({ ok: true });
+    }
+    if (sub === "/messages" && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { text?: string; context?: { open?: string } };
+      try {
+        return json(await send(id, String(b.text ?? ""), b.context ?? {}));
+      } catch (e) {
+        return bad((e as Error).message, 409);
+      }
+    }
+    if (sub === "/stream" && m === "GET") {
+      const after = Number(url.searchParams.get("after") ?? 0) || 0;
+      return new Response(follow(id, after, req.signal), {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+      });
+    }
+    if (sub === "/stop" && m === "POST") return json({ stopped: stopChat(id) });
   }
 
   if (path === "/api/health") return json({ ok: true, libraryDir: LIBRARY_DIR });

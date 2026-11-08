@@ -619,7 +619,7 @@ export async function claudeBinary(): Promise<string | null> {
   return code === 0 && out.trim() ? out.trim() : null;
 }
 
-async function claudeToken() {
+export async function claudeToken() {
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return process.env.CLAUDE_CODE_OAUTH_TOKEN;
   const { out, code } = await run(["security", "find-generic-password", "-s", CC_TOKEN_SERVICE, "-w"], 10_000);
   return code === 0 ? out.trim() : "";

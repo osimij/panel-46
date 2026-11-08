@@ -172,6 +172,8 @@ export interface Filters {
   /** The main library: everything except People & Accounts and Skills. */
   library?: boolean;
   collection?: string;
+  /** Exactly these saves, in this order. */
+  ids?: string[];
   tags?: string[];
   tagMode?: "all" | "any";
 }
@@ -201,6 +203,7 @@ export const api = {
     if (f.skill) p.set("skill", "1");
     if (f.library) p.set("library", "1");
     if (f.collection) p.set("collection", f.collection);
+    if (f.ids?.length) p.set("ids", f.ids.join(","));
     f.tags?.forEach((t) => p.append("tag", t));
     if (f.tagMode === "any") p.set("tagMode", "any");
     return call<Ref[]>(`/api/refs?${p}`);
@@ -504,3 +507,87 @@ export function personFace(r: Ref) {
     places,
   };
 }
+
+// ---------- The assistant ----------
+
+export interface RefCard {
+  id: string;
+  title: string;
+  type: string;
+  thumb: string | null;
+  /** Height over width. */
+  ratio: number;
+  palette: string[];
+  by?: string;
+}
+
+export type ChatPart =
+  | { type: "text"; text: string }
+  | { type: "thinking"; ms?: number; done?: boolean }
+  | { type: "tool"; id: string; name: string; input?: Record<string, unknown>; refs?: string[]; total?: number; error?: string; done?: boolean };
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  context: { open?: string } | null;
+  parts: ChatPart[];
+  status: "done" | "streaming" | "stopped" | "error" | string;
+  error: string | null;
+  created_at: string;
+}
+
+export interface ChatSummary { id: string; title: string; updated_at: string; running: boolean }
+export interface ChatFull { id: string; title: string; messages: ChatMessage[]; cards: RefCard[]; running: boolean; seq: number }
+
+export type ChatEvent =
+  | { t: "start"; message: ChatMessage }
+  | { t: "thinking"; on: boolean; ms?: number }
+  | { t: "tool"; id: string; name: string }
+  | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
+  | { t: "tool_result"; id: string; refs: string[]; cards: RefCard[]; total?: number; error?: string }
+  | { t: "text"; delta: string }
+  | { t: "done"; status: "done" | "stopped" | "error"; error?: string }
+  | { t: "idle" };
+
+export const chatApi = {
+  list: () => call<ChatSummary[]>("/api/chats"),
+  create: () => call<{ id: string }>("/api/chats", { method: "POST" }),
+  get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
+  remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
+  send: (id: string, text: string, context: { open?: string }) =>
+    call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
+  stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
+  cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
+  settings: () => call<{ model: string; effort: string }>("/api/chat/settings"),
+  setSettings: (patch: { model?: string; effort?: string }) =>
+    call<{ model: string; effort: string }>("/api/chat/settings", { method: "PATCH", body: body(patch) }),
+  /**
+   * Follow a running answer from event `after` on. Calls `on` for each event with its
+   * number; resolves when the answer ends (or there's nothing running).
+   */
+  async follow(id: string, after: number, on: (e: ChatEvent, seq: number) => void, signal: AbortSignal) {
+    const res = await fetch(`/api/chats/${id}/stream?after=${after}`, { signal });
+    if (!res.body) return;
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    let seq = after;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let end: number;
+      while ((end = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, end);
+        buf = buf.slice(end + 2);
+        let data = "";
+        for (const line of chunk.split("\n")) {
+          if (line.startsWith("id: ")) seq = Number(line.slice(4));
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (data) on(JSON.parse(data) as ChatEvent, seq);
+      }
+    }
+  },
+};
+
