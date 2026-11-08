@@ -368,7 +368,7 @@ export function Assistant(props: {
       >
         <div className="ask-content" ref={content}>
           {messages.length === 0 ? (
-            <Welcome looking={context} onPick={(t) => void send(t)} />
+            <Welcome looking={context} project={!!props.project} onPick={(t) => void send(t)} />
           ) : (
             messages.map((m, i) =>
               m.role === "user" ? (
@@ -579,8 +579,10 @@ function ago(iso: string) {
 
 // ---------- Empty state ----------
 
-function Welcome({ looking, onPick }: { looking: Ref | null; onPick: (t: string) => void }) {
-  const ideas = looking
+function Welcome({ looking, project, onPick }: { looking: Ref | null; project?: boolean; onPick: (t: string) => void }) {
+  const ideas = project && !looking
+    ? ["Pull typography references for this project", "Suggest palettes that suit what's locked", "What's still undecided here?", "Sum up the decisions so far"]
+    : looking
     ? ["What's worth taking from this?", "Find saves with a palette like this one", "What type would pair with this?", "Find motion that would suit this"]
     : [
         "Gather references for a calm, warm banking app",
@@ -593,7 +595,7 @@ function Welcome({ looking, onPick }: { looking: Ref | null; onPick: (t: string)
       <Mark size={40} />
       <h2>Ask your library</h2>
       <p>Find references by feeling, color, type or motion, and put them together into something new.</p>
-      <div className="ask-ideas" key={looking?.id ?? "all"}>
+      <div className="ask-ideas" key={looking?.id ?? (project ? "project" : "all")}>
         {ideas.map((t, i) => (
           <button key={t} className="ask-idea" style={{ animationDelay: `${120 + i * 50}ms` }} onClick={() => onPick(t)}>
             {t}
@@ -761,6 +763,31 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
       return { doing: "Reading the whole library", done: "Read the whole library" };
     case "save_to_collection":
       return { doing: <>Saving to {q(i.name)}</>, done: <>Saved to {q(i.name)}</> };
+    case "list_projects":
+      return { doing: "Looking at your projects", done: "Looked at your projects" };
+    case "get_project": {
+      // Called with the project's id from the canvas: say "the project", not a code.
+      const what = typeof i.project === "string" && !/^[0-9a-f]{16}$/.test(i.project) ? q(i.project) : "the project";
+      return { doing: <>Reading {what}</>, done: <>Read {what}</> };
+    }
+    case "place_on_board": {
+      const n = Array.isArray(i.saves) ? i.saves.length : 0;
+      const where = q(i.topic) ?? "a topic";
+      return { doing: <>Placing {n ? `${n} ` : ""}on the canvas under {where}</>, done: <>Placed {p.refs?.length ?? n} under {where}</> };
+    }
+    case "add_topic":
+      return { doing: <>Adding {q(i.title) ?? "a topic"}</>, done: <>Added {q(i.title) ?? "a topic"}</> };
+    case "connect_topics":
+      return { doing: <>Connecting {q(i.from)} to {q(i.to)}</>, done: <>Connected {q(i.from)} to {q(i.to)}</> };
+    case "add_note":
+      return { doing: "Writing a note", done: "Wrote a note" };
+    case "mark_saves": {
+      const w = i.state === "chosen" ? "Chose" : i.state === "ruled_out" ? "Ruled out" : "Kept";
+      const n = Array.isArray(i.ids) ? i.ids.length : 0;
+      return { doing: "Marking saves", done: `${w} ${n} ${n === 1 ? "save" : "saves"}` };
+    }
+    case "lock_topic":
+      return { doing: <>{i.unlock ? "Reopening" : "Locking"} {q(i.topic)}</>, done: <>{i.unlock ? "Reopened" : "Locked"} {q(i.topic)}</> };
     default:
       return { doing: p.name.replace(/_/g, " "), done: p.name.replace(/_/g, " ") };
   }
@@ -775,7 +802,10 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
     return ids;
   }, [parts]);
   const tools = parts.filter((p) => p.type === "tool");
-  const searches = tools.filter((p) => p.type === "tool" && p.name !== "get_reference" && p.name !== "library_overview" && p.name !== "save_to_collection").length;
+  const CANVAS = ["list_projects", "get_project", "place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic"];
+  const searches = tools.filter((p) => p.type === "tool" && p.name !== "get_reference" && p.name !== "library_overview" && p.name !== "save_to_collection" && !CANVAS.includes(p.name)).length;
+  const placed = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "place_on_board" ? (p.refs?.length ?? 0) : 0), 0);
+  const edited = tools.some((p) => p.type === "tool" && CANVAS.slice(3).includes(p.name));
   const looked = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "get_reference" ? ((p.input?.ids as string[] | undefined)?.length ?? 1) : 0), 0);
   const saved = tools.find((p) => p.type === "tool" && p.name === "save_to_collection");
   const read = tools.some((p) => p.type === "tool" && p.name === "library_overview");
@@ -785,6 +815,7 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
       looked ? `looked at ${looked}` : "",
       read && !searches && !looked ? "read the whole library" : "",
       saved && saved.type === "tool" ? `saved to “${String(saved.input?.name ?? "a collection")}”` : "",
+      placed ? `placed ${placed} on the canvas` : edited ? "updated the canvas" : "",
     ].filter(Boolean).join(", ") || "Thought it over";
 
   return (

@@ -85,6 +85,9 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from |
 | `list_projects` | Your projects, most recently worked on first |
 | `get_project` | A project's canvas as decisions: each topic, locked or exploring, with the saves chosen, kept, suggested and ruled out, and your notes on why. Optionally with pictures of the chosen saves |
+| `place_on_board` | Puts saves under a topic on a project's canvas as suggestions, each with a short why; makes the topic if needed |
+| `add_topic`, `connect_topics`, `add_note` | Grow the canvas: a new decision (optionally after another), Typography → Color, a note on a topic or save |
+| `mark_saves`, `lock_topic` | Choose, keep or rule out saves; lock a decision with a sentence. Only when you say so |
 | `save_to_collection` | Puts chosen saves in a Panel collection (only adds) |
 
 Two ways to connect. Over stdio, which works even when Panel isn't running:
@@ -116,6 +119,9 @@ Under **Projects** in the sidebar, each project is a canvas for working out a de
 - **Topics** are *exploring* until you **Lock** one. A locked topic turns solid and takes a sentence for the decision ("humanist serif for headings, grotesk for forms").
 - **Saves** come from **Saves** in the dock: drag one onto the canvas, or select a topic and click saves to file them under it. Select a save to **Choose** it, **Rule it out**, add a **Note** or open it.
 - **Connect** anything by dragging from the dot on a node's edge, e.g. Typography → Color, to say one leads to the next. Double-click empty space for a note. Backspace removes what's selected.
+- **The assistant works on the canvas.** With a project open, ask Ask for references ("suggest palettes that suit what's locked") and it places them under the right topic, one after another, as **Suggested** cards with a line on why. The view glides to them. **Keep**, **Choose** or **Rule out** each one. It never chooses or locks on its own; "lock it with the second one" does.
+- **Locking folds away what wasn't chosen** into "+5 considered" on the topic; click it to see them again.
+- **Undo**: ⌘Z undoes your own changes, one at a time. After the assistant changes the canvas, a note above the dock says what it did, with **Undo**, which takes back its whole reply (a topic, the saves under it, a note) at once. Claude Code's changes show up and undo the same way.
 - **Claude reads it as decisions**, not as boxes: `get_project` returns each topic in the order you connected them, what was chosen and ruled out, and your notes. When Ask is open on a canvas it knows which project you mean.
 - **Live**: every change is a small logged step (`project_events`), so a change made anywhere, including from Claude Code over MCP (its own process), shows up on an open canvas within half a second.
 - The canvas code (React Flow) loads only when a project is opened, so the library stays as light as before.

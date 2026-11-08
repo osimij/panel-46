@@ -9,7 +9,7 @@ import { abs } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
-import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, type Op } from "./projects.ts";
+import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, type Op } from "./projects.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat } from "./chat.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
@@ -372,7 +372,7 @@ async function handle(req: Request): Promise<Response> {
       return bad((e as Error).message);
     }
   }
-  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream)?$/);
+  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream|\/undo)?$/);
   if (projectRoute) {
     const [, id, sub] = projectRoute as unknown as [string, string, string | undefined];
     if (!sub && m === "GET") {
@@ -388,7 +388,21 @@ async function handle(req: Request): Promise<Response> {
     if (sub === "/ops" && m === "POST") {
       const b = (await req.json().catch(() => ({}))) as { ops?: Op[]; client?: string };
       try {
-        const res = apply(id, b.ops ?? [], "designer", typeof b.client === "string" ? b.client.slice(0, 40) : null);
+        const res = apply(id, b.ops ?? [], "designer", { client: typeof b.client === "string" ? b.client.slice(0, 40) : null });
+        const added = res.ops.flatMap((o) => (o.op === "add_node" && o.node.ref_id ? [o.node.ref_id] : []));
+        return json({ ...res, cards: cards(added) });
+      } catch (e) {
+        return bad((e as Error).message, 409);
+      }
+    }
+    if (sub === "/undo" && m === "POST") {
+      // { client, who: "me" | "assistant" }: ⌘Z, or taking back what the assistant just did.
+      const b = (await req.json().catch(() => ({}))) as { client?: string; who?: string };
+      const client = typeof b.client === "string" ? b.client.slice(0, 40) : "";
+      if (!client) return bad("Which window is asking?");
+      try {
+        const res = undoLast(id, b.who === "assistant" ? "assistant" : { client }, client);
+        if (!res) return json({ seq: null, ops: [], cards: [], undid: null });
         const added = res.ops.flatMap((o) => (o.op === "add_node" && o.node.ref_id ? [o.node.ref_id] : []));
         return json({ ...res, cards: cards(added) });
       } catch (e) {

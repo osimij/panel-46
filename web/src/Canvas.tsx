@@ -16,7 +16,7 @@ import "@xyflow/react/dist/base.css";
 import "./canvas.css";
 import {
   api, chatApi, displayTitle, localId, prefersReducedMotion, projectApi,
-  type BoardEdge, type BoardNode, type BoardOp, type Ref, type RefCard, type RefState, type TopicFacet,
+  type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type Ref, type RefCard, type RefState, type TopicFacet,
 } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
@@ -71,6 +71,9 @@ interface Actions {
   note: (forId: string) => void;
   open: (refId: string) => void;
   clearFocus: (id: string) => void;
+  /** Saves under a locked topic that weren't chosen: how many, and whether they're showing. */
+  considered: Map<string, { n: number; open: boolean }>;
+  toggleConsidered: (topicId: string) => void;
 }
 const Ctx = createContext<Actions | null>(null);
 const useActions = () => useContext(Ctx)!;
@@ -211,6 +214,11 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
       ) : (
         <div className="topic-title" onDoubleClick={() => setRenaming(true)}>{data.title || facetLabel(data.facet)}</div>
       )}
+      {locked && (act.considered.get(id)?.n ?? 0) > 0 && (
+        <button className="nodrag topic-considered" onClick={() => act.toggleConsidered(id)}>
+          {act.considered.get(id)!.open ? `Fold ${act.considered.get(id)!.n} considered` : `+${act.considered.get(id)!.n} considered`}
+        </button>
+      )}
       {(locked || data.summary) && (
         <Grow
           className="topic-summary"
@@ -245,6 +253,7 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
         {state === "ruled_out" && <span className="ref-badge out">Ruled out</span>}
         {state === "proposed" && <span className="ref-badge soft">Suggested</span>}
       </div>
+      {data.taking && <p className="ref-why">{data.taking}</p>}
       <div className="ref-meta">
         <span className="ref-title">{card?.title ?? "Not in the library"}</span>
         {card && card.palette.length > 0 && (
@@ -256,6 +265,7 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
       <NodeToolbar isVisible={selected && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
           <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
+          {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
           <Tool icon="x" label="Rule out" on={state === "ruled_out"} onClick={() => act.patch(id, { state: state === "ruled_out" ? "kept" : "ruled_out" })} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="arrow-up-right" label="Open" onClick={() => act.open(data.refId)} />
@@ -315,7 +325,7 @@ function FloatEdge({ id, source, target, selected }: EdgeProps) {
   const kind = kinds.includes("note") ? "note" : kinds.every((k) => k === "topic") ? "flow" : "link";
   const chosen = kinds.includes("ref") && ((s.type === "ref" ? s : t).data as RefData).state === "chosen";
   const out = kinds.includes("ref") && ((s.type === "ref" ? s : t).data as RefData).state === "ruled_out";
-  const leaving = (s.data as Enter).leaving || (t.data as Enter).leaving;
+  const leaving = (s.data as Enter).leaving || (t.data as Enter).leaving || /\bfolding\b/.test(`${s.className ?? ""} ${t.className ?? ""}`);
   return (
     <g className={`fe fe-${kind} ${chosen ? "chosen" : ""} ${out ? "out" : ""} ${selected ? "sel" : ""} ${leaving ? "leaving" : ""}`} data-id={id}>
       <path className="fe-line" d={path} pathLength={kind === "note" ? undefined : 1} />
@@ -358,7 +368,14 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
   const [meta, setMeta] = useState<{ name: string; brief: string } | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [tray, setTray] = useState(false);
+  /** What the assistant just did, with a way to take it back. */
+  const [notice, setNotice] = useState<{ label: string; key: number; more: number } | null>(null);
   const seq = useRef(0);
+  // Changes go to the companion one after another, so an undo never overtakes the change it undoes.
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const revealRef = useRef<(ids: string[], spots: { x: number; y: number }[]) => void>(() => {});
+  /** Locked topics whose considered saves are unfolded. */
+  const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
   const wrap = useRef<HTMLDivElement>(null);
@@ -376,8 +393,8 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
   const commit = useCallback(
     (ops: BoardOp[]) => {
       if (!ops.length) return;
-      projectApi
-        .ops(id, ops, CLIENT)
+      queue.current = queue.current
+        .then(() => projectApi.ops(id, ops, CLIENT))
         .then((res) => {
           seq.current = Math.max(seq.current, res.seq);
           addCards(res.cards);
@@ -431,7 +448,7 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
   }, []);
 
   const applyRemote = useCallback(
-    (ops: BoardOp[]) => {
+    (ops: BoardOp[], event?: BoardEvent) => {
       let i = 0;
       const fresh = new Set<string>();
       const missing: string[] = [];
@@ -448,7 +465,8 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
               n.id !== o.id ? n : ({
                 ...n,
                 position: { x: o.x ?? n.position.x, y: o.y ?? n.position.y },
-                data: { ...n.data, ...(o.data ? toFlow({ id: n.id, kind: n.type, ref_id: null, data: { ...stored(n), ...o.data }, x: 0, y: 0 }).data : {}), refId: (n.data as RefData).refId },
+                // A field sent as null was cleared.
+                data: { ...n.data, ...(o.data ? toFlow({ id: n.id, kind: n.type, ref_id: null, data: { ...stored(n), ...Object.fromEntries(Object.entries(o.data).map(([k, v]) => [k, v ?? undefined])) }, x: 0, y: 0 }).data : {}), refId: (n.data as RefData).refId },
               } as AnyNode),
             ),
           );
@@ -463,6 +481,15 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
       const need = missing.filter((x) => !cards.has(x));
       if (need.length) chatApi.cards(need).then(addCards).catch(() => {});
       if (fresh.size) settle(fresh);
+      // The assistant's changes: say what it did, and glide over to what it added.
+      if (event?.actor === "assistant") {
+        // A reply is often a few changes in a row; the notice counts them, and Undo takes them all back.
+        setNotice((n) => ({ label: event.label || "The assistant changed the canvas", key: n?.key ?? event.seq, more: n ? n.more + 1 : 0 }));
+        const spots = ops.flatMap((o) => (o.op === "add_node" ? [{ x: o.node.x, y: o.node.y }] : []));
+        // Frame them together with what they hang from: a note with its topic, saves with theirs.
+        const near = ops.flatMap((o) => (o.op === "add_edge" ? [o.edge.source, o.edge.target] : []));
+        if (spots.length) setTimeout(() => revealRef.current([...new Set([...fresh, ...near])], spots), 120);
+      }
     },
     [cards, addCards, removeLocal, settle, onRenamed],
   );
@@ -484,7 +511,7 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
               return;
             }
             seq.current = Math.max(seq.current, e.seq);
-            if (e.client !== CLIENT) applyRef.current(e.ops);
+            if (e.client !== CLIENT) applyRef.current(e.ops, e);
           }, ctl.signal);
         } catch {
           /* dropped; try again shortly */
@@ -568,10 +595,131 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
     setNodes((ns) => ns.map((n) => (n.id === nid && n.data.focus ? ({ ...n, data: { ...n.data, focus: false } } as AnyNode) : n)));
   }, []);
 
-  const actions = useMemo<Actions>(
-    () => ({ cards, patch, remove, note, open: onOpenRef, clearFocus }),
-    [cards, patch, remove, note, onOpenRef, clearFocus],
+  // ---- Locked topics fold away what wasn't chosen ----
+
+  const fold = useMemo(() => {
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const near = new Map<string, string[]>();
+    for (const e of edges) {
+      (near.get(e.source) ?? near.set(e.source, []).get(e.source)!).push(e.target);
+      (near.get(e.target) ?? near.set(e.target, []).get(e.target)!).push(e.source);
+    }
+    const hide = new Set<string>();
+    const considered = new Map<string, { n: number; open: boolean }>();
+    for (const t of nodes) {
+      if (t.type !== "topic" || t.data.status !== "locked") continue;
+      const kids = (near.get(t.id) ?? []).map((x) => byId.get(x)).filter((n): n is RefNode => n?.type === "ref" && n.data.state !== "chosen");
+      if (!kids.length) continue;
+      considered.set(t.id, { n: kids.length, open: opened.has(t.id) });
+      if (!opened.has(t.id)) kids.forEach((k) => hide.add(k.id));
+    }
+    // A save that's also under an open topic stays in view.
+    for (const x of [...hide]) {
+      const topics = (near.get(x) ?? []).map((y) => byId.get(y)).filter((n): n is TopicNode => n?.type === "topic");
+      if (topics.some((t) => t.data.status !== "locked" || opened.has(t.id))) hide.delete(x);
+    }
+    // Notes only about folded saves fold with them.
+    for (const n of nodes) {
+      const l = near.get(n.id) ?? [];
+      if (n.type === "note" && l.length && l.every((x) => hide.has(x))) hide.add(n.id);
+    }
+    return { hide, considered };
+  }, [nodes, edges, opened]);
+
+  // Folding plays out: they shrink toward the topic, then go; unfolding, they rise back in.
+  const [folded, setFolded] = useState<Set<string>>(() => new Set());
+  const [folding, setFolding] = useState<Set<string>>(() => new Set());
+  const [unfolding, setUnfolding] = useState<Map<string, number>>(() => new Map());
+  const firstFold = useRef(true);
+  useEffect(() => {
+    if (!loaded) return;
+    const want = fold.hide;
+    if (firstFold.current) {
+      firstFold.current = false;
+      setFolded(new Set(want));
+      return;
+    }
+    const going = [...want].filter((x) => !folded.has(x) && !folding.has(x));
+    const coming = [...folded].filter((x) => !want.has(x));
+    if (coming.length) {
+      setFolded((f) => new Set([...f].filter((x) => want.has(x))));
+      setUnfolding(new Map(coming.map((x, i) => [x, i])));
+      setTimeout(() => setUnfolding(new Map()), 1200);
+    }
+    if (going.length) {
+      setFolding((f) => new Set([...f, ...going]));
+      setTimeout(() => {
+        setFolded((f) => new Set([...f, ...going]));
+        setFolding((f) => new Set([...f].filter((x) => !going.includes(x))));
+      }, prefersReducedMotion() ? 0 : 280);
+    }
+  }, [fold.hide, loaded, folded, folding]);
+
+  const shownNodes = useMemo(() => {
+    if (!folded.size && !folding.size && !unfolding.size) return nodes;
+    return nodes.map((n) => {
+      const gone = folded.has(n.id), going = folding.has(n.id), back = unfolding.get(n.id);
+      if (!gone && !going && back === undefined) return n;
+      return {
+        ...n,
+        hidden: gone,
+        selected: gone ? false : n.selected,
+        className: going ? "folding" : back !== undefined ? "unfold" : undefined,
+        style: back !== undefined ? ({ "--i": back } as React.CSSProperties) : undefined,
+      } as AnyNode;
+    });
+  }, [nodes, folded, folding, unfolding]);
+  const shownEdges = useMemo(
+    () => (folded.size ? edges.map((e) => (folded.has(e.source) || folded.has(e.target) ? { ...e, hidden: true } : e)) : edges),
+    [edges, folded],
   );
+
+  const toggleConsidered = useCallback((topicId: string) => {
+    setOpened((o) => {
+      const next = new Set(o);
+      if (!next.delete(topicId)) next.add(topicId);
+      return next;
+    });
+  }, []);
+
+  const actions = useMemo<Actions>(
+    () => ({ cards, patch, remove, note, open: onOpenRef, clearFocus, considered: fold.considered, toggleConsidered }),
+    [cards, patch, remove, note, onOpenRef, clearFocus, fold.considered, toggleConsidered],
+  );
+
+  // ---- Undo: ⌘Z for your own changes, and taking back what the assistant did ----
+
+  const undo = useCallback(
+    (who: "me" | "assistant") => {
+      queue.current = queue.current
+        .then(() => projectApi.undo(id, CLIENT, who))
+        .then((res) => {
+          if (res.seq) seq.current = Math.max(seq.current, res.seq);
+          addCards(res.cards);
+          if (res.ops.length) applyRef.current(res.ops);
+          if (who === "assistant") setNotice(null);
+        })
+        .catch((e) => onError((e as Error).message));
+    },
+    [id, addCards, onError],
+  );
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
+      e.preventDefault();
+      undo("me");
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [undo]);
+
+  // The note about the assistant's change goes away on its own after a while.
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 15000);
+    return () => clearTimeout(t);
+  }, [notice]);
 
   // ---- Where new things go ----
 
@@ -581,14 +729,28 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
   };
   const selectedTopic = () => nodesRef.current.find((n) => n.selected && n.type === "topic") as TopicNode | undefined;
 
-  /** Saves under a topic sit in rows of three beneath it, in the order they came. */
+  /**
+   * Saves under a topic sit in rows of three beneath it, below what's there already,
+   * skipping any spot something else on the canvas is in. (The companion places the
+   * assistant's saves the same way.)
+   */
   const slotsUnder = (topic: AnyNode, count: number) => {
     const linked = new Set(edges.flatMap((e) => (e.source === topic.id ? [e.target] : e.target === topic.id ? [e.source] : [])));
-    const already = nodesRef.current.filter((n) => n.type === "ref" && linked.has(n.id)).length;
-    return Array.from({ length: count }, (_, i) => {
-      const k = already + i;
-      return { x: topic.position.x + (k % 3) * 236 - 4, y: topic.position.y + sizeOf(topic).h + 64 + Math.floor(k / 3) * 290 };
-    });
+    const kids = nodesRef.current.filter((n) => n.type === "ref" && linked.has(n.id));
+    const top = kids.length ? Math.max(...kids.map((n) => n.position.y)) + 400 : topic.position.y + sizeOf(topic).h + 64;
+    const taken = (x: number, y: number) =>
+      nodesRef.current.some((n) => {
+        const o = sizeOf(n);
+        return !(x + 232 <= n.position.x || x >= n.position.x + o.w + 12 || y + 382 <= n.position.y || y >= n.position.y + o.h + 12);
+      });
+    const out: { x: number; y: number }[] = [];
+    for (let r = 0; out.length < count && r < 80; r++) {
+      for (let c = 0; c < 3 && out.length < count; c++) {
+        const spot = { x: topic.position.x - 4 + c * 236, y: top + r * 400 };
+        if (!taken(spot.x, spot.y)) out.push(spot);
+      }
+    }
+    return out;
   };
 
   /** Glide the view to these nodes, unless they're already all on screen. */
@@ -600,6 +762,7 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
     if (spots.every((p) => p.x >= tl.x && p.y >= tl.y && p.x + 230 <= br.x && p.y + 260 <= br.y)) return;
     setTimeout(() => void flow.fitView({ nodes: ids.map((id) => ({ id })), duration: prefersReducedMotion() ? 0 : 700, padding: 0.3, maxZoom: 1 }), 80);
   };
+  revealRef.current = reveal;
 
   const addTopic = (facet: TopicFacet) => {
     const from = selectedTopic();
@@ -625,7 +788,7 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
       ? slotsUnder(topic, list.length)
       : list.map((_, i) => {
           const c = at ?? center();
-          return { x: c.x - 110 + (i % 4) * 236, y: c.y - 120 + Math.floor(i / 4) * 290 };
+          return { x: c.x - 110 + (i % 4) * 236, y: c.y - 120 + Math.floor(i / 4) * 400 };
         });
     const made: RefNode[] = list.map((c, i) => ({ id: localId(), type: "ref", position: spots[i]!, data: { refId: c.id, state: "kept", enter: i } }));
     add(made, topic ? made.map((n) => ({ source: topic.id, target: n.id })) : []);
@@ -725,8 +888,8 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
       <div className={`canvas ${tray ? "with-tray" : ""}`} ref={wrap} onDragOver={onDragOver} onDrop={onDrop}>
         {meta && <Head id={id} name={meta.name} brief={meta.brief} commit={commit} setMeta={setMeta} onRenamed={onRenamed} onDeleted={onDeleted} onError={onError} />}
         <ReactFlow<AnyNode, Edge>
-          nodes={nodes}
-          edges={edges}
+          nodes={shownNodes}
+          edges={shownEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
@@ -766,6 +929,15 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
               ))}
               <button className="canvas-chip" onClick={() => setTray(true)}><Icon name="image" size={13} /> Saves</button>
             </div>
+          </div>
+        )}
+
+        {notice && (
+          <div className="canvas-notice" key={notice.key} role="status">
+            <span className="canvas-notice-dot" />
+            <span>{notice.label}{notice.more > 0 && <span className="canvas-notice-more"> and {notice.more} more {notice.more === 1 ? "change" : "changes"}</span>}</span>
+            <button className="canvas-notice-undo" onClick={() => undo("assistant")}>Undo</button>
+            <button className="canvas-notice-x" onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" size={12} /></button>
           </div>
         )}
 

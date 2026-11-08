@@ -640,7 +640,18 @@ export type BoardOp =
   | { op: "remove_edge"; id: string }
   | { op: "update_project"; name?: string; brief?: string };
 
-export interface BoardEvent { seq: number; at: string; actor: string; client: string | null; ops: BoardOp[] }
+export interface BoardEvent {
+  seq: number;
+  at: string;
+  /** designer · assistant (Claude, from Ask or any MCP app) */
+  actor: string;
+  client: string | null;
+  /** What the change did, in a few words ("Placed 6 saves under Typography"). */
+  label?: string | null;
+  /** This change undid that one. */
+  undo_of?: number | null;
+  ops: BoardOp[];
+}
 
 /** Ids made here, so a node can be drawn before the companion has answered. Same shape as the companion's. */
 export const localId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
@@ -652,6 +663,9 @@ export const projectApi = {
   remove: (id: string) => call<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
   ops: (id: string, ops: BoardOp[], client: string) =>
     call<{ seq: number; ops: BoardOp[]; cards: RefCard[] }>(`/api/projects/${id}/ops`, { method: "POST", body: body({ ops, client }) }),
+  /** Undo this window's last change (who: "me", ⌘Z) or the assistant's last change. */
+  undo: (id: string, client: string, who: "me" | "assistant") =>
+    call<{ seq: number | null; ops: BoardOp[]; cards: RefCard[]; undid: string | null }>(`/api/projects/${id}/undo`, { method: "POST", body: body({ client, who }) }),
   /** Follow changes made anywhere (other windows, Claude over MCP) from `after` on, until `signal` aborts. */
   async follow(id: string, after: number, on: (e: BoardEvent | { gone: true }) => void, signal: AbortSignal) {
     const res = await fetch(`/api/projects/${id}/stream?after=${after}`, { signal });

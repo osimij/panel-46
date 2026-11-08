@@ -3,7 +3,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { chosenRefs, listProjects, projectsOf, summary } from "./projects.ts";
+import { chosenRefs, listProjects, projectsOf, summary, REF_STATES, TOPIC_FACETS } from "./projects.ts";
+import { addNote, addTopic, connectTopics, lockTopic, markSaves, placeOnBoard } from "./board.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, saveToCollection, search, similar } from "./library.ts";
 
 const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
@@ -17,6 +18,7 @@ Use it to find references for a brief and to combine them: color from one save, 
 - get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend.
 - save_to_collection puts the saves you chose in a Panel collection the designer can open.
 - Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one. When working on a project, read it first and build from its locked decisions.
+- On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
 Always give the designer the "open" link for each save you recommend, so they can watch or look at the original.`;
 
 const facet = z.enum(FACETS);
@@ -180,6 +182,72 @@ export function createMcpServer() {
       return failure(e);
     }
   });
+
+  const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
+  const projectArg = z.string().describe("The project's id or name.");
+
+  server.registerTool("place_on_board", {
+    title: "Place saves on a project's canvas",
+    description: "Put saves from the library on a project's canvas under a topic (Typography, Color, Layout…), as suggestions the designer then chooses, keeps or rules out. The topic is found by name or kind (\"type\" finds Typography) and made if it isn't there. Saves already under that topic are skipped. Give each save a short why: what to take from it for this topic, shown on its card. Place 4 to 8 at a time, the strongest first.",
+    inputSchema: {
+      project: projectArg,
+      topic: z.string().describe("The topic to put them under, by name: \"Typography\", \"Color\", \"Hero layout\"…"),
+      saves: z.array(z.object({ id: z.string(), why: z.string().optional().describe("A few words: what to take from it here (\"tall serif headings, generous leading\").") })).min(1).max(16),
+      after_topic: z.string().optional().describe("If the topic is new: the topic it follows, so they're connected (e.g. Color after Typography)."),
+    },
+    annotations: write,
+  }, safe((a) => placeOnBoard(a)));
+
+  server.registerTool("add_topic", {
+    title: "Add a topic to a project",
+    description: "Add a decision to make to a project's canvas (Typography, Color, Layout, Imagery, Motion, Components, or anything else), optionally connected after another topic, as in Typography → Color.",
+    inputSchema: {
+      project: projectArg,
+      title: z.string().min(1),
+      facet: z.enum(TOPIC_FACETS).optional().describe("What kind of decision it is; guessed from the title if left out."),
+      after: z.string().optional().describe("The topic this one follows."),
+    },
+    annotations: write,
+  }, safe((a) => addTopic(a)));
+
+  server.registerTool("connect_topics", {
+    title: "Connect two topics",
+    description: "Say that one topic leads to the next on a project's canvas (Typography → Color), so they're read in that order.",
+    inputSchema: { project: projectArg, from: z.string(), to: z.string() },
+    annotations: write,
+  }, safe((a) => connectTopics(a)));
+
+  server.registerTool("add_note", {
+    title: "Add a note to a project",
+    description: "Write a short note on a project's canvas, attached to a topic (by name) or a save (by id), or loose. Use it to record a reason the designer gave, or a question to come back to. Keep it to a sentence or two.",
+    inputSchema: { project: projectArg, text: z.string().min(1), on: z.string().optional().describe("A topic's name or a save's id.") },
+    annotations: write,
+  }, safe((a) => addNote(a)));
+
+  server.registerTool("mark_saves", {
+    title: "Choose, keep or rule out saves",
+    description: "Mark saves on a project's canvas as chosen, kept or ruled out. Only when the designer says so (\"go with the second one\", \"drop the neon ones\").",
+    inputSchema: {
+      project: projectArg,
+      ids: z.array(z.string()).min(1),
+      state: z.enum(REF_STATES),
+      topic: z.string().optional().describe("Only under this topic, when a save is on the canvas twice."),
+    },
+    annotations: write,
+  }, safe((a) => markSaves(a)));
+
+  server.registerTool("lock_topic", {
+    title: "Lock a decision",
+    description: "Lock a topic on a project's canvas: the decision is made. Only when the designer says so. Give the decision in a sentence, and the saves chosen for it if they named them. The rest under the topic fold away on the canvas but stay in the project. unlock: true reopens it.",
+    inputSchema: {
+      project: projectArg,
+      topic: z.string(),
+      decision: z.string().optional().describe("The decision in a sentence: \"Humanist serif for headings, neutral grotesk for forms; must cover Cyrillic.\""),
+      choose: z.array(z.string()).optional().describe("Save ids to mark chosen."),
+      unlock: z.boolean().optional(),
+    },
+    annotations: write,
+  }, safe((a) => lockTopic(a)));
 
   server.registerTool("save_to_collection", {
     title: "Save to a collection",

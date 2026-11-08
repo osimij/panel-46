@@ -60,6 +60,13 @@ CREATE TABLE IF NOT EXISTS project_events (
 );
 `);
 
+// Added with undo: what puts each change back, what it was, and whether it was undone.
+const eventCols = db.query<{ name: string }, []>("PRAGMA table_info(project_events)").all().map((c) => c.name);
+if (!eventCols.includes("undo")) db.exec("ALTER TABLE project_events ADD COLUMN undo TEXT");
+if (!eventCols.includes("label")) db.exec("ALTER TABLE project_events ADD COLUMN label TEXT");
+if (!eventCols.includes("undo_of")) db.exec("ALTER TABLE project_events ADD COLUMN undo_of INTEGER");
+if (!eventCols.includes("undone")) db.exec("ALTER TABLE project_events ADD COLUMN undone INTEGER NOT NULL DEFAULT 0");
+
 // ---------- What's on a canvas ----------
 
 export const TOPIC_FACETS = ["typography", "color", "layout", "imagery", "motion", "components", "other"] as const;
@@ -171,19 +178,34 @@ function cleanData(kind: BoardNode["kind"], data: Record<string, unknown>): Reco
   return out;
 }
 
+/** Who made a change. "assistant" is Claude, from Ask or any MCP app. */
+export type Actor = "designer" | "assistant";
+
+export interface ApplyOptions {
+  client?: string | null;
+  /** A few words on what this change did, for the canvas to say ("Placed 6 saves under Typography"). */
+  label?: string;
+  /** This change undoes the event with this number. */
+  undoOf?: number;
+}
+
 /**
- * Apply ops to a project, in one transaction, and log them. Ops that refer to something
- * already gone are skipped quietly (two windows deleting the same node is fine).
- * Returns the ops as applied (with ids filled in) and the new sequence number.
+ * Apply ops to a project, in one transaction, and log them with the ops that would undo
+ * them. Ops that refer to something already gone are skipped quietly (two windows
+ * deleting the same node is fine). Returns the ops as applied (ids filled in) and the
+ * new sequence number.
  */
-export function apply(projectId: string, ops: Op[], actor: "designer" | "assistant" | "mcp" = "designer", client: string | null = null) {
+export function apply(projectId: string, ops: Op[], actor: Actor = "designer", opts: ApplyOptions = {}) {
   const p = rowOf(projectId);
   if (!p) throw new Error("That project is gone.");
   if (!Array.isArray(ops) || !ops.length) return { seq: p.seq, ops: [] as Op[] };
   if (ops.length > 500) throw new Error("Too many changes at once.");
   const done: Op[] = [];
+  // For each op applied, what puts things back; replayed last-first to undo.
+  const undo: Op[][] = [];
   const ts = now();
   const owned = (id: string) => db.query<NodeRow, [string, string]>("SELECT * FROM board_nodes WHERE id = ? AND project_id = ?").get(id, projectId);
+  const edgesOf = (id: string) => db.query<BoardEdge, [string, string]>("SELECT id, source, target, label FROM board_edges WHERE source = ? OR target = ?").all(id, id);
 
   const seq = db.transaction(() => {
     for (const o of ops) {
@@ -201,19 +223,32 @@ export function apply(projectId: string, ops: Op[], actor: "designer" | "assista
           [id, projectId, n.kind, n.kind === "ref" ? n.ref_id! : null, JSON.stringify(data), finite(n.x), finite(n.y), origin, ts, ts],
         );
         done.push({ op: "add_node", node: { id, kind: n.kind, ref_id: n.kind === "ref" ? n.ref_id! : null, data, x: finite(n.x), y: finite(n.y) } });
+        undo.push([{ op: "remove_node", id }]);
       } else if (o.op === "update_node") {
         const row = owned(o.id);
         if (!row) continue;
+        const before = parse(row.data);
         const patch = o.data ? cleanData(row.kind, o.data) : undefined;
-        const data = patch ? { ...parse(row.data), ...patch } : undefined;
+        const data = patch ? { ...before, ...patch } : undefined;
         db.run("UPDATE board_nodes SET data = ?, x = ?, y = ?, updated_at = ? WHERE id = ?", [
           data ? JSON.stringify(data) : row.data, o.x === undefined ? row.x : finite(o.x), o.y === undefined ? row.y : finite(o.y), ts, o.id,
         ]);
-        done.push({ op: "update_node", id: o.id, ...(patch ? { data: patch } : {}), ...(o.x !== undefined ? { x: finite(o.x) } : {}), ...(o.y !== undefined ? { y: finite(o.y) } : {}) });
+        done.push({ op: "update_node", id: o.id, ...(patch ? { data: Object.fromEntries(Object.entries(patch).map(([k, v]) => [k, v ?? null])) } : {}), ...(o.x !== undefined ? { x: finite(o.x) } : {}), ...(o.y !== undefined ? { y: finite(o.y) } : {}) });
+        undo.push([{
+          op: "update_node", id: o.id,
+          ...(patch ? { data: Object.fromEntries(Object.keys(patch).map((k) => [k, before[k] ?? null])) } : {}),
+          ...(o.x !== undefined ? { x: row.x } : {}), ...(o.y !== undefined ? { y: row.y } : {}),
+        }]);
       } else if (o.op === "remove_node") {
-        if (!owned(o.id)) continue;
+        const row = owned(o.id);
+        if (!row) continue;
+        const lines = edgesOf(o.id);
         db.run("DELETE FROM board_nodes WHERE id = ?", [o.id]);
         done.push({ op: "remove_node", id: o.id });
+        undo.push([
+          { op: "add_node", node: { id: row.id, kind: row.kind, ref_id: row.ref_id, data: parse(row.data), x: row.x, y: row.y } },
+          ...lines.map((e) => ({ op: "add_edge" as const, edge: e })),
+        ]);
       } else if (o.op === "add_edge") {
         const e = o.edge;
         if (!e || e.source === e.target || !owned(e.source) || !owned(e.target)) continue;
@@ -223,29 +258,81 @@ export function apply(projectId: string, ops: Op[], actor: "designer" | "assista
           )
           .get(e.source, e.target, e.target, e.source);
         if (dup) continue;
-        const id = e.id && /^[0-9a-z]{8,32}$/.test(e.id) ? e.id : newId();
+        const id = e.id && /^[0-9a-z]{8,32}$/.test(e.id) && !db.query("SELECT 1 FROM board_edges WHERE id = ?").get(e.id) ? e.id : newId();
         const label = typeof e.label === "string" ? e.label.slice(0, 120) : "";
         db.run("INSERT INTO board_edges (id, project_id, source, target, label, created_at) VALUES (?, ?, ?, ?, ?, ?)", [id, projectId, e.source, e.target, label, ts]);
         done.push({ op: "add_edge", edge: { id, source: e.source, target: e.target, label } });
+        undo.push([{ op: "remove_edge", id }]);
       } else if (o.op === "remove_edge") {
-        const res = db.run("DELETE FROM board_edges WHERE id = ? AND project_id = ?", [o.id, projectId]);
-        if (res.changes) done.push({ op: "remove_edge", id: o.id });
+        const before = db.query<BoardEdge, [string, string]>("SELECT id, source, target, label FROM board_edges WHERE id = ? AND project_id = ?").get(o.id, projectId);
+        if (!before) continue;
+        db.run("DELETE FROM board_edges WHERE id = ?", [o.id]);
+        done.push({ op: "remove_edge", id: o.id });
+        undo.push([{ op: "add_edge", edge: before }]);
       } else if (o.op === "update_project") {
         const name = typeof o.name === "string" ? o.name.trim().slice(0, 120) : undefined;
         const brief = typeof o.brief === "string" ? o.brief.slice(0, 8000) : undefined;
+        const was = rowOf(projectId)!;
         if (name) db.run("UPDATE projects SET name = ? WHERE id = ?", [name, projectId]);
         if (brief !== undefined) db.run("UPDATE projects SET brief = ? WHERE id = ?", [brief, projectId]);
-        if (name || brief !== undefined) done.push({ op: "update_project", ...(name ? { name } : {}), ...(brief !== undefined ? { brief } : {}) });
+        if (name || brief !== undefined) {
+          done.push({ op: "update_project", ...(name ? { name } : {}), ...(brief !== undefined ? { brief } : {}) });
+          undo.push([{ op: "update_project", ...(name ? { name: was.name } : {}), ...(brief !== undefined ? { brief: was.brief } : {}) }]);
+        }
       }
     }
     if (!done.length) return p.seq;
     db.run("UPDATE projects SET seq = seq + 1, updated_at = ? WHERE id = ?", [ts, projectId]);
     const next = rowOf(projectId)!.seq;
-    db.run("INSERT INTO project_events (project_id, seq, at, actor, client, ops) VALUES (?, ?, ?, ?, ?, ?)", [projectId, next, ts, actor, client, JSON.stringify(done)]);
+    db.run(
+      "INSERT INTO project_events (project_id, seq, at, actor, client, ops, undo, label, undo_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next, ts, actor, opts.client ?? null, JSON.stringify(done), JSON.stringify(undo.reverse().flat()), opts.label ?? null, opts.undoOf ?? null],
+    );
+    if (opts.undoOf) db.run("UPDATE project_events SET undone = 1 WHERE project_id = ? AND seq = ?", [projectId, opts.undoOf]);
     return next;
   })();
   if (done.length) wake(projectId);
   return { seq, ops: done };
+}
+
+interface UndoRow { seq: number; at: string; actor: string; undo: string | null; label: string | null; undone: number; undo_of: number | null }
+
+/**
+ * Undo the latest change by this window (⌘Z), or what the assistant last did. The
+ * assistant's last reply can be several changes (a topic, the saves under it, a note);
+ * they're taken back together: every assistant change since the designer last did
+ * something, within a few minutes of each other. Undoing is itself a change, so every
+ * open canvas sees it, and ⌘Z doesn't undo an undo: it keeps going back instead.
+ */
+export function undoLast(projectId: string, who: { client: string } | "assistant", client: string | null) {
+  let rows: UndoRow[];
+  if (who === "assistant") {
+    const recent = db
+      .query<UndoRow, [string]>("SELECT seq, at, actor, undo, label, undone, undo_of FROM project_events WHERE project_id = ? ORDER BY seq DESC LIMIT 60")
+      .all(projectId);
+    rows = [];
+    for (const r of recent) {
+      if (r.undo_of || r.undone) continue;
+      if (r.actor !== "assistant") break;
+      if (rows.length && Date.parse(rows.at(-1)!.at) - Date.parse(r.at) > 3 * 60_000) break;
+      rows.push(r);
+    }
+  } else {
+    const r = db
+      .query<UndoRow, [string, string]>(
+        "SELECT seq, at, actor, undo, label, undone, undo_of FROM project_events WHERE project_id = ? AND client = ? AND actor = 'designer' AND undone = 0 AND undo_of IS NULL ORDER BY seq DESC LIMIT 1",
+      )
+      .get(projectId, who.client);
+    rows = r ? [r] : [];
+  }
+  rows = rows.filter((r) => r.undo);
+  if (!rows.length) return null;
+  // Newest first, each already in the order that puts it back.
+  const ops = rows.flatMap((r) => JSON.parse(r.undo!) as Op[]);
+  const what = rows.length === 1 ? rows[0]!.label : `${rows.at(-1)!.label ?? "a change"} and ${rows.length - 1} more`;
+  const res = apply(projectId, ops, "designer", { client, undoOf: rows[0]!.seq, label: what ? `Undid: ${what}` : "Undid a change" });
+  db.run(`UPDATE project_events SET undone = 1 WHERE project_id = ? AND seq IN (${rows.map(() => "?").join(",")})`, [projectId, ...rows.map((r) => r.seq)]);
+  return { ...res, undid: what };
 }
 
 // ---------- Following a canvas live ----------
@@ -255,7 +342,7 @@ function wake(projectId: string) {
   for (const f of waiting.get(projectId) ?? []) f();
 }
 
-interface EventRow { seq: number; at: string; actor: string; client: string | null; ops: string }
+interface EventRow { seq: number; at: string; actor: string; client: string | null; ops: string; label: string | null; undo_of: number | null }
 
 /**
  * Changes to a project from `after` on, as server-sent events, for as long as the canvas
@@ -271,11 +358,11 @@ export function follow(projectId: string, after: number, signal: AbortSignal) {
       const send = () => {
         if (closed) return;
         const rows = db
-          .query<EventRow, [string, number]>("SELECT seq, at, actor, client, ops FROM project_events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT 200")
+          .query<EventRow, [string, number]>("SELECT seq, at, actor, client, ops, label, undo_of FROM project_events WHERE project_id = ? AND seq > ? ORDER BY seq LIMIT 200")
           .all(projectId, last);
         for (const r of rows) {
           last = r.seq;
-          controller.enqueue(enc.encode(`id: ${r.seq}\ndata: ${JSON.stringify({ seq: r.seq, at: r.at, actor: r.actor, client: r.client, ops: JSON.parse(r.ops) })}\n\n`));
+          controller.enqueue(enc.encode(`id: ${r.seq}\ndata: ${JSON.stringify({ seq: r.seq, at: r.at, actor: r.actor, client: r.client, label: r.label, undo_of: r.undo_of, ops: JSON.parse(r.ops) })}\n\n`));
         }
         if (!rowOf(projectId)) {
           controller.enqueue(enc.encode(`data: ${JSON.stringify({ gone: true })}\n\n`));

@@ -197,7 +197,13 @@ How to work:
 - Look at the pictures (get_reference) before you recommend a save for how it looks, when that matters.
 - Talk like a design partner: concrete about color (hex), type, layout and motion, and say what to take from each save. Keep it short; the pictures do the rest.
 - When the designer wants to keep a set, use save_to_collection.
-- A message can start with <panel-context>, saying what the designer has open. "This" or "it" means that save.`;
+- A message can start with <panel-context>, saying what the designer has open. "This" or "it" means that save.
+
+On a project's canvas (the context says which project):
+- Read the project with get_project before anything else in the conversation, and again when the designer may have changed it.
+- When they ask for references, always put them on the canvas with place_on_board, under the topic they're for (it makes the topic if needed; use after_topic to connect it to the one before, e.g. Color after a locked Typography). Place 4 to 8, the strongest first, each with a short why. Build on what's locked: a color search should suit the chosen type.
+- Then answer in a few lines: what you placed and the thinking behind the set, naming a save as [[id]] only where you say something particular about it. Don't repeat them all as a row of pictures; they're on the canvas.
+- Never choose, rule out or lock on your own. Use mark_saves and lock_topic only when the designer says so ("lock it with the second one"). When they give a reason, keep it with add_note.`;
 
 function emit(chatId: string, run: Run, e: ChatEvent) {
   run.events.push(e);
@@ -251,7 +257,7 @@ export async function send(chatId: string, text: string, context: { open?: strin
   const said: string[] = [];
   if (context.project) {
     const p = findProject(context.project);
-    if (p) said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). When the question is about the project, read it with get_project first.`);
+    if (p) said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). References you find for it go on the canvas (place_on_board).`);
   }
   if (context.open) {
     const d = load().docs.get(context.open);
