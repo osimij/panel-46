@@ -1004,15 +1004,12 @@ function Head(props: {
     };
   }, [open, close]);
 
-  const count = materials?.length ?? 0;
   return (
     <header className="canvas-head" ref={wrap}>
       <button className={`canvas-title ${open ? "on" : ""}`} onClick={toggle} aria-expanded={open} title="About this project">
+        <span className="canvas-title-mark" aria-hidden />
         <span className="canvas-title-name">{props.name}</span>
-        {(count > 0 || !props.brief) && (
-          <span className="canvas-title-meta">{count ? `${count} ${count === 1 ? "material" : "materials"}` : "Add what it's about"}</span>
-        )}
-        <Icon name="chevron-down" size={13} />
+        <Icon name="chevron-down" size={12} />
       </button>
       {open && (
         <About
