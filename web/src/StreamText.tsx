@@ -1,6 +1,6 @@
 // The assistant's answer as it arrives. A small markdown reader written for streaming:
 // every word is its own element keyed by where it sits in the text, so as the text grows
-// only the new words mount, and only they play the blur-in. Saves written as [[id]] become
+// only the new words mount, and only they play the fade-in. Saves written as [[id]] become
 // the save's name with its thumbnail, a line of them becomes a row of pictures, and hex
 // colors get a swatch you can click to copy.
 
@@ -231,6 +231,7 @@ export function RefChip({ id, ctx }: { id: string; ctx: Ctx }) {
       <button
         ref={el}
         className={`ref-chip ${card ? "" : "loading"}`}
+        data-title={card?.title}
         onClick={() => ctx.onOpen(id)}
         onMouseEnter={() => {
           clearTimeout(timer.current);

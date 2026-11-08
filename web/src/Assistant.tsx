@@ -2,6 +2,7 @@
 // it thinks, and shows the saves it means as pictures you can open. It stays open while
 // you browse, knows what you have open, and keeps every conversation.
 
+import { createPortal } from "react-dom";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef } from "react";
 import { api, chatApi, displayTitle, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
@@ -279,6 +280,51 @@ export function Assistant(props: {
     }
   }, [open]);
 
+  // ---- Replying to a part of the conversation: select it, then Reply ----
+  const [quote, setQuote] = useState<string | null>(null);
+  const [reply, setReply] = useState<{ x: number; y: number; text: string } | null>(null);
+  /** Where the Reply button goes: just above what's selected in the conversation, or nowhere. */
+  const placeReply = useCallback(() => {
+    const sel = getSelection();
+    const box = scroller.current;
+    if (!sel || sel.isCollapsed || !sel.rangeCount || !box) return setReply(null);
+    const range = sel.getRangeAt(0);
+    const inside = (n: Node | null) => !!n && !!content.current?.contains(n) && !!(n instanceof Element ? n : n.parentElement)?.closest(".msg-ai, .msg-user");
+    let raw = sel.toString();
+    // A save's chip shows a shortened name; the quote takes its whole name.
+    content.current?.querySelectorAll<HTMLElement>(".ref-chip[data-title]").forEach((c) => {
+      const shown = c.querySelector(".ref-chip-title")?.textContent;
+      if (shown && range.intersectsNode(c)) raw = raw.replace(shown, c.dataset.title!);
+    });
+    const text = raw.replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+    if (!inside(range.startContainer) || !inside(range.endContainer) || text.length < 2) return setReply(null);
+    const r = range.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    if (r.bottom < b.top || r.top > b.bottom) return setReply(null);
+    setReply({ x: Math.min(Math.max(r.left + r.width / 2, b.left + 44), b.right - 44), y: Math.max(r.top, b.top + 4), text });
+  }, []);
+  useEffect(() => {
+    // Shown once the selection is made (mouse up, or Shift+arrows), gone when it's let go.
+    const onChange = () => {
+      const sel = getSelection();
+      if (!sel || sel.isCollapsed) setReply(null);
+    };
+    document.addEventListener("selectionchange", onChange);
+    return () => document.removeEventListener("selectionchange", onChange);
+  }, []);
+  const replyTo = (text: string) => {
+    setQuote(text.slice(0, 1200));
+    setReply(null);
+    getSelection()?.removeAllRanges();
+    requestAnimationFrame(() => inputRef.current?.focus());
+  };
+  /** Your message with what you replied to above it, as a quote Claude reads. */
+  const withQuote = (text: string) => {
+    if (!quote) return text;
+    const q = quote.split("\n").map((l) => `> ${l}`.trimEnd()).join("\n");
+    return `${q}\n\n${text}`;
+  };
+
   // ---- Scrolling: follow the answer while you're at the bottom; stay put if you scrolled up ----
   const scroller = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
@@ -296,6 +342,7 @@ export function Assistant(props: {
   // Only you can unstick it: a scroll the answer's own growth caused never counts.
   const touched = useRef(0);
   const onScroll = () => {
+    placeReply();
     const el = scroller.current!;
     const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
     if (gap < 48) stick.current = true;
@@ -368,7 +415,12 @@ export function Assistant(props: {
         onPointerDown={markTouched}
         onKeyDown={(e) => ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key) && markTouched()}
       >
-        <div className="ask-content" ref={content}>
+        <div
+          className="ask-content"
+          ref={content}
+          onMouseUp={() => setTimeout(placeReply, 0)}
+          onKeyUp={(e) => e.shiftKey && placeReply()}
+        >
           {messages.length === 0 ? (
             <Welcome looking={context} project={!!props.project} onPick={(t) => void send(t)} />
           ) : (
@@ -405,7 +457,12 @@ export function Assistant(props: {
           value={draft}
           setValue={setDraft}
           running={running}
-          onSend={(text) => void send(text)}
+          onSend={(text) => {
+            void send(withQuote(text));
+            setQuote(null);
+          }}
+          quote={quote}
+          onDropQuote={() => setQuote(null)}
           onMention={(c) => addCards([c])}
           cards={cards}
           onStop={stop}
@@ -414,6 +471,21 @@ export function Assistant(props: {
           lastAsked={messages.findLast((m) => m.role === "user")?.text}
         />
       </div>
+
+      {reply &&
+        open &&
+        createPortal(
+          <button
+            className="reply-btn"
+            style={{ left: reply.x, top: reply.y }}
+            // Keeps the selection while clicking.
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => replyTo(reply.text)}
+          >
+            <Icon name="reply" size={13} /> Reply
+          </button>,
+          document.body,
+        )}
 
       {history && (
         <Popover x={history.x} y={history.y} onClose={() => setHistory(null)}>
@@ -614,8 +686,12 @@ function Welcome({ looking, project, onPick }: { looking: Ref | null; project?: 
 
 function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, RefCard>; onOpen: (id: string) => void }) {
   const about = m.context?.open ? cards.get(m.context.open) : null;
+  // A reply starts with what it replies to, as "> " lines.
+  const q = m.text.match(/^((?:>[^\n]*(?:\n|$))+)\s*/);
+  const quoted = q ? q[1]!.split("\n").map((l) => l.replace(/^> ?/, "")).join("\n").trim() : null;
+  const body = q ? m.text.slice(q[0].length) : m.text;
   // Saves mentioned with @ travel as [[id]] and show as their chips.
-  const pieces = m.text.split(/(\[\[[0-9a-f]{16}\]\])/);
+  const pieces = body.split(/(\[\[[0-9a-f]{16}\]\])/);
   return (
     <div className="msg-user">
       {about && (
@@ -623,6 +699,12 @@ function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, 
           {about.thumb && <img src={about.thumb} alt="" />}
           <span>{about.title}</span>
         </button>
+      )}
+      {quoted && (
+        <div className="msg-quote">
+          <Icon name="reply" size={11} />
+          <span>{quoted}</span>
+        </div>
       )}
       <div className="msg-bubble">
         {pieces.map((t, i) => {
@@ -917,6 +999,8 @@ function Composer(props: {
   lastAsked?: string;
   cards: Map<string, RefCard>;
   onMention: (c: RefCard) => void;
+  quote: string | null;
+  onDropQuote: () => void;
 }) {
   const { value, running, context } = props;
   // Saves mentioned with @, by the label written in the text ("@Swiss poster").
@@ -1041,6 +1125,15 @@ function Composer(props: {
           </button>
         </div>
       )}
+      {props.quote && (
+        <div className="composer-quote" key={props.quote}>
+          <Icon name="reply" size={12} />
+          <span className="composer-quote-text">{props.quote}</span>
+          <button onClick={props.onDropQuote} aria-label="Don't reply to this" title="Don't reply to this">
+            <Icon name="x" size={11} />
+          </button>
+        </div>
+      )}
       {mentioned.length > 0 && (
         <div className="composer-mentions">
           {mentioned.map(([label, c]) => (
@@ -1056,7 +1149,7 @@ function Composer(props: {
           ref={props.inputRef}
           value={value}
           rows={1}
-          placeholder={context ? "Ask about this, or anything in your library. @ to mention a save" : "Ask anything about your library. @ to mention a save"}
+          placeholder={props.quote ? "Reply to this" : context ? "Ask about this, or anything in your library. @ to mention a save" : "Ask anything about your library. @ to mention a save"}
           onChange={(e) => {
             props.setValue(e.target.value);
             look(e.target.value, e.target.selectionStart);
@@ -1102,6 +1195,7 @@ function Composer(props: {
             if (e.key === "Escape") {
               // Only leaves the composer; doesn't also close what's open behind it.
               e.stopPropagation();
+              if (props.quote && !value) return props.onDropQuote();
               e.currentTarget.blur();
             }
           }}

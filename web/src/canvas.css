@@ -139,6 +139,7 @@
 .bn-tool:hover { background: var(--fill); color: var(--text); }
 .bn-tool.on { background: var(--text); color: var(--bg); }
 .bn-tool.danger:hover { color: var(--bad); }
+.bn-tools-count { display: inline-flex; align-items: center; padding: 0 10px 0 9px; margin-right: 2px; font-size: 12px; font-weight: 500; color: var(--text); white-space: nowrap; border-right: 1px solid var(--line); }
 
 /* ---- The project's name, small in the corner; About opens from it ---- */
 

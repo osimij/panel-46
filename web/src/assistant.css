@@ -129,9 +129,9 @@
 .rt code { font: 500 12px/1 ui-monospace, "SF Mono", Menlo, monospace; background: var(--fill); padding: 2px 5px; border-radius: 5px; }
 .rt-link { text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; }
 .rt-link:hover { text-decoration-color: currentColor; }
-/* Each new word comes into focus (after a booking-flow save whose headline blurs in word by word). */
-.rt-live .w { animation: word-in 0.7s cubic-bezier(0.2, 0.6, 0.2, 1) both; }
-@keyframes word-in { from { opacity: 0; filter: blur(6px); } 40% { opacity: 0.75; } }
+/* Each new word fades in: opacity only, no blur, so a long answer stays light to draw. */
+.rt-live .w { animation: word-in 0.38s var(--ease) both; }
+@keyframes word-in { from { opacity: 0; } }
 
 /* A save, named in the text */
 .ref-chip {
@@ -146,7 +146,7 @@
 .ref-chip-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .ref-chip-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ref-chip.loading .ref-chip-thumb, .gallery-thumb:not(:has(img.loaded)) { background: linear-gradient(90deg, var(--card), var(--fill-hover), var(--card)); background-size: 220% 100%; animation: shimmer 1.4s linear infinite; }
-@keyframes chip-in { from { opacity: 0; transform: scale(0.9); filter: blur(4px); } }
+@keyframes chip-in { from { opacity: 0; transform: scale(0.94); } }
 
 .peek {
   position: fixed; z-index: 200; translate: 0 -100%; pointer-events: none;
@@ -178,7 +178,7 @@
   animation: card-pop 0.6s var(--ease) both;
 }
 .gallery-card:active { transform: scale(0.97); }
-@keyframes card-pop { from { opacity: 0; transform: translateY(10px) scale(0.96); filter: blur(6px); } }
+@keyframes card-pop { from { opacity: 0; transform: translateY(8px) scale(0.97); } }
 .gallery-thumb {
   position: relative; display: block; overflow: hidden; background: var(--card);
   border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner);
@@ -239,7 +239,7 @@
 .thumbs img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .step { position: relative; display: grid; grid-template-columns: 13px 1fr; gap: 7px; padding: 3px 0; animation: step-in 0.45s var(--ease) both; }
-@keyframes step-in { from { opacity: 0; transform: translateY(4px); filter: blur(3px); } }
+@keyframes step-in { from { opacity: 0; transform: translateY(4px); } }
 .step:not(:last-child)::before {
   content: ""; position: absolute; left: 6px; top: 16px; bottom: -6px; width: 1px; background: var(--line);
 }
@@ -368,6 +368,34 @@
 .composer-mention span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-bubble .ref-chip { vertical-align: middle; }
 
+/* ---- Replying to part of the conversation ---- */
+.reply-btn {
+  position: fixed; z-index: 60; translate: -50% calc(-100% - 8px);
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px 0 9px;
+  font-size: 12.5px; font-weight: 500; color: var(--bg); background: var(--text);
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 10px 28px -10px oklch(0 0 0 / 0.5);
+  animation: reply-in 0.28s var(--spring);
+}
+.reply-btn:hover { background: color-mix(in oklch, var(--text) 88%, var(--bg)); }
+@keyframes reply-in { from { opacity: 0; transform: translateY(4px) scale(0.92); } }
+.composer-quote {
+  display: flex; align-items: flex-start; gap: 7px; margin: 2px 0 4px -6px; padding: 6px 4px 6px 8px;
+  font-size: 12px; line-height: 1.4; color: var(--muted); background: var(--fill);
+  border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner);
+  animation: rise-in 0.35s var(--ease) both;
+}
+.composer-quote > .icon { flex: none; margin-top: 2px; color: var(--faint); }
+.composer-quote-text { flex: 1; min-width: 0; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+.composer-quote button { width: 20px; height: 20px; flex: none; border-radius: 50%; display: grid; place-items: center; color: var(--faint); }
+.composer-quote button:hover { background: var(--fill-hover); color: var(--text); }
+.msg-quote {
+  display: flex; align-items: flex-start; gap: 6px; max-width: 100%; padding: 2px 4px 0 0;
+  font-size: 12px; line-height: 1.4; color: var(--faint);
+}
+.msg-quote .icon { flex: none; margin-top: 2px; }
+.msg-quote span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; text-align: right; }
+
 /* ---- History ---- */
 .ask-history { max-height: 340px; overflow-y: auto; width: 250px; }
 .ask-history-row { position: relative; }
@@ -461,6 +489,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rt-live .w, .ref-chip, .gallery-card, .step, .msg-bubble, .ask-idea, .mention-pick, .mention-row, .composer-mention { animation: none !important; }
+  .rt-live .w, .ref-chip, .gallery-card, .step, .msg-bubble, .ask-idea, .mention-pick, .mention-row, .composer-mention, .reply-btn, .composer-quote { animation: none !important; }
   .mark i, .composer::before { animation: none !important; }
 }

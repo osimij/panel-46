@@ -9,7 +9,7 @@ import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffec
 import { createPortal } from "react-dom";
 import {
   Background, BackgroundVariant, ConnectionMode, Handle, NodeToolbar, Position, ReactFlow, ReactFlowProvider,
-  applyEdgeChanges, applyNodeChanges, getBezierPath, useInternalNode, useReactFlow,
+  applyEdgeChanges, applyNodeChanges, getBezierPath, useInternalNode, useReactFlow, useStore,
   type Connection, type Edge, type EdgeChange, type EdgeProps, type InternalNode, type Node, type NodeChange, type NodeProps, type Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/base.css";
@@ -96,6 +96,13 @@ function Handles() {
     </>
   );
 }
+
+/** Only one thing selected? A node shows its own tools then; several share one toolbar (SelectionTools). */
+const selectAlone = (s: { nodes: { selected?: boolean }[] }) => {
+  let n = 0;
+  for (const x of s.nodes) if (x.selected && ++n > 1) return false;
+  return true;
+};
 
 function Tool(props: { icon: Parameters<typeof Icon>[0]["name"]; label: string; on?: boolean; danger?: boolean; onClick: () => void }) {
   return (
@@ -185,6 +192,7 @@ function Grow(props: { value: string; placeholder: string; className: string; au
 
 const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<TopicNode>) {
   const act = useActions();
+  const alone = useStore(selectAlone);
   const locked = data.status === "locked";
   const [renaming, setRenaming] = useState(!!data.focus);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -229,7 +237,7 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
           onCommit={(v) => act.patch(id, { summary: v })}
         />
       )}
-      <NodeToolbar isVisible={selected && !data.leaving} position={Position.Top} offset={10}>
+      <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
           <Tool icon={locked ? "refresh" : "check"} label={locked ? "Reopen" : "Lock"} on={locked} onClick={() => act.patch(id, { status: locked ? "exploring" : "locked" })} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
@@ -243,6 +251,7 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
 
 const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>) {
   const act = useActions();
+  const alone = useStore(selectAlone);
   const card = act.cards.get(data.refId);
   const state = data.state ?? "kept";
   const ratio = card?.ratio ?? 0.75;
@@ -264,7 +273,7 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
           </span>
         )}
       </div>
-      <NodeToolbar isVisible={selected && !data.leaving} position={Position.Top} offset={10}>
+      <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
           <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
           {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
@@ -534,6 +543,17 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
     (nid: string, data: Record<string, unknown>) => {
       setNodes((ns) => ns.map((n) => (n.id === nid ? ({ ...n, data: { ...n.data, ...data } } as AnyNode) : n)));
       commit([{ op: "update_node", id: nid, data }]);
+    },
+    [commit],
+  );
+
+  /** The same change to several things at once: one step, so one ⌘Z takes it all back. */
+  const patchMany = useCallback(
+    (ids: string[], data: Record<string, unknown>) => {
+      if (!ids.length) return;
+      const set = new Set(ids);
+      setNodes((ns) => ns.map((n) => (set.has(n.id) ? ({ ...n, data: { ...n.data, ...data } } as AnyNode) : n)));
+      commit(ids.map((x) => ({ op: "update_node" as const, id: x, data })));
     },
     [commit],
   );
@@ -920,6 +940,7 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
           fitViewOptions={{ padding: 0.25 }}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--dot)" />
+          <SelectionTools nodes={shownNodes} patchMany={patchMany} remove={remove} />
         </ReactFlow>
 
         {empty && (
@@ -952,6 +973,32 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
         )}
       </div>
     </Ctx.Provider>
+  );
+}
+
+// ---------- Several things selected: one toolbar for them all ----------
+
+function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], data: Record<string, unknown>) => void; remove: (ids: string[]) => void }) {
+  const picked = props.nodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
+  if (picked.length < 2) return null;
+  const refs = picked.filter((n) => n.type === "ref") as RefNode[];
+  const ids = refs.map((n) => n.id);
+  const every = (st: RefState) => refs.length > 0 && refs.every((n) => (n.data.state ?? "kept") === st);
+  const someProposed = refs.some((n) => n.data.state === "proposed");
+  return (
+    <NodeToolbar nodeId={picked.map((n) => n.id)} isVisible position={Position.Top} offset={14}>
+      <div className="bn-tools many" key={picked.length}>
+        <span className="bn-tools-count">{picked.length} selected</span>
+        {refs.length > 0 && (
+          <>
+            <Tool icon="check" label="Choose" on={every("chosen")} onClick={() => props.patchMany(ids, { state: every("chosen") ? "kept" : "chosen" })} />
+            {someProposed && <Tool icon="plus" label="Keep" onClick={() => props.patchMany(refs.filter((n) => n.data.state === "proposed").map((n) => n.id), { state: "kept" })} />}
+            <Tool icon="x" label="Rule out" on={every("ruled_out")} onClick={() => props.patchMany(ids, { state: every("ruled_out") ? "kept" : "ruled_out" })} />
+          </>
+        )}
+        <Tool icon="trash" label="Remove" danger onClick={() => props.remove(picked.map((n) => n.id))} />
+      </div>
+    </NodeToolbar>
   );
 }
 

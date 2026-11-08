@@ -47,6 +47,7 @@ const paths = {
   "arrow-down": <path d="M12 5v14m0 0-6-6m6 6 6-6" />,
   stop: <rect x="7" y="7" width="10" height="10" rx="2.5" fill="currentColor" stroke="none" />,
   history: <><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 9" /><path d="M4.5 4.5V9H9M12 8v4.2l2.8 1.8" /></>,
+  reply: <path d="M9.5 7 5 11.5 9.5 16M5.5 11.5H14a5 5 0 0 1 5 5V18" />,
   sidebar: <><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="M9.5 5v14" /></>,
   upload: <path d="M12 16V5m0 0L7.5 9.5M12 5l4.5 4.5M5 19h14" />,
   compose: <path d="M11.5 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4.5M17.2 4.8l2 2L12 14l-2.8.8.8-2.8 7.2-7.2Z" />,

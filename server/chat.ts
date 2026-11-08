@@ -230,10 +230,11 @@ function partialInput(json: string): Record<string, unknown> {
   return found;
 }
 
-/** A message with each [[id]] written as the save's name, for titles. */
+/** A message with each [[id]] written as the save's name, for titles; a reply's quote left out when there's a question after it. */
 function readable(text: string) {
   const { docs } = load();
-  return text.replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+  const asked = text.replace(/^(?:>[^\n]*(?:\n|$))+\s*/, "");
+  return (asked.trim() ? asked : text).replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
     const d = docs.get(id);
     return d ? cardOf(d).title : all;
   });
