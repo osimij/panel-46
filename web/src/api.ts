@@ -656,6 +656,22 @@ export interface BoardEvent {
 /** Ids made here, so a node can be drawn before the companion has answered. Same shape as the companion's. */
 export const localId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
 
+export interface Material {
+  id: string;
+  kind: "file" | "link";
+  name: string;
+  note: string;
+  url: string | null;
+  mime: string | null;
+  size: number | null;
+  /** Characters of text Claude can read; 0 for a picture or when none could be read. */
+  chars: number;
+  picture: boolean;
+  file_url: string | null;
+  thumb_url: string | null;
+  created_at: string;
+}
+
 export const projectApi = {
   list: () => call<ProjectSummary[]>("/api/projects"),
   create: (name: string, brief = "") => call<{ id: string; name: string; brief: string }>("/api/projects", { method: "POST", body: body({ name, brief }) }),
@@ -666,6 +682,18 @@ export const projectApi = {
   /** Undo this window's last change (who: "me", ⌘Z) or the assistant's last change. */
   undo: (id: string, client: string, who: "me" | "assistant") =>
     call<{ seq: number | null; ops: BoardOp[]; cards: RefCard[]; undid: string | null }>(`/api/projects/${id}/undo`, { method: "POST", body: body({ client, who }) }),
+  /** Files and links that say what the project is, for Claude to read. */
+  materials: (id: string) => call<Material[]>(`/api/projects/${id}/materials`),
+  addFiles: (id: string, files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("file", f, f.name);
+    return call<{ added: Material[]; failed: string[] }>(`/api/projects/${id}/materials`, { method: "POST", body: form });
+  },
+  addLink: (id: string, url: string) =>
+    call<{ added: Material[]; failed: string[] }>(`/api/projects/${id}/materials`, { method: "POST", body: body({ url }) }),
+  updateMaterial: (id: string, mid: string, patch: { name?: string; note?: string }) =>
+    call<Material>(`/api/projects/${id}/materials/${mid}`, { method: "PATCH", body: body(patch) }),
+  removeMaterial: (id: string, mid: string) => call<{ ok: boolean }>(`/api/projects/${id}/materials/${mid}`, { method: "DELETE" }),
   /** Follow changes made anywhere (other windows, Claude over MCP) from `after` on, until `signal` aborts. */
   async follow(id: string, after: number, on: (e: BoardEvent | { gone: true }) => void, signal: AbortSignal) {
     const res = await fetch(`/api/projects/${id}/stream?after=${after}`, { signal });

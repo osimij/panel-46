@@ -26,7 +26,9 @@
   --med: 0.18s;
   --slow: 0.5s;
 
-  --side: 252px;
+  /* --side-w is the sidebar's own width; --side is the room it takes on the page, a thin strip when tucked away (⌘B). */
+  --side-w: 252px;
+  --side: var(--side-w);
   --panel: 384px;
   --radius: 8px;
   /* Apple-style continuous corners. Where the browser can draw superellipse corners,
@@ -112,10 +114,18 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .app { display: flex; min-height: 100vh; }
 
 .sidebar {
-  position: fixed; top: 0; bottom: 0; left: 0; width: var(--side);
+  position: fixed; top: 0; bottom: 0; left: 0; width: var(--side-w);
   display: flex; flex-direction: column; gap: 22px; padding: 16px 16px 16px; overflow: hidden auto;
   z-index: 25; background: var(--bg); white-space: nowrap;
 }
+.side-top { display: flex; align-items: flex-start; justify-content: space-between; }
+.side-tuck {
+  width: 28px; height: 28px; margin: 4px -6px 0 0; display: grid; place-items: center; color: var(--faint);
+  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+  opacity: 0; transition: opacity var(--med) var(--ease), background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.sidebar:hover .side-tuck, .side-tuck:focus-visible { opacity: 1; }
+.side-tuck:hover { background: var(--fill); color: var(--text); }
 .brand { width: 42px; height: 42px; margin: -3px 0 6px -4px; display: grid; place-items: center; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); }
 /* The logo file is only a shape here; it takes the text colour, so it follows light and dark. */
 .brand-mark {
@@ -584,13 +594,21 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 /* Closing the item slides the sidebar back in rather than snapping it there. */
 .sidebar { transition: left var(--peek); }
 /* Both move by position (not one by transform), so they're laid out together every frame and can't drift apart. */
-.app.detail-open .sidebar {
-  left: calc(-1 * var(--side)); visibility: hidden;
+.app.detail-open .sidebar, .app.side-tucked .sidebar {
+  left: calc(-1 * var(--side-w)); visibility: hidden;
   transition: left var(--peek), visibility 0s linear 0.42s;
 }
-.app.detail-open.side-peek .sidebar { left: 0; visibility: visible; transition: left var(--peek), visibility 0s; }
+.app.detail-open.side-peek .sidebar, .app.side-tucked.side-peek .sidebar { left: 0; visibility: visible; transition: left var(--peek), visibility 0s; }
+/* Tucked away, it comes over the page rather than pushing it, so it casts a soft edge. */
+.app.side-tucked:not(.detail-open).side-peek .sidebar { box-shadow: 1px 0 0 var(--line), 30px 0 60px -36px oklch(0 0 0 / 0.4); }
 .app.detail-open .detail { left: var(--rail); transition: left var(--peek); }
-.app.detail-open.side-peek .detail { left: var(--side); }
+.app.detail-open.side-peek .detail { left: var(--side-w); }
+/* ⌘B: the page takes the sidebar's room, and everything placed by --side (the page, the dock,
+   the open item, the toasts) slides there together. Registered so it can glide. */
+@property --side { syntax: "<length>"; inherits: true; initial-value: 252px; }
+.app { transition: --side var(--peek); }
+.app.side-tucked { --side: var(--rail); }
+.app.side-tucked .side-rail { cursor: pointer; }
 .detail-scrim {
   position: absolute; inset: 0; background: var(--scrim);
   -webkit-backdrop-filter: blur(18px) saturate(1.2); backdrop-filter: blur(18px) saturate(1.2);

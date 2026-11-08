@@ -12,6 +12,7 @@
 import { db, newId, now } from "./db.ts";
 import { load, panelUrl, type Doc } from "./library.ts";
 import { PORT } from "./config.ts";
+import { materialsForSummary, removeProjectFiles } from "./materials.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS projects (
@@ -146,6 +147,7 @@ export function createProject(name: string, brief = "") {
 
 export function deleteProject(id: string) {
   db.run("DELETE FROM projects WHERE id = ?", [id]);
+  removeProjectFiles(id);
 }
 
 /** Everything the canvas needs to draw a project. */
@@ -497,6 +499,10 @@ export function summary(idOrName: string) {
     project: p.name,
     id: p.id,
     brief: p.brief || undefined,
+    materials: (() => {
+      const m = materialsForSummary(p.id);
+      return m.length ? m : undefined;
+    })(),
     updated_at: p.updated_at,
     decisions,
     not_filed_yet: looseRefs.length || looseNotes.length
@@ -505,7 +511,7 @@ export function summary(idOrName: string) {
           notes: looseNotes.length ? looseNotes.map((n) => String(n.data.text ?? "").trim()).filter(Boolean) : undefined,
         }
       : undefined,
-    how_to_read: "Locked topics are settled: build from their chosen saves and notes. Ruled-out saves say what to avoid. The designer's notes outrank the saves' reads.",
+    how_to_read: "The brief and materials say what the project is: read the materials that matter with get_project_material before designing. Locked topics are settled: build from their chosen saves and notes. Ruled-out saves say what to avoid. The designer's notes outrank the saves' reads.",
     open: `http://127.0.0.1:${PORT}/?project=${p.id}`,
   };
 }

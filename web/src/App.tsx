@@ -141,6 +141,31 @@ export function App() {
       /* not remembered, that's all */
     }
   }, []);
+  // The sidebar, tucked away to a strip with ⌘B (hover the strip to see it), remembered between visits.
+  const [tucked, setTuckedState] = useState(() => {
+    try {
+      return localStorage.getItem("panel.side.tucked") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setTucked = useCallback((v: boolean | ((was: boolean) => boolean)) => {
+    setTuckedState((was) => {
+      const next = typeof v === "function" ? v(was) : v;
+      try {
+        localStorage.setItem("panel.side.tucked", next ? "1" : "0");
+      } catch {
+        /* not remembered, that's all */
+      }
+      return next;
+    });
+  }, []);
+  const [peek, setPeek] = useState(false);
+  const peekTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const peekTo = useCallback((show: boolean, delay: number) => {
+    clearTimeout(peekTimer.current);
+    peekTimer.current = setTimeout(() => setPeek(show), delay);
+  }, []);
   const [askRunning, setAskRunning] = useState(false);
   // An answer that finished while Ask was closed: a dot on its button until you look.
   const [askUnread, setAskUnread] = useState(false);
@@ -326,6 +351,13 @@ export function App() {
           }
           return !v;
         });
+        return;
+      }
+      // ⌘B: the sidebar, tucked away or back.
+      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setPeek(false);
+        setTucked((v) => !v);
         return;
       }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "u") {
@@ -568,25 +600,23 @@ export function App() {
   // ---- The sidebar while something is open: tucked away to a strip, back on hover ----
   // A short pause before it opens (so brushing past the edge does nothing) and a slightly
   // longer one before it closes (so slipping off it for a moment doesn't snap it shut).
-  const [peek, setPeek] = useState(false);
-  const peekTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const peekTo = useCallback((show: boolean, delay: number) => {
-    clearTimeout(peekTimer.current);
-    peekTimer.current = setTimeout(() => setPeek(show), delay);
-  }, []);
+  // The same strip stands in for the sidebar while it's tucked away (⌘B).
+  const railed = !!open || tucked;
   useEffect(() => {
-    if (!open) {
+    if (!railed) {
       clearTimeout(peekTimer.current);
       setPeek(false);
     }
-  }, [open]);
-  const sidebarHover = open
+  }, [railed]);
+  const sidebarHover = railed
     ? { onMouseEnter: () => clearTimeout(peekTimer.current), onMouseLeave: () => peekTo(false, 220) }
     : undefined;
 
   const changeScope = (s: Scope) => {
     // Picking a page from the sidebar (revealed over an open item) closes the item and goes there.
     setOpen(null);
+    clearTimeout(peekTimer.current);
+    setPeek(false);
     setScope(s);
     window.scrollTo({ top: 0 });
   };
@@ -634,10 +664,18 @@ export function App() {
   );
 
   return (
-    <div className={`app ${open ? "detail-open" : ""} ${open && peek ? "side-peek" : ""} ${askOpen ? "chat-open" : ""} ${onCanvas ? "on-canvas" : ""}`} {...dropHandlers}>
-      {/* While something is open the sidebar tucks away to this strip; hover it to bring the sidebar back. */}
-      {open && (
-        <div className="side-rail" aria-hidden onMouseEnter={() => peekTo(true, 70)} onMouseLeave={() => peekTo(false, 220)}>
+    <div className={`app ${open ? "detail-open" : ""} ${tucked ? "side-tucked" : ""} ${railed && peek ? "side-peek" : ""} ${askOpen ? "chat-open" : ""} ${onCanvas ? "on-canvas" : ""}`} {...dropHandlers}>
+      {/* While something is open, or the sidebar is tucked away (⌘B), the sidebar waits in this strip;
+          hover it to bring the sidebar over the page. Clicking it while tucked brings the sidebar back for good. */}
+      {railed && (
+        <div
+          className="side-rail"
+          aria-hidden
+          onMouseEnter={() => peekTo(true, 70)}
+          onMouseLeave={() => peekTo(false, 220)}
+          onClick={() => !open && setTucked(false)}
+          title={!open ? "Show the sidebar (⌘B)" : undefined}
+        >
           <RailHandle />
         </div>
       )}
@@ -653,6 +691,11 @@ export function App() {
         onError={(t) => say(t, "error")}
         onSettings={() => setSettingsOpen(true)}
         hover={sidebarHover}
+        tucked={tucked}
+        onTuck={() => {
+          setPeek(false);
+          setTucked((v) => !v);
+        }}
       />
 
       <main className="main">
@@ -1039,6 +1082,8 @@ function Sidebar(props: {
   onError: (text: string) => void;
   onSettings: () => void;
   hover?: { onMouseEnter: () => void; onMouseLeave: () => void };
+  tucked: boolean;
+  onTuck: () => void;
 }) {
   const { scope, setScope, stats, collections } = props;
   const [creating, setCreating] = useState(false);
@@ -1103,9 +1148,20 @@ function Sidebar(props: {
 
   return (
     <aside className="sidebar" {...props.hover}>
-      <button className="brand" onClick={() => setScope({ kind: "all" })} aria-label="Panel, go to library">
-        <span className="brand-mark" aria-hidden />
-      </button>
+      <div className="side-top">
+        <button className="brand" onClick={() => setScope({ kind: "all" })} aria-label="Panel, go to library">
+          <span className="brand-mark" aria-hidden />
+        </button>
+        <button
+          className="side-tuck"
+          onClick={props.onTuck}
+          aria-label={props.tucked ? "Keep the sidebar open" : "Tuck the sidebar away"}
+          title={props.tucked ? "Keep the sidebar open (⌘B)" : "Tuck the sidebar away (⌘B)"}
+          aria-keyshortcuts="Meta+B"
+        >
+          <Icon name="sidebar" size={16} />
+        </button>
+      </div>
 
       <div className="side-group">
         <div className="side-heading">Browse</div>

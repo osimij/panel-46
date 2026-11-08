@@ -9,6 +9,7 @@ import { abs } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
+import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, type Op } from "./projects.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat } from "./chat.ts";
 
@@ -368,6 +369,57 @@ async function handle(req: Request): Promise<Response> {
     const b = (await req.json().catch(() => ({}))) as { name?: string; brief?: string };
     try {
       return json(createProject(String(b.name ?? ""), String(b.brief ?? "")));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  // Its materials: files and links that say what the project is.
+  const materialRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/materials(?:\/([0-9a-f]{16})(\/file|\/view)?)?$/);
+  if (materialRoute) {
+    const [, pid, mid, sub] = materialRoute as unknown as [string, string, string | undefined, string | undefined];
+    if (!getProject(pid)) return bad("That project is gone.", 404);
+    try {
+      if (!mid && m === "GET") return json(listMaterials(pid));
+      if (!mid && m === "POST") {
+        if ((req.headers.get("content-type") ?? "").includes("multipart/form-data")) {
+          const form = await req.formData();
+          const added = [];
+          const failed: string[] = [];
+          for (const f of form.getAll("file")) {
+            if (typeof f === "string") continue;
+            try {
+              added.push(await addFile(pid, f));
+            } catch (e) {
+              failed.push((e as Error).message);
+            }
+          }
+          return json({ added, failed });
+        }
+        const b = (await req.json().catch(() => ({}))) as { url?: string; note?: string };
+        return json({ added: [await addLink(pid, String(b.url ?? ""), String(b.note ?? ""))], failed: [] });
+      }
+      if (mid && !sub && m === "PATCH") {
+        const b = (await req.json().catch(() => ({}))) as { name?: string; note?: string };
+        return json(updateMaterial(pid, mid, b));
+      }
+      if (mid && !sub && m === "DELETE") {
+        removeMaterial(pid, mid);
+        return json({ ok: true });
+      }
+      if (mid && sub && m === "GET") {
+        const f = materialFile(pid, mid, sub === "/view" ? "view" : "file");
+        if (!f || !(await Bun.file(f.path).exists())) return bad("That file is gone.", 404);
+        // Pages and drawings that could run scripts open as plain text, so a file can't act as Panel.
+        const active = /html|xml|svg|javascript/.test(f.mime);
+        return new Response(Bun.file(f.path), {
+          headers: {
+            "content-type": active ? "text/plain; charset=utf-8" : f.mime,
+            "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+            "cache-control": "private, max-age=31536000, immutable",
+            "x-content-type-options": "nosniff",
+          },
+        });
+      }
     } catch (e) {
       return bad((e as Error).message);
     }

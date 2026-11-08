@@ -3,7 +3,8 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { chosenRefs, listProjects, projectsOf, summary, REF_STATES, TOPIC_FACETS } from "./projects.ts";
+import { readMaterial } from "./materials.ts";
+import { chosenRefs, findProject, listProjects, projectsOf, summary, REF_STATES, TOPIC_FACETS } from "./projects.ts";
 import { addNote, addTopic, connectTopics, lockTopic, markSaves, placeOnBoard } from "./board.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, saveToCollection, search, similar } from "./library.ts";
 
@@ -17,7 +18,7 @@ Use it to find references for a brief and to combine them: color from one save, 
 - similar_to finds saves like one you have, by facet.
 - get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend.
 - save_to_collection puts the saves you chose in a Panel collection the designer can open.
-- Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one. When working on a project, read it first and build from its locked decisions.
+- Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials (files and links the designer added: specs, brand books, sites); get_project_material reads a material in full. When working on a project, read it and the materials that matter first, and build from its locked decisions.
 - On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
 Always give the designer the "open" link for each save you recommend, so they can watch or look at the original.`;
 
@@ -154,7 +155,7 @@ export function createMcpServer() {
 
   server.registerTool("get_project", {
     title: "Read a project",
-    description: "A project's canvas as decisions: the brief, then each topic (Typography, Color, …) in the order the designer connected them, with its status (locked or exploring), the saves chosen, kept, proposed and ruled out for it, what each offers for that topic, and the designer's notes on why. Then saves and notes not filed under a topic yet. Locked topics are settled: build from them. Read this before designing or building anything for a project.",
+    description: "A project's canvas as decisions: the brief and the materials the designer added (files and links, short ones whole, longer ones to read with get_project_material), then each topic (Typography, Color, …) in the order the designer connected them, with its status (locked or exploring), the saves chosen, kept, proposed and ruled out for it, what each offers for that topic, and the designer's notes on why. Then saves and notes not filed under a topic yet. Locked topics are settled: build from them. Read this before designing or building anything for a project.",
     inputSchema: {
       project: z.string().describe("The project's id or its name."),
       pictures: z.boolean().optional().describe("Also return the first picture of each chosen save, to see them. Default false."),
@@ -176,6 +177,33 @@ export function createMcpServer() {
             /* a save that's gone has no picture */
           }
         }
+      }
+      return { content };
+    } catch (e) {
+      return failure(e);
+    }
+  });
+
+  server.registerTool("get_project_material", {
+    title: "Read a project's material",
+    description: "One of a project's materials in full: a file the designer added (a spec, a brand book, notes; its text) or a picture (to look at), or a web page they linked (its text). get_project lists the materials with their ids and short ones whole; read the longer ones that matter here before designing. Long texts come in pages: call again with the offset it gives.",
+    inputSchema: {
+      project: z.string().describe("The project's id or name."),
+      id: z.string().describe("The material's id (or its name) from get_project."),
+      offset: z.number().int().min(0).optional().describe("Where to start in the text, for the next page of a long one."),
+    },
+    annotations: readOnly,
+  }, async ({ project, id, offset = 0 }) => {
+    try {
+      const p = findProject(project);
+      if (!p) throw new Error(`No project called “${project}”. list_projects shows them.`);
+      const m = readMaterial(p.id, id, offset);
+      const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
+        { type: "text", text: JSON.stringify(m.head) },
+      ];
+      if (m.text) content.push({ type: "text", text: m.text });
+      if (m.picture && (await Bun.file(m.picture).exists())) {
+        content.push({ type: "image", data: Buffer.from(await Bun.file(m.picture).arrayBuffer()).toString("base64"), mimeType: "image/jpeg" });
       }
       return { content };
     } catch (e) {

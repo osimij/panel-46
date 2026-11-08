@@ -16,7 +16,7 @@ import "@xyflow/react/dist/base.css";
 import "./canvas.css";
 import {
   api, chatApi, displayTitle, localId, prefersReducedMotion, projectApi,
-  type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type Ref, type RefCard, type RefState, type TopicFacet,
+  type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type Material, type Ref, type RefCard, type RefState, type TopicFacet,
 } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
@@ -952,63 +952,346 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
   );
 }
 
-// ---------- The project's name and brief ----------
+// ---------- The project's name, and its About panel ----------
 
+/**
+ * On the canvas the project is only its name, small in the corner, so the decisions get
+ * the room. Clicking it opens About: the name, what the project is, and its materials
+ * (files and links Claude reads to understand it), and deleting the project.
+ */
 function Head(props: {
   id: string; name: string; brief: string;
   commit: (ops: BoardOp[]) => void;
   setMeta: (m: { name: string; brief: string }) => void;
   onRenamed: () => void; onDeleted: () => void; onError: (t: string) => void;
 }) {
-  const [confirm, setConfirm] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [materials, setMaterials] = useState<Material[] | null>(null);
+  const wrap = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    projectApi.materials(props.id).then(setMaterials).catch(() => setMaterials([]));
+  }, [props.id]);
+
+  const close = useCallback(() => {
+    if (prefersReducedMotion()) return setOpen(false);
+    setClosing(true);
+    setTimeout(() => {
+      setOpen(false);
+      setClosing(false);
+    }, 170);
+  }, []);
+  const toggle = () => (open ? close() : setOpen(true));
+
+  // Esc or a click anywhere else closes it.
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!wrap.current?.contains(e.target as globalThis.Node)) close();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !(e.target as Element).closest?.("input, textarea")) close();
+    };
+    addEventListener("pointerdown", onDown, true);
+    addEventListener("keydown", onKey);
+    return () => {
+      removeEventListener("pointerdown", onDown, true);
+      removeEventListener("keydown", onKey);
+    };
+  }, [open, close]);
+
+  const count = materials?.length ?? 0;
   return (
-    <header className="canvas-head">
-      <input
-        className="canvas-name"
-        defaultValue={props.name}
-        key={props.name}
-        aria-label="Project name"
-        spellCheck={false}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === "Escape") (e.target as HTMLInputElement).blur();
-        }}
-        onBlur={(e) => {
-          const v = e.target.value.trim();
-          if (!v) return void (e.target.value = props.name);
-          if (v === props.name) return;
-          props.setMeta({ name: v, brief: props.brief });
-          props.commit([{ op: "update_project", name: v }]);
-          setTimeout(props.onRenamed, 300);
-        }}
-      />
-      <Grow
-        className="canvas-brief"
-        value={props.brief}
-        placeholder="What is this project? Who is it for? Claude reads this."
-        onCommit={(v) => {
-          props.setMeta({ name: props.name, brief: v });
-          props.commit([{ op: "update_project", brief: v }]);
-        }}
-      />
-      <div className="canvas-head-tools">
-        {confirm ? (
-          <>
-            <button
-              className="select-btn danger solid"
-              autoFocus
-              onBlur={() => setTimeout(() => setConfirm(false), 150)}
-              onClick={() => projectApi.remove(props.id).then(props.onDeleted).catch((e) => props.onError((e as Error).message))}
-            >
-              Delete project
-            </button>
-          </>
-        ) : (
-          <button className="round-btn small" onClick={() => setConfirm(true)} title="Delete this project (its saves stay in the library)" aria-label="Delete project">
-            <Icon name="trash" size={13} />
-          </button>
+    <header className="canvas-head" ref={wrap}>
+      <button className={`canvas-title ${open ? "on" : ""}`} onClick={toggle} aria-expanded={open} title="About this project">
+        <span className="canvas-title-name">{props.name}</span>
+        {(count > 0 || !props.brief) && (
+          <span className="canvas-title-meta">{count ? `${count} ${count === 1 ? "material" : "materials"}` : "Add what it's about"}</span>
         )}
-      </div>
+        <Icon name="chevron-down" size={13} />
+      </button>
+      {open && (
+        <About
+          {...props}
+          closing={closing}
+          materials={materials ?? []}
+          setMaterials={setMaterials}
+          onClose={close}
+        />
+      )}
     </header>
+  );
+}
+
+const sizeText = (n: number | null) =>
+  !n ? "" : n < 1024 ? `${n} B` : n < 1024 ** 2 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 ** 2).toFixed(n < 10 * 1024 ** 2 ? 1 : 0)} MB`;
+const kindText = (m: Material) => {
+  if (m.kind === "link") {
+    try {
+      return new URL(m.url!).host.replace(/^www\./, "");
+    } catch {
+      return "Link";
+    }
+  }
+  if (m.picture) return "Picture";
+  const ext = m.name.match(/\.([a-z0-9]{1,6})$/i)?.[1];
+  return ext ? ext.toUpperCase() : "File";
+};
+/** What Claude can do with it, in a word or two. */
+const readText = (m: Material) =>
+  m.picture ? "Claude can look at it" : m.chars ? (m.kind === "link" ? "page read" : "Claude can read it") : m.kind === "link" ? "page couldn't be read" : "no text found";
+
+type Pending = { key: string; name: string; kind: "file" | "link" };
+
+function About(props: {
+  id: string; name: string; brief: string; closing: boolean;
+  materials: Material[]; setMaterials: React.Dispatch<React.SetStateAction<Material[] | null>>;
+  commit: (ops: BoardOp[]) => void;
+  setMeta: (m: { name: string; brief: string }) => void;
+  onRenamed: () => void; onDeleted: () => void; onError: (t: string) => void; onClose: () => void;
+}) {
+  const [pending, setPending] = useState<Pending[]>([]);
+  const [link, setLink] = useState("");
+  const [over, setOver] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const depth = useRef(0);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const { id, setMaterials, onError } = props;
+
+  const addFiles = useCallback(
+    async (files: File[]) => {
+      if (!files.length) return;
+      const mine: Pending[] = files.map((f) => ({ key: localId(), name: f.name, kind: "file" }));
+      setPending((p) => [...p, ...mine]);
+      try {
+        const res = await projectApi.addFiles(id, files);
+        setMaterials((m) => [...(m ?? []), ...res.added]);
+        if (res.failed.length) onError(res.failed[0]!);
+      } catch (e) {
+        onError((e as Error).message);
+      } finally {
+        setPending((p) => p.filter((x) => !mine.includes(x)));
+      }
+    },
+    [id, setMaterials, onError],
+  );
+
+  const addLink = async () => {
+    const url = link.trim();
+    if (!url) return;
+    setLink("");
+    const mine: Pending = { key: localId(), name: url.replace(/^https?:\/\//, ""), kind: "link" };
+    setPending((p) => [...p, mine]);
+    try {
+      const res = await projectApi.addLink(id, url);
+      setMaterials((m) => [...(m ?? []), ...res.added]);
+    } catch (e) {
+      onError((e as Error).message);
+      setLink(url);
+    } finally {
+      setPending((p) => p.filter((x) => x !== mine));
+    }
+  };
+
+  const remove = (m: Material) => {
+    setMaterials((list) => list?.filter((x) => x.id !== m.id) ?? null);
+    projectApi.removeMaterial(id, m.id).catch((e) => {
+      onError((e as Error).message);
+      setMaterials((list) => [...(list ?? []), m]);
+    });
+  };
+
+  const setNote = (m: Material, note: string) => {
+    setMaterials((list) => list?.map((x) => (x.id === m.id ? { ...x, note } : x)) ?? null);
+    projectApi.updateMaterial(id, m.id, { note }).catch((e) => onError((e as Error).message));
+  };
+
+  // Files dropped here belong to the project, not the library: the drop stops here.
+  const hasFiles = (e: React.DragEvent) => [...e.dataTransfer.types].includes("Files");
+  const drop = {
+    onDragEnter: (e: React.DragEvent) => {
+      e.stopPropagation();
+      if (!hasFiles(e)) return;
+      depth.current++;
+      setOver(true);
+    },
+    onDragLeave: (e: React.DragEvent) => {
+      e.stopPropagation();
+      depth.current = Math.max(0, depth.current - 1);
+      if (!depth.current) setOver(false);
+    },
+    onDragOver: (e: React.DragEvent) => {
+      e.stopPropagation();
+      if (hasFiles(e)) {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }
+    },
+    onDrop: (e: React.DragEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      depth.current = 0;
+      setOver(false);
+      void addFiles([...e.dataTransfer.files]);
+    },
+  };
+
+  return (
+    <section className={`about ${props.closing ? "closing" : ""} ${over ? "over" : ""}`} aria-label="About this project" {...drop}>
+      <div className="about-scroll">
+        <div className="about-top">
+          <input
+            className="about-name"
+            defaultValue={props.name}
+            key={props.name}
+            aria-label="Project name"
+            spellCheck={false}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "Escape") (e.target as HTMLInputElement).blur();
+              e.stopPropagation();
+            }}
+            onBlur={(e) => {
+              const v = e.target.value.trim();
+              if (!v) return void (e.target.value = props.name);
+              if (v === props.name) return;
+              props.setMeta({ name: v, brief: props.brief });
+              props.commit([{ op: "update_project", name: v }]);
+              setTimeout(props.onRenamed, 300);
+            }}
+          />
+          <button className="about-x" onClick={props.onClose} aria-label="Close" title="Close (Esc)">
+            <Icon name="x" size={13} />
+          </button>
+        </div>
+
+        <div className="about-label">About the project</div>
+        <Grow
+          className="about-brief"
+          value={props.brief}
+          placeholder="What is it, who is it for, what must it do? Claude reads this before it suggests anything."
+          onCommit={(v) => {
+            props.setMeta({ name: props.name, brief: v });
+            props.commit([{ op: "update_project", brief: v }]);
+          }}
+        />
+
+        <div className="about-label">
+          Materials
+          {props.materials.length > 0 && <span className="about-count">{props.materials.length}</span>}
+        </div>
+        <p className="about-hint">Specs, brand books, screenshots, the old site. Claude reads them to understand the project.</p>
+
+        {(props.materials.length > 0 || pending.length > 0) && (
+          <ul className="about-list">
+            {props.materials.map((m, i) => (
+              <li key={m.id} className="mat" style={{ "--i": i } as React.CSSProperties}>
+                <a className="mat-icon" href={m.file_url ?? m.url ?? undefined} target="_blank" rel="noreferrer" tabIndex={-1}>
+                  {m.thumb_url ? <img src={m.thumb_url} alt="" loading="lazy" /> : <Icon name={m.kind === "link" ? "link" : "file"} size={15} />}
+                </a>
+                <div className="mat-body">
+                  <a className="mat-name" href={m.file_url ?? m.url ?? undefined} target="_blank" rel="noreferrer" title={m.name}>
+                    {m.name}
+                  </a>
+                  <span className={`mat-meta ${!m.chars && !m.picture ? "warn" : ""}`}>
+                    {[kindText(m), m.kind === "file" && sizeText(m.size), readText(m)].filter(Boolean).join(" · ")}
+                  </span>
+                  <MatNote value={m.note} onCommit={(v) => setNote(m, v)} />
+                </div>
+                <button className="mat-x" onClick={() => remove(m)} aria-label={`Remove ${m.name}`} title="Remove">
+                  <Icon name="x" size={12} />
+                </button>
+              </li>
+            ))}
+            {pending.map((p) => (
+              <li key={p.key} className="mat pending">
+                <span className="mat-icon"><span className="spinner" /></span>
+                <div className="mat-body">
+                  <span className="mat-name">{p.name}</span>
+                  <span className="mat-meta">{p.kind === "link" ? "Reading the page…" : "Reading…"}</span>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <div className="about-add">
+          <button className="about-add-btn" onClick={() => fileInput.current?.click()}>
+            <Icon name="upload" size={14} /> Add files
+          </button>
+          <input
+            className="about-link"
+            value={link}
+            placeholder="Paste a link"
+            spellCheck={false}
+            onChange={(e) => setLink(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void addLink();
+              if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+              e.stopPropagation();
+            }}
+            onPaste={(e) => e.stopPropagation()}
+          />
+          {link.trim() && (
+            <button className="about-add-btn solid" onClick={() => void addLink()}>
+              Add
+            </button>
+          )}
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              void addFiles([...(e.target.files ?? [])]);
+              e.target.value = "";
+            }}
+          />
+        </div>
+        <p className="about-drop">or drop files here</p>
+
+        <div className="about-foot">
+          {confirm ? (
+            <>
+              <span className="about-foot-text">Delete “{props.name}”? Its saves stay in the library.</span>
+              <button className="about-foot-btn" onClick={() => setConfirm(false)}>Cancel</button>
+              <button
+                className="select-btn danger solid"
+                autoFocus
+                onClick={() => projectApi.remove(props.id).then(props.onDeleted).catch((e) => props.onError((e as Error).message))}
+              >
+                Delete project
+              </button>
+            </>
+          ) : (
+            <button className="about-foot-btn danger" onClick={() => setConfirm(true)}>
+              <Icon name="trash" size={12} /> Delete project
+            </button>
+          )}
+        </div>
+      </div>
+      {over && <div className="about-over">Drop to add to {props.name}</div>}
+    </section>
+  );
+}
+
+/** The designer's word on a material ("the client's brand book"), for Claude. */
+function MatNote(props: { value: string; onCommit: (v: string) => void }) {
+  const [v, setV] = useState(props.value);
+  useEffect(() => setV(props.value), [props.value]);
+  return (
+    <input
+      className={`mat-note ${v ? "has" : ""}`}
+      value={v}
+      placeholder="Add a note for Claude"
+      spellCheck={false}
+      onChange={(e) => setV(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === "Escape") (e.target as HTMLInputElement).blur();
+        e.stopPropagation();
+      }}
+      onBlur={() => v.trim() !== props.value && props.onCommit(v.trim())}
+    />
   );
 }
 
@@ -1020,18 +1303,19 @@ function Toolbar(props: { onTopic: (f: TopicFacet) => void; onNote: () => void; 
     <div className="canvas-bar" role="toolbar" aria-label="Canvas">
       <button
         className="canvas-bar-btn"
+        title="New topic"
         onClick={(e) => {
           const r = e.currentTarget.getBoundingClientRect();
           setMenu({ x: r.left, y: r.bottom });
         }}
       >
-        <Icon name="plus" size={15} /> Topic
+        <Icon name="plus" size={15} /> <span className="canvas-bar-label">Topic</span>
       </button>
-      <button className="canvas-bar-btn" onClick={props.onNote}>
-        <Icon name="pencil" size={14} /> Note
+      <button className="canvas-bar-btn" onClick={props.onNote} title="New note">
+        <Icon name="pencil" size={14} /> <span className="canvas-bar-label">Note</span>
       </button>
-      <button className={`canvas-bar-btn ${props.tray ? "on" : ""}`} onClick={props.onTray} aria-pressed={props.tray}>
-        <Icon name="image" size={14} /> Saves
+      <button className={`canvas-bar-btn ${props.tray ? "on" : ""}`} onClick={props.onTray} aria-pressed={props.tray} title="Saves from your library">
+        <Icon name="image" size={14} /> <span className="canvas-bar-label">Saves</span>
       </button>
       <span className="canvas-bar-sep" />
       <button className="canvas-bar-btn icon" onClick={props.onFit} title="Show everything" aria-label="Show everything">

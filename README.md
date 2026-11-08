@@ -84,7 +84,8 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | `gather_for_brief` | The best saves per facet for a brief, so color, type and motion can come from different saves |
 | `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from |
 | `list_projects` | Your projects, most recently worked on first |
-| `get_project` | A project's canvas as decisions: each topic, locked or exploring, with the saves chosen, kept, suggested and ruled out, and your notes on why. Optionally with pictures of the chosen saves |
+| `get_project` | A project's canvas as decisions: its brief and materials, then each topic, locked or exploring, with the saves chosen, kept, suggested and ruled out, and your notes on why. Optionally with pictures of the chosen saves |
+| `get_project_material` | One of a project's materials in full: a file's text (PDF, Word, text), a picture to look at, or a linked page's text |
 | `place_on_board` | Puts saves under a topic on a project's canvas as suggestions, each with a short why; makes the topic if needed |
 | `add_topic`, `connect_topics`, `add_note` | Grow the canvas: a new decision (optionally after another), Typography → Color, a note on a topic or save |
 | `mark_saves`, `lock_topic` | Choose, keep or rule out saves; lock a decision with a sentence. Only when you say so |
@@ -99,6 +100,8 @@ claude mcp add --scope user panel -- ~/.bun/bin/bun /Users/osimij/Desktop/Panel4
 For Claude Desktop or Cursor, the same command goes in their MCP config (`"command": "/Users/osimij/.bun/bin/bun", "args": ["/Users/osimij/Desktop/Panel46/server/mcp.ts"]`). Or over HTTP while Panel runs: `http://127.0.0.1:4646/mcp` (only this Mac's own addresses are accepted).
 
 ### Ask: the assistant
+
+Press **⌘B** to tuck the sidebar away to a thin strip on the left; point at the strip to bring it out over the page, click it (or ⌘B again) to keep it open.
 
 Press **⌘J** (or the small gray orb in the dock) to open Ask beside the library. It answers questions about your saves and pulls references for a brief: "a journaling app for slow mornings, warm and paper-like: color, type and motion". Saves it mentions show up as names with thumbnails, a row of pictures, or color chips you can click to copy. Click one to open it; point at one to see it larger and to light up its card in the grid.
 
@@ -122,6 +125,7 @@ Under **Projects** in the sidebar, each project is a canvas for working out a de
 - **The assistant works on the canvas.** With a project open, ask Ask for references ("suggest palettes that suit what's locked") and it places them under the right topic, one after another, as **Suggested** cards with a line on why. The view glides to them. **Keep**, **Choose** or **Rule out** each one. It never chooses or locks on its own; "lock it with the second one" does.
 - **Locking folds away what wasn't chosen** into "+5 considered" on the topic; click it to see them again.
 - **Undo**: ⌘Z undoes your own changes, one at a time. After the assistant changes the canvas, a note above the dock says what it did, with **Undo**, which takes back its whole reply (a topic, the saves under it, a note) at once. Claude Code's changes show up and undo the same way.
+- **About the project.** On the canvas the project is just its name in the corner. Click it for About: the name, what the project is, and its **materials**: drop in files (specs, brand books, screenshots) or paste links. Claude reads them (PDF and Word text, pictures, the linked page) to understand the project. Deleting the project is there too.
 - **Claude reads it as decisions**, not as boxes: `get_project` returns each topic in the order you connected them, what was chosen and ruled out, and your notes. When Ask is open on a canvas it knows which project you mean.
 - **Live**: every change is a small logged step (`project_events`), so a change made anywhere, including from Claude Code over MCP (its own process), shows up on an open canvas within half a second.
 - The canvas code (React Flow) loads only when a project is opened, so the library stays as light as before.

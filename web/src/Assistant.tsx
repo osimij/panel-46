@@ -770,6 +770,8 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
       const what = typeof i.project === "string" && !/^[0-9a-f]{16}$/.test(i.project) ? q(i.project) : "the project";
       return { doing: <>Reading {what}</>, done: <>Read {what}</> };
     }
+    case "get_project_material":
+      return { doing: "Reading the project's materials", done: "Read the project's materials" };
     case "place_on_board": {
       const n = Array.isArray(i.saves) ? i.saves.length : 0;
       const where = q(i.topic) ?? "a topic";
@@ -802,10 +804,11 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
     return ids;
   }, [parts]);
   const tools = parts.filter((p) => p.type === "tool");
-  const CANVAS = ["list_projects", "get_project", "place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic"];
+  const EDITS = ["place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic"];
+  const CANVAS = ["list_projects", "get_project", "get_project_material", ...EDITS];
   const searches = tools.filter((p) => p.type === "tool" && p.name !== "get_reference" && p.name !== "library_overview" && p.name !== "save_to_collection" && !CANVAS.includes(p.name)).length;
   const placed = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "place_on_board" ? (p.refs?.length ?? 0) : 0), 0);
-  const edited = tools.some((p) => p.type === "tool" && CANVAS.slice(3).includes(p.name));
+  const edited = tools.some((p) => p.type === "tool" && EDITS.includes(p.name));
   const looked = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "get_reference" ? ((p.input?.ids as string[] | undefined)?.length ?? 1) : 0), 0);
   const saved = tools.find((p) => p.type === "tool" && p.name === "save_to_collection");
   const read = tools.some((p) => p.type === "tool" && p.name === "library_overview");
