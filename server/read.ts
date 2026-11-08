@@ -15,6 +15,7 @@ import { MEDIA_DIR } from "./config.ts";
 import { db, getSetting, now, reindex, setSetting, type MediaRow, type RefRow } from "./db.ts";
 import { abs, probe, run } from "./media.ts";
 import { measurePalette, type Swatch } from "./palette.ts";
+import { applyReadTags, tagContext, tagGuide } from "./tagging.ts";
 
 // ---------- Settings ----------
 
@@ -470,7 +471,11 @@ Your profile is used later to find and combine references by facet. A designer w
 - A post with several images or videos comes with all of them, labeled by item.
 - worth_taking is the most useful field: 1–3 specific, transferable ideas ("oversized serif headline cropped by the viewport edge", "single acid-green accent on an otherwise grayscale UI"), never generic praise.
 - search_terms: lowercase words and short phrases someone might type to find this, including synonyms.
+- tags: the shelves this goes on in their library, picked the way they pick them. Follow the tagging guide below and use their existing tags, listed with each reference.
 - Be specific and brief. No filler, no marketing tone.`;
+
+/** The instructions for every read: the profile rules, then how this designer tags. */
+const system = () => `${SYSTEM}\n\n${tagGuide()}`;
 
 const str = (description: string) => ({ type: "string", description });
 const list = (description: string) => ({ type: "array", items: { type: "string" }, description });
@@ -522,6 +527,7 @@ const PROFILE_SCHEMA = obj({
   components: list("Interface parts shown: navigation, hero, pricing table, onboarding, chart, card grid, tab bar, modal, form… Empty if not an interface."),
   worth_taking: list("1–3 concrete ideas worth reusing elsewhere, one sentence each."),
   search_terms: list("10–25 lowercase words and short phrases someone might search for to find this."),
+  tags: list("Usually 1–3 of their existing tags for this section, chosen as the tagging guide describes. A new tag only when none of theirs fits the main reason it was saved."),
   limits: str("What you couldn't see or judge (e.g. motion from stills, text too small). Empty if nothing."),
 });
 
@@ -545,6 +551,7 @@ function context(r: RefRow, signals: Signals, palette: Swatch[]) {
       ? `Video: ${signals.video.duration}s long; ${signals.video.cuts} hard cuts in ${signals.video.seconds_checked}s (${(signals.video.cuts / Math.max(1, signals.video.seconds_checked / 60)).toFixed(1)} per minute)`
       : "",
     `Pictures: ${signals.visuals.map((v, i) => `${i + 1}. ${v.label}`).join("; ")}`,
+    tagContext(r),
   ];
   return lines.filter(Boolean).join("\n");
 }
@@ -566,7 +573,7 @@ export async function requestFor(
   return {
     model,
     max_tokens: 32000,
-    system: [{ type: "text", text: SYSTEM, ...(cache ? { cache_control: { type: "ephemeral" as const } } : {}) }],
+    system: [{ type: "text", text: system(), ...(cache ? { cache_control: { type: "ephemeral" as const } } : {}) }],
     messages: [{ role: "user", content }],
     output_config: { effort, format: { type: "json_schema", schema: PROFILE_SCHEMA } },
   } satisfies Anthropic.MessageCreateParamsNonStreaming;
@@ -587,6 +594,7 @@ function saveProfile(refId: string, model: ModelId, profile: Profile, cost: numb
   db.run("UPDATE reads SET state = 'done', model = ?, profile = ?, error = NULL, cost = ?, read_at = ?, batch_id = NULL WHERE ref_id = ?", [
     model, JSON.stringify(profile), cost, now(), refId,
   ]);
+  applyReadTags(refId, profile.tags);
   reindex(refId);
 }
 
@@ -642,7 +650,7 @@ export async function readWithClaudeCode(r: RefRow, signals: Signals, palette: S
   const dir = dirname(abs(signals.visuals[0]!.rel));
   const pictures = signals.visuals.map((v, i) => `${i + 1}. ${abs(v.rel)} (${v.label})`).join("\n");
   const prompt = `Open each of these pictures with the Read tool, in order:\n${pictures}\n\n${context(r, signals, palette)}\n\nWrite the design profile for this reference.`;
-  const system = `${SYSTEM}\n\nOpen every listed picture with the Read tool before answering. Then answer only with the profile.`;
+  const instructions = `${system()}\n\nOpen every listed picture with the Read tool before answering. Then answer only with the profile.`;
   // A clean environment: nothing from a shell (an ANTHROPIC_BASE_URL, an API key) should change where this goes.
   const env: Record<string, string> = {
     HOME: process.env.HOME ?? "",
@@ -655,7 +663,7 @@ export async function readWithClaudeCode(r: RefRow, signals: Signals, palette: S
       bin, "-p", prompt,
       "--model", model, "--effort", effort,
       "--output-format", "json", "--json-schema", JSON.stringify(PROFILE_SCHEMA),
-      "--system-prompt", system,
+      "--system-prompt", instructions,
       "--tools", "Read", "--allowedTools", "Read",
       "--no-session-persistence", "--strict-mcp-config", "--setting-sources", "",
     ],
