@@ -447,7 +447,8 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
 
   if (run.stopped) return;
   // A conversation whose saved session is gone (cleared by Claude Code) starts over quietly.
-  if (sessionId && !gotResult && /session|conversation/i.test(stderr) && /not found|no conversation|invalid/i.test(stderr)) {
+  const lost = (m: string) => /session|conversation/i.test(m) && /not found|no conversation|invalid|does not exist/i.test(m);
+  if (sessionId && run.parts.length === 0 && (lost(stderr) || lost(resultError ?? ""))) {
     db.run("UPDATE chats SET session_id = NULL WHERE id = ?", [chatId]);
     return drive(chatId, run, null, prompt);
   }

@@ -330,6 +330,13 @@ export function Assistant(props: {
       aria-hidden={!open}
       inert={!open}
       onMouseLeave={() => highlight(null, false)}
+      onKeyDown={(e) => {
+        // Esc anywhere in Ask (outside the composer, which only lets go of the cursor) closes it.
+        if (e.key === "Escape" && !(e.target as Element).closest("textarea, .popover")) {
+          e.stopPropagation();
+          props.onClose();
+        }
+      }}
     >
       <Resizer />
       <header className="ask-head">
