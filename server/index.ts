@@ -7,6 +7,8 @@ import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, en
 import { parseSocial, rememberPin } from "./social.ts";
 import { abs } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
+import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
+import { createMcpServer } from "./mcp-tools.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
 
@@ -283,6 +285,19 @@ async function handle(req: Request): Promise<Response> {
     const full = join(MEDIA_DIR, rel);
     if (!existsSync(full) || !statSync(full).isFile()) return bad("Not found", 404);
     return serveFile(full, req, true);
+  }
+
+  // The library for AI apps (MCP over HTTP). Stateless: each request gets its own server.
+  // Only this Mac's own addresses are accepted, so a web page can't reach it by DNS tricks.
+  if (path === "/mcp") {
+    const transport = new WebStandardStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+      enableDnsRebindingProtection: true,
+      allowedHosts: [`${HOST}:${PORT}`, `localhost:${PORT}`],
+    });
+    await createMcpServer().connect(transport);
+    return transport.handleRequest(req);
   }
 
   if (path === "/api/health") return json({ ok: true, libraryDir: LIBRARY_DIR });

@@ -54,9 +54,10 @@ Removing a reference moves its files to the macOS Trash.
 
 ### Design reads (AI)
 
-Each reference can be read once by Claude (Sonnet 5.5 by default) into a **design profile**: what it is, mood, color (hex values measured from the pixels, not guessed), typography, layout, imagery, motion, and the 1–3 ideas worth taking. The profile shows in the detail panel and feeds search, so "olive", "editorial" or "kinetic type" find references whose titles never said so.
+Each reference can be read once by Claude into a **design profile**: what it is, mood, color (hex values measured from the pixels, not guessed), typography, layout, imagery, motion, and the 1–3 ideas worth taking. The profile shows in the detail panel and feeds search, so "olive", "editorial" or "kinetic type" find references whose titles never said so.
 
-- **What the model sees** is prepared first, at about 1.2 megapixels per picture: up to 4 images; a 3×3 grid of frames for a video or GIF, plus a count of hard cuts; for a site, the first screen, the whole page folded into columns, the second screen and the phone version. The prepared pictures are kept in `media/<refId>/read/`.
+- **Through your Claude plan** by default: each read runs Claude Code headless (`claude -p`, Opus 5.5 at xhigh effort here), so it uses the subscription, not API money. It needs a long-lived token from `claude setup-token`, kept in the Keychain as "Panel Claude Code token". The API (below) is the other option, in Library settings.
+- **What the model sees** is prepared first, at about 1.2 megapixels per picture: up to 4 images; for a video or GIF, frame grids across the whole video (9 frames per 20 seconds, up to 54), close-ups of the busiest moments at 0.1s apart, and a count of hard cuts; for a site, the first screen, the whole page folded into columns, the second screen and the phone version. The prepared pictures are kept in `media/<refId>/read/`.
 - **Batches** by default: half price, usually back within the hour, 24 hours at most. **Read now** in the detail panel reads one right away at full price.
 - **New saves are read by themselves** (grouped into a batch every ~20 minutes). The library you had before is read only when you ask: Library settings → *Read 10 to test*, then *Read the other N*.
 - **Spending is measured**, from the token counts the API returns, and capped per month (default $20, changeable in Library settings). Nothing is sent past the cap.
@@ -69,6 +70,28 @@ security add-generic-password -s "Panel Anthropic API key" -a panel -w
 
 `PANEL_ANTHROPIC_API_KEY` or `ANTHROPIC_API_KEY` also work.
 
+### The library over MCP
+
+Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search the library, look at saves and gather references for a brief. The tools:
+
+| Tool | What it does |
+| --- | --- |
+| `library_overview` | Counts, tags, collections, and the words the reads use (moods, fonts, motion techniques…) |
+| `search_library` | Words, optionally inside facets (color, typography, layout, imagery, motion, mood, components), plus filters |
+| `find_by_color` | Measured palettes near given hex colors (CIEDE2000), optionally by role (background, accent…) |
+| `similar_to` | Saves like one save, by the facets you choose |
+| `gather_for_brief` | The best saves per facet for a brief, so color, type and motion can come from different saves |
+| `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from |
+| `save_to_collection` | Puts chosen saves in a Panel collection (only adds) |
+
+Two ways to connect. Over stdio, which works even when Panel isn't running:
+
+```bash
+claude mcp add --scope user panel -- ~/.bun/bin/bun /Users/osimij/Desktop/Panel46/server/mcp.ts
+```
+
+For Claude Desktop or Cursor, the same command goes in their MCP config (`"command": "/Users/osimij/.bun/bin/bun", "args": ["/Users/osimij/Desktop/Panel46/server/mcp.ts"]`). Or over HTTP while Panel runs: `http://127.0.0.1:4646/mcp` (only this Mac's own addresses are accepted).
+
 ## Not built yet
 
-An MCP server so any AI tool can search and see the library, a Brief view that pulls references by facet and suggests combinations, Apple Foundation Models with a strict offline mode, the Dock app wrapper, backup to the external SSD, export, and cloud sync.
+A Brief view that pulls references by facet and suggests combinations, Apple Foundation Models with a strict offline mode, the Dock app wrapper, backup to the external SSD, export, and cloud sync.

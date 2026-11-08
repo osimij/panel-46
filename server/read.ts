@@ -156,6 +156,12 @@ export interface Signals {
 
 const MAX_LONG = 1568;
 const MAX_AREA = 1_200_000;
+/**
+ * The one ceiling on a read: pictures that fit in Claude's context with room to think
+ * (~1.6k tokens each, so 90 ≈ 145k). Nothing else is capped; only a very long video
+ * (10 minutes or so) ever reaches it, and then it gets fewer close-ups, never fewer overview frames.
+ */
+const PICTURE_BUDGET = 90;
 
 /** Size that fits the cost budget, never larger than the original, even numbers for ffmpeg. */
 function fit(w: number, h: number) {
@@ -188,9 +194,27 @@ async function cropImage(src: string, outRel: string, label: string, crop: { w: 
   return { rel: outRel, label, width: t.w, height: t.h };
 }
 
+/** Stretches of a page side by side in one picture (phone screens, three at a time). */
+async function sideBySide(src: string, outRel: string, w: number, screen: number, ys: number[], label: string): Promise<Visual> {
+  const n = ys.length;
+  const t = fit(w * n, screen);
+  const parts = ys.map((y, i) => `[s${i}]crop=${w}:${screen}:0:${y}[c${i}]`).join(";");
+  const filter = n === 1
+    ? `crop=${w}:${screen}:0:${ys[0]},scale=${t.w}:${t.h}:flags=lanczos`
+    : `[0]split=${n}${ys.map((_, i) => `[s${i}]`).join("")};${parts};${ys.map((_, i) => `[c${i}]`).join("")}hstack=inputs=${n},scale=${t.w}:${t.h}:flags=lanczos`;
+  await ff(["-i", src, n === 1 ? "-vf" : "-filter_complex", filter, "-frames:v", "1", "-q:v", "3", abs(outRel)]);
+  return { rel: outRel, label, width: t.w, height: t.h };
+}
+
+/** Where each screen of a page starts; the last one is pulled up so it's full height. */
+const screenStarts = (h: number, screen: number) => {
+  const n = Math.max(1, Math.ceil(h / screen - 0.15));
+  return Array.from({ length: n }, (_, i) => Math.max(0, Math.min(i * screen, h - screen)));
+};
+
 /** A long page cut into columns side by side, so its whole structure fits one picture. */
 async function foldedPage(src: string, outRel: string, w: number, h: number): Promise<Visual> {
-  const n = Math.max(2, Math.min(6, Math.round(Math.sqrt(h / w))));
+  const n = Math.max(2, Math.round(Math.sqrt(h / w)));
   const seg = Math.floor(h / n / 2) * 2;
   const t = fit(w * n, seg);
   const parts = Array.from({ length: n }, (_, i) => `[s${i}]crop=${w}:${seg}:0:${i * seg}[c${i}]`).join(";");
@@ -240,13 +264,13 @@ async function gridAt(src: string, outRel: string, times: number[], cols: number
 }
 
 /**
- * How much the picture changes, every 0.1s (first 3 minutes). Hard cuts are left out:
+ * How much the picture changes, every 0.1s, across the whole video. Hard cuts are left out:
  * the busiest stretches between cuts are where the animation is.
  */
-async function changeCurve(src: string): Promise<{ t: number; s: number }[]> {
+async function changeCurve(src: string, duration: number): Promise<{ t: number; s: number }[]> {
   const { err } = await run(
-    ["ffmpeg", "-v", "info", "-t", "600", "-i", src, "-an", "-vf", "fps=10,scale=160:-2,select='gte(scene,0)',metadata=print:key=lavfi.scene_score", "-f", "null", "-"],
-    300_000,
+    ["ffmpeg", "-v", "info", "-i", src, "-an", "-vf", "fps=10,scale=160:-2,select='gte(scene,0)',metadata=print:key=lavfi.scene_score", "-f", "null", "-"],
+    120_000 + duration * 2_000,
   );
   const out: { t: number; s: number }[] = [];
   let t: number | null = null;
@@ -259,7 +283,7 @@ async function changeCurve(src: string): Promise<{ t: number; s: number }[]> {
   return out;
 }
 
-/** Start times of the two busiest 0.8s stretches, away from hard cuts and from each other. */
+/** Start times of the `count` busiest 0.8s stretches, away from hard cuts and from each other. */
 function busiest(curve: { t: number; s: number }[], duration: number, count: number) {
   const cuts = curve.filter((c) => c.s > 0.35).map((c) => c.t);
   const nearCut = (a: number, b: number) => cuts.some((c) => c > a - 0.25 && c < b + 0.25);
@@ -280,7 +304,7 @@ function busiest(curve: { t: number; s: number }[], duration: number, count: num
 }
 
 /** The "rich" frames for one video: overview grids, then motion close-ups (or a dense grid for a short clip). */
-async function richVideo(src: string, m: MediaRow, dirRel: string, first: number): Promise<{ visuals: Visual[]; duration: number }> {
+async function richVideo(src: string, m: MediaRow, dirRel: string, first: number, room: number): Promise<{ visuals: Visual[]; duration: number }> {
   const { w, h, d } = await sizeOf(src, m);
   const duration = d ?? 0;
   const dir = abs(dirRel);
@@ -300,17 +324,19 @@ async function richVideo(src: string, m: MediaRow, dirRel: string, first: number
     }
     return { visuals, duration };
   }
-  // A grid of 9 for every 20 seconds, up to 6 (54 frames), so long edits don't skip whole scenes.
-  const parts = Math.min(6, Math.max(1, Math.ceil(duration / 20)));
+  // A grid of 9 for every 20 seconds of the whole video, so no scene is skipped.
+  const parts = Math.max(1, Math.ceil(duration / 20));
   for (let p = 0; p < parts; p++) {
     const a = (duration * p) / parts, b = (duration * (p + 1)) / parts;
     const times = Array.from({ length: 9 }, (_, i) => a + (b - a) * (0.04 + (0.92 * i) / 8));
     visuals.push(await gridAt(src, name(visuals.length), times, 3, w, h, dir,
       `${parts > 1 ? `Part ${p + 1} of ${parts}: ` : ""}9 frames from ${clock(a)} to ${clock(b)}, in time order: left to right, top to bottom`));
   }
-  const curve = await changeCurve(src).catch(() => []);
-  // Close-ups of the busiest moments: 3 for a short video, 4 for a longer one.
-  for (const at of busiest(curve, duration, duration <= 20 ? 3 : 4)) {
+  const curve = await changeCurve(src, duration).catch(() => []);
+  // Close-ups of the busiest moments: about one for every 8 seconds, at least 3,
+  // as many as the picture budget leaves room for.
+  const closeUps = Math.max(1, Math.min(Math.max(duration <= 20 ? 3 : 4, Math.ceil(duration / 8)), room - visuals.length));
+  for (const at of busiest(curve, duration, closeUps)) {
     const times = Array.from({ length: 8 }, (_, i) => at + i * 0.1);
     visuals.push(await gridAt(src, name(visuals.length), times, squareCols(8, w, h), w, h, dir,
       `Motion close-up: 8 frames 0.1s apart (${clock(at, true)}–${clock(at + 0.7, true)}), left to right, top to bottom`));
@@ -348,16 +374,16 @@ async function frameGrid(src: string, outRel: string, m: MediaRow, dir: string):
   };
 }
 
-/** How many hard cuts the first 90 seconds of a video has: the pace of the edit. */
-async function countCuts(src: string): Promise<{ cuts: number; seconds: number }> {
+/** How many hard cuts the whole video has: the pace of the edit. */
+async function countCuts(src: string, duration: number): Promise<{ cuts: number; seconds: number }> {
   const { err } = await run(
-    ["ffmpeg", "-v", "info", "-t", "90", "-i", src, "-an", "-vf", "scale=160:-2,select='gt(scene,0.35)',showinfo", "-f", "null", "-"],
-    90_000,
+    ["ffmpeg", "-v", "info", "-i", src, "-an", "-vf", "scale=160:-2,select='gt(scene,0.35)',showinfo", "-f", "null", "-"],
+    120_000 + duration * 2_000,
   );
   const cuts = (err.match(/pts_time:/g) ?? []).length;
   const dur = err.match(/Duration: (\d+):(\d+):([\d.]+)/);
-  const total = dur ? Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]) : 90;
-  return { cuts, seconds: Math.min(90, Math.round(total)) };
+  const total = dur ? Number(dur[1]) * 3600 + Number(dur[2]) * 60 + Number(dur[3]) : duration;
+  return { cuts, seconds: Math.round(total) };
 }
 
 /** `dirRel` puts the pictures somewhere else, for side-by-side tests; Panel uses `<refId>/read`. */
@@ -377,34 +403,46 @@ export async function prepare(r: RefRow, opts: { frames?: Frames; dirRel?: strin
   if (r.site) {
     const desktop = media.find((m) => basename(m.local_path!).startsWith("desktop")) ?? media[0];
     const phone = media.find((m) => basename(m.local_path!).startsWith("phone"));
+    // The whole page, screen by screen, at full detail; the folded page shows its overall structure.
+    const next = () => `${dirRel}/${visuals.length}.jpg`;
     if (desktop) {
       const src = abs(desktop.local_path!);
       const { w, h } = await sizeOf(src, desktop);
-      const screen = Math.floor((w * 900) / 1440 / 2) * 2;
-      visuals.push(await cropImage(src, `${dirRel}/0.jpg`, "Desktop, first screen", { w, h: Math.min(h, screen), y: 0 }));
-      if (h > screen * 2) visuals.push(await foldedPage(src, `${dirRel}/1.jpg`, w, h));
-      if (h > screen * 1.6) visuals.push(await cropImage(src, `${dirRel}/2.jpg`, "Desktop, second screen", { w, h: Math.min(screen, h - screen), y: screen }));
+      const screen = Math.min(h, Math.floor((w * 900) / 1440 / 2) * 2);
+      if (h > screen * 2) visuals.push(await foldedPage(src, next(), w, h));
+      const starts = screenStarts(h, screen).slice(0, PICTURE_BUDGET - 12);
+      for (const [i, y] of starts.entries()) {
+        visuals.push(await cropImage(src, next(), `Desktop, screen ${i + 1} of ${starts.length} (${y}–${y + screen}px down the page)`, { w, h: screen, y }));
+      }
     }
     if (phone) {
       const src = abs(phone.local_path!);
       const { w, h } = await sizeOf(src, phone);
-      visuals.push(await cropImage(src, `${dirRel}/3.jpg`, "Phone, first screen", { w, h: Math.min(h, Math.floor((w * 844) / 390 / 2) * 2), y: 0 }));
+      const screen = Math.min(h, Math.floor((w * 844) / 390 / 2) * 2);
+      const starts = screenStarts(h, screen);
+      for (let i = 0; i < starts.length && visuals.length < PICTURE_BUDGET; i += 3) {
+        const ys = starts.slice(i, i + 3);
+        visuals.push(await sideBySide(src, next(), w, screen, ys,
+          `Phone, ${ys.length > 1 ? `screens ${i + 1}–${i + ys.length}` : `screen ${i + 1}`} of ${starts.length}${ys.length > 1 ? ", side by side in scroll order" : ""}`));
+      }
     }
   } else {
-    for (const m of media.slice(0, 4)) {
+    for (const [k, m] of media.entries()) {
+      if (visuals.length >= PICTURE_BUDGET) break;
       const src = abs(m.local_path!);
       const out = `${dirRel}/${visuals.length}.jpg`;
       if (m.type === "image") {
-        visuals.push(await stillImage(src, out, media.length > 1 ? `Image ${m.idx + 1} of ${media.length}` : "The image", m));
+        visuals.push(await stillImage(src, out, media.length > 1 ? `Item ${k + 1} of ${media.length} (image)` : "The image", m));
       } else {
-        // Rich frames for the first video only, so a carousel of clips stays a sensible size.
-        const rich = frames === "rich" && !signals.video;
-        const { visuals: vs, duration } = rich
-          ? await richVideo(src, m, dirRel, visuals.length)
+        // Every video gets rich frames. Leave room for the rest of the post (about 2 pictures each).
+        const room = PICTURE_BUDGET - visuals.length - (media.length - k - 1) * 2;
+        const { visuals: vs, duration } = frames === "rich"
+          ? await richVideo(src, m, dirRel, visuals.length, room)
           : await frameGrid(src, out, m, dir).then((x) => ({ visuals: [x.visual], duration: x.duration }));
+        if (media.length > 1) for (const v of vs) v.label = `Item ${k + 1} of ${media.length} (${m.type}): ${v.label}`;
         visuals.push(...vs);
         if (!signals.video && m.type === "video") {
-          const c = await countCuts(src).catch(() => null);
+          const c = await countCuts(src, duration).catch(() => null);
           if (c) signals.video = { duration: Math.round(duration * 10) / 10, cuts: c.cuts, seconds_checked: c.seconds };
         }
       }
@@ -428,7 +466,8 @@ Your profile is used later to find and combine references by facet. A designer w
 - Colors were measured from the pixels and are given to you with exact hex values and shares. Use those hexes when you assign roles; don't invent new ones.
 - For typography, name the classification precisely (neo-grotesk, geometric sans, didone, slab, mono…). Guess typefaces only when fairly confident; leave the list empty otherwise. If there's no meaningful type, say present: false.
 - For video, you get grids of frames in time order plus a measured count of hard cuts. Some videos also come with motion close-ups: 8 frames 0.1s apart at the busiest moments, or, for short clips, frames a fraction of a second apart across the whole clip. Use those to judge how things move: easing (does it slow into place, overshoot and settle, move linearly), staggering, what enters first, masks and reveals, scale and blur during movement. Keep motion confidence honest: say high only when close-ups actually show the movement. For still images, motion is not present.
-- For websites you get the first screen, the whole page folded into columns, the second screen and the phone version.
+- For websites you get the whole page folded into columns (its overall structure), then every desktop screen from top to bottom, then the phone version three screens at a time.
+- A post with several images or videos comes with all of them, labeled by item.
 - worth_taking is the most useful field: 1–3 specific, transferable ideas ("oversized serif headline cropped by the viewport edge", "single acid-green accent on an otherwise grayscale UI"), never generic praise.
 - search_terms: lowercase words and short phrases someone might type to find this, including synonyms.
 - Be specific and brief. No filler, no marketing tone.`;
@@ -498,12 +537,12 @@ function context(r: RefRow, signals: Signals, palette: Swatch[]) {
     `Saved from: ${source}${r.source_url ? ` (${r.source_url})` : ""}`,
     r.creator_name || r.creator_handle ? `By: ${[r.creator_name, r.creator_handle && `@${r.creator_handle}`].filter(Boolean).join(" ")}` : "",
     r.title ? `Title: ${r.title}` : "",
-    r.text ? `Post text: ${r.text.slice(0, 1500)}` : "",
+    r.text ? `Post text: ${r.text}` : "",
     r.note ? `The designer's own note (weigh this most): ${r.note}` : "",
     tags.length ? `Their tags: ${tags.join(", ")}` : "",
     `Measured colors (share of the pictures): ${palette.map((s) => `${s.hex} ${Math.round(s.share * 100)}% (${s.name})`).join(", ")}`,
     signals.video
-      ? `Video: ${signals.video.duration}s long; ${signals.video.cuts} hard cuts in the first ${signals.video.seconds_checked}s (${(signals.video.cuts / Math.max(1, signals.video.seconds_checked / 60)).toFixed(1)} per minute)`
+      ? `Video: ${signals.video.duration}s long; ${signals.video.cuts} hard cuts in ${signals.video.seconds_checked}s (${(signals.video.cuts / Math.max(1, signals.video.seconds_checked / 60)).toFixed(1)} per minute)`
       : "",
     `Pictures: ${signals.visuals.map((v, i) => `${i + 1}. ${v.label}`).join("; ")}`,
   ];
@@ -526,7 +565,7 @@ export async function requestFor(
   content.push({ type: "text", text: `${context(r, signals, palette)}\n\nWrite the design profile for this reference.` });
   return {
     model,
-    max_tokens: 16000,
+    max_tokens: 32000,
     system: [{ type: "text", text: SYSTEM, ...(cache ? { cache_control: { type: "ephemeral" as const } } : {}) }],
     messages: [{ role: "user", content }],
     output_config: { effort, format: { type: "json_schema", schema: PROFILE_SCHEMA } },
@@ -622,7 +661,8 @@ export async function readWithClaudeCode(r: RefRow, signals: Signals, palette: S
     ],
     { cwd: dir, env, stdout: "pipe", stderr: "pipe" },
   );
-  const timer = setTimeout(() => proc.kill(), 6 * 60_000);
+  // More pictures take longer to open and think over.
+  const timer = setTimeout(() => proc.kill(), (6 + signals.visuals.length * 0.25) * 60_000);
   const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
   clearTimeout(timer);
   let res: CcResult;
