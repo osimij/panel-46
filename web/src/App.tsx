@@ -3,7 +3,7 @@ import { RailHandle } from "./RailHandle.tsx";
 import { flushSync } from "react-dom";
 import {
   api, formatBytes, prefersReducedMotion, projectApi, STATUS_LABEL,
-  type Collection, type ProjectSummary, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
+  type CanvasSelection, type Collection, type ProjectSummary, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
 } from "./api.ts";
 import { Detail } from "./Detail.tsx";
 import { Masonry } from "./Grid.tsx";
@@ -231,6 +231,18 @@ export function App() {
 
   const say = useCallback((text: string, tone?: "error") => setToast({ id: Date.now(), text, tone }), []);
   const sayError = useCallback((text: string) => say(text, "error"), [say]);
+  // What's selected on the canvas: Ask talks about it, and the canvas's Ask button opens Ask on it.
+  const [canvasPick, setCanvasPick] = useState<CanvasSelection | null>(null);
+  const askAboutPick = useCallback(() => {
+    setAskOpenState(true);
+    try {
+      localStorage.setItem("panel.ask.open", "1");
+    } catch {
+      /* fine */
+    }
+    // Once Ask is open (and can take focus).
+    setTimeout(() => askRef.current?.focus(), 80);
+  }, []);
 
   useEffect(() => {
     refresh().catch((e) => say(`Can't reach the Panel companion. ${e.message}`, "error"));
@@ -710,6 +722,8 @@ export function App() {
               onError={sayError}
               onRenamed={refreshProjects}
               onDeleted={leaveProject}
+              onSelection={setCanvasPick}
+              onAsk={askAboutPick}
             />
           </Suspense>
         ) : (
@@ -863,6 +877,7 @@ export function App() {
         onClose={() => setAskOpen(false)}
         looking={open}
         project={scope.kind === "project" ? scope.id : null}
+        picked={scope.kind === "project" && canvasPick?.project === scope.id ? canvasPick : null}
         onOpenRef={openFromAsk}
         onShowInGrid={showPicked}
         onRunning={setAskRunning}

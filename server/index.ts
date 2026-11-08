@@ -11,7 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, type Op } from "./projects.ts";
-import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat } from "./chat.ts";
+import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
 
@@ -345,7 +345,7 @@ async function handle(req: Request): Promise<Response> {
       return json({ ok: true });
     }
     if (sub === "/messages" && m === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { text?: string; context?: { open?: string; project?: string } };
+      const b = (await req.json().catch(() => ({}))) as { text?: string; context?: SendContext };
       try {
         return json(await send(id, String(b.text ?? ""), b.context ?? {}));
       } catch (e) {

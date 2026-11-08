@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { db, getSetting, newId, now, setSetting } from "./db.ts";
 import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
-import { findProject } from "./projects.ts";
+import { describeSelection, findProject } from "./projects.ts";
 import { claudeBinary, claudeToken, settings as readSettings, type Effort } from "./read.ts";
 
 db.exec(`
@@ -77,7 +77,7 @@ export interface MessageOut {
   id: string;
   role: "user" | "assistant";
   text: string;
-  context: { open?: string } | null;
+  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[] } | null;
   parts: Part[];
   status: string;
   error: string | null;
@@ -240,7 +240,9 @@ function readable(text: string) {
   });
 }
 
-export async function send(chatId: string, text: string, context: { open?: string; project?: string } = {}) {
+export interface SendContext { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[] }
+
+export async function send(chatId: string, text: string, context: SendContext = {}) {
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
   if (!chat) throw new Error("That conversation is gone.");
   if (runs.has(chatId)) throw new Error("Still answering the last message.");
@@ -249,8 +251,18 @@ export async function send(chatId: string, text: string, context: { open?: strin
 
   const ts = now();
   const userId = newId();
+  // What it was about, kept with the message so it shows there: the open save, or what was selected on the canvas.
+  const nodes = Array.isArray(context.nodes) ? context.nodes.filter((x) => typeof x === "string").slice(0, 60) : [];
+  const picked = nodes.length && typeof context.label === "string"
+    ? {
+        nodes,
+        label: context.label.slice(0, 120),
+        thumbs: (Array.isArray(context.thumbs) ? context.thumbs : []).filter((t) => typeof t === "string" && /^\/(media|api)\//.test(t)).slice(0, 3),
+      }
+    : null;
+  const stored = context.open ? { open: context.open } : picked;
   db.run("INSERT INTO chat_messages (id, chat_id, role, text, context, status, created_at) VALUES (?, ?, 'user', ?, ?, 'done', ?)", [
-    userId, chatId, clean, context.open ? JSON.stringify({ open: context.open }) : null, ts,
+    userId, chatId, clean, stored ? JSON.stringify(stored) : null, ts,
   ]);
   const messageId = newId();
   db.run("INSERT INTO chat_messages (id, chat_id, role, parts, status, created_at) VALUES (?, ?, 'assistant', '[]', 'streaming', ?)", [messageId, chatId, now()]);
@@ -267,7 +279,11 @@ export async function send(chatId: string, text: string, context: { open?: strin
   const said: string[] = [];
   if (context.project) {
     const p = findProject(context.project);
-    if (p) said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). References you find for it go on the canvas (place_on_board).`);
+    if (p) {
+      said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). References you find for it go on the canvas (place_on_board).`);
+      const sel = picked ? describeSelection(p.id, picked.nodes) : [];
+      if (sel.length) said.push(`They have selected on the canvas: ${sel.join("; ")}. “This” and “these” mean what's selected; look at the saves with get_reference before you answer about them.`);
+    }
   }
   if (context.open) {
     const d = load().docs.get(context.open);

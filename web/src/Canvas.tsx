@@ -16,7 +16,7 @@ import "@xyflow/react/dist/base.css";
 import "./canvas.css";
 import {
   api, chatApi, displayTitle, localId, prefersReducedMotion, projectApi,
-  type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type Material, type Ref, type RefCard, type RefState, type TopicFacet,
+  type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type CanvasSelection, type Material, type Ref, type RefCard, type RefState, type TopicFacet,
 } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
@@ -71,6 +71,8 @@ interface Actions {
   note: (forId: string) => void;
   open: (refId: string) => void;
   clearFocus: (id: string) => void;
+  /** Ask about what's selected. */
+  ask: () => void;
   /** Saves under a locked topic that weren't chosen: how many, and whether they're showing. */
   considered: Map<string, { n: number; open: boolean }>;
   toggleConsidered: (topicId: string) => void;
@@ -240,6 +242,7 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
           <Tool icon={locked ? "refresh" : "check"} label={locked ? "Reopen" : "Lock"} on={locked} onClick={() => act.patch(id, { status: locked ? "exploring" : "locked" })} />
+          <Tool icon="ask" label="Ask" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="compose" label="Rename" onClick={() => setRenaming(true)} />
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
@@ -278,6 +281,7 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
           <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
           {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
           <Tool icon="x" label="Rule out" on={state === "ruled_out"} onClick={() => act.patch(id, { state: state === "ruled_out" ? "kept" : "ruled_out" })} />
+          <Tool icon="ask" label="Ask" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="arrow-up-right" label="Open" onClick={() => act.open(data.refId)} />
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
@@ -358,6 +362,10 @@ export interface CanvasProps {
   onError: (text: string) => void;
   onRenamed: () => void;
   onDeleted: () => void;
+  /** What's selected changed: Ask talks about it. Null when nothing is. */
+  onSelection: (s: CanvasSelection | null) => void;
+  /** Open Ask to ask about what's selected. */
+  onAsk: () => void;
 }
 
 export default function ProjectCanvas(props: CanvasProps) {
@@ -380,6 +388,7 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
   const onError = useCallback((t: string) => latest.current.onError(t), []);
   const onRenamed = useCallback(() => latest.current.onRenamed(), []);
   const onDeleted = useCallback(() => latest.current.onDeleted(), []);
+  const onAsk = useCallback(() => latest.current.onAsk(), []);
   const flow = useReactFlow<AnyNode, Edge>();
   const [nodes, setNodes] = useState<AnyNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
@@ -713,9 +722,17 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
   }, []);
 
   const actions = useMemo<Actions>(
-    () => ({ cards, patch, remove, note, open: onOpenRef, clearFocus, considered: fold.considered, toggleConsidered }),
-    [cards, patch, remove, note, onOpenRef, clearFocus, fold.considered, toggleConsidered],
+    () => ({ cards, patch, remove, note, open: onOpenRef, clearFocus, ask: onAsk, considered: fold.considered, toggleConsidered }),
+    [cards, patch, remove, note, onOpenRef, clearFocus, onAsk, fold.considered, toggleConsidered],
   );
+
+  // ---- What's selected, for Ask ----
+  const picked = shownNodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
+  const pickedKey = picked.map((n) => n.id).join(",");
+  useEffect(() => {
+    latest.current.onSelection(picked.length ? describePicked(id, picked, cards) : null);
+  }, [pickedKey, cards.size]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => latest.current.onSelection(null), []);
 
   // ---- Undo: ⌘Z for your own changes, and taking back what the assistant did ----
 
@@ -948,7 +965,7 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
           fitViewOptions={{ padding: 0.25 }}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--dot)" />
-          <SelectionTools nodes={shownNodes} patchMany={patchMany} remove={remove} />
+          <SelectionTools nodes={shownNodes} patchMany={patchMany} remove={remove} onAsk={onAsk} />
         </ReactFlow>
 
         {empty && (
@@ -984,9 +1001,34 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
   );
 }
 
+// ---------- What's selected, in a few words, for Ask ----------
+
+const plural = (n: number, one: string, many: string) => (n === 1 ? `a ${one}` : `${n} ${many}`);
+
+function describePicked(project: string, picked: AnyNode[], cards: Map<string, RefCard>): CanvasSelection {
+  const topics = picked.filter((n) => n.type === "topic") as TopicNode[];
+  const refs = picked.filter((n) => n.type === "ref") as RefNode[];
+  const notes = picked.filter((n) => n.type === "note");
+  const topicName = (t: TopicNode) => t.data.title || facetLabel(t.data.facet);
+  let label: string;
+  if (picked.length === 1) {
+    label = topics[0] ? topicName(topics[0]) : refs[0] ? cards.get(refs[0].data.refId)?.title ?? "A save" : "A note";
+  } else {
+    const parts = [
+      ...(topics.length <= 2 ? topics.map(topicName) : [plural(topics.length, "topic", "topics")]),
+      ...(refs.length ? [plural(refs.length, "save", "saves")] : []),
+      ...(notes.length ? [plural(notes.length, "note", "notes")] : []),
+    ];
+    label = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]!;
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+  }
+  const thumbs = refs.flatMap((n) => (cards.get(n.data.refId)?.thumb ? [cards.get(n.data.refId)!.thumb!] : [])).slice(0, 3);
+  return { project, nodes: picked.map((n) => n.id), label: label.replace(/\s+/g, " ").slice(0, 90), thumbs };
+}
+
 // ---------- Several things selected: one toolbar for them all ----------
 
-function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], data: Record<string, unknown>) => void; remove: (ids: string[]) => void }) {
+function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], data: Record<string, unknown>) => void; remove: (ids: string[]) => void; onAsk: () => void }) {
   const picked = props.nodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
   if (picked.length < 2) return null;
   const refs = picked.filter((n) => n.type === "ref") as RefNode[];
@@ -997,6 +1039,7 @@ function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], da
     <NodeToolbar nodeId={picked.map((n) => n.id)} isVisible position={Position.Top} offset={14}>
       <div className="bn-tools many" key={picked.length}>
         <span className="bn-tools-count">{picked.length} selected</span>
+        <Tool icon="ask" label="Ask" onClick={props.onAsk} />
         {refs.length > 0 && (
           <>
             <Tool icon="check" label="Choose" on={every("chosen")} onClick={() => props.patchMany(ids, { state: every("chosen") ? "kept" : "chosen" })} />

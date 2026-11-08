@@ -530,7 +530,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
-  context: { open?: string } | null;
+  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[] } | null;
   parts: ChatPart[];
   status: "done" | "streaming" | "stopped" | "error" | string;
   error: string | null;
@@ -556,7 +556,7 @@ export const chatApi = {
   create: () => call<{ id: string }>("/api/chats", { method: "POST" }),
   get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
-  send: (id: string, text: string, context: { open?: string; project?: string }) =>
+  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[] }) =>
     call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
   stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
   cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
@@ -655,6 +655,17 @@ export interface BoardEvent {
 
 /** Ids made here, so a node can be drawn before the companion has answered. Same shape as the companion's. */
 export const localId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+
+/** What's selected on a project's canvas, for Ask to talk about. */
+export interface CanvasSelection {
+  project: string;
+  /** Canvas node ids. */
+  nodes: string[];
+  /** In a few words: “Typography”, “a save”, “Color, 3 saves and a note”. */
+  label: string;
+  /** Up to 3 small pictures of the saves in it. */
+  thumbs: string[];
+}
 
 export interface Material {
   id: string;

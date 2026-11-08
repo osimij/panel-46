@@ -516,6 +516,42 @@ export function summary(idOrName: string) {
   };
 }
 
+/**
+ * What the designer selected on a canvas, in words for the assistant: each topic with
+ * its status and decision, each save as [[id]] with its state and why, each note's text.
+ */
+export function describeSelection(projectId: string, nodeIds: string[]) {
+  const full = getProject(projectId);
+  if (!full) return [];
+  const { docs } = load();
+  const byId = new Map(full.nodes.map((n) => [n.id, n]));
+  const near = (id: string) =>
+    full.edges.flatMap((e) => (e.source === id ? [e.target] : e.target === id ? [e.source] : [])).map((x) => byId.get(x)!).filter(Boolean);
+  return nodeIds.slice(0, 40).flatMap((id) => {
+    const n = byId.get(id);
+    if (!n) return [];
+    if (n.kind === "topic") {
+      const refs = near(n.id).filter((x) => x.kind === "ref");
+      const chosen = refs.filter((r) => r.data.state === "chosen").map((r) => `[[${r.ref_id}]]`);
+      return [`the topic “${topicName(n)}” (${n.data.status === "locked" ? "locked" : "exploring"}${n.data.summary ? `; decision: ${String(n.data.summary)}` : ""}; ${refs.length} saves under it${chosen.length ? `, chosen: ${chosen.join(" ")}` : ""})`];
+    }
+    if (n.kind === "ref") {
+      const d = docs.get(n.ref_id!);
+      const under = near(n.id).filter((x) => x.kind === "topic").map(topicName);
+      const notes = near(n.id).filter((x) => x.kind === "note").map((x) => String(x.data.text ?? "").trim()).filter(Boolean);
+      const bits = [
+        String(n.data.state ?? "kept").replace("_", " "),
+        under.length ? `under ${under.join(", ")}` : "not under a topic",
+        n.data.taking ? `why: ${String(n.data.taking)}` : "",
+        notes.length ? `designer's note: ${notes.join(" / ")}` : "",
+      ].filter(Boolean);
+      return [`the save [[${n.ref_id}]] ${d ? `“${title(d)}” ` : ""}(${bits.join("; ")})`];
+    }
+    const text = String(n.data.text ?? "").trim();
+    return text ? [`a note: “${text}”`] : [];
+  });
+}
+
 /** The saves a project chose, for looking at their pictures. */
 export function chosenRefs(idOrName: string) {
   const p = findProject(idOrName);

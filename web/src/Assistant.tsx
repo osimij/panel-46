@@ -4,7 +4,7 @@
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef } from "react";
-import { api, chatApi, displayTitle, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
+import { api, chatApi, displayTitle, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
@@ -95,6 +95,8 @@ export function Assistant(props: {
   looking: Ref | null;
   /** The project open on the canvas, if any: Ask reads it when asked about "the project". */
   project?: string | null;
+  /** What's selected on that canvas, if anything: what "this" and "these" mean there. */
+  picked?: CanvasSelection | null;
   onOpenRef: (id: string) => void;
   onShowInGrid: (ids: string[], title: string) => void;
   onRunning: (running: boolean) => void;
@@ -123,6 +125,10 @@ export function Assistant(props: {
   // "This" is whatever's open, until you take it off for that save.
   const [dropped, setDropped] = useState<string | null>(null);
   const context = looking && looking.id !== dropped ? looking : null;
+  // The canvas selection, until you take it off (for that selection).
+  const pickKey = props.picked?.nodes.join(",") ?? "";
+  const [droppedPick, setDroppedPick] = useState<string | null>(null);
+  const picked = !context && props.picked && pickKey !== droppedPick ? props.picked : null;
 
   useEffect(() => props.onRunning(running), [running]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -227,9 +233,13 @@ export function Assistant(props: {
       setDraft("");
       stick.current = true;
       let id = chatId;
-      const ctx = { ...(context ? { open: context.id } : {}), ...(props.project ? { project: props.project } : {}) };
+      const ctx = {
+        ...(context ? { open: context.id } : {}),
+        ...(props.project ? { project: props.project } : {}),
+        ...(picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : {}),
+      };
       if (context && !cards.has(context.id)) addCards([cardFromRef(context)]);
-      const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: context ? { open: context.id } : null, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
+      const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: context ? { open: context.id } : picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : null, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
       const pending: Msg = { id: "pending", key: `a${Date.now()}`, role: "assistant", text: "", context: null, parts: [], status: "streaming", error: null, created_at: temp.created_at };
       live.current.add(pending.key!);
       setMessages((ms) => [...ms, temp, pending]);
@@ -249,7 +259,7 @@ export function Assistant(props: {
         setMessages((ms) => ms.map((m) => (m.id === "pending" ? { ...m, status: "error", error: (e as Error).message } : m)));
       }
     },
-    [chatId, context, running, title, follow, addCards, cards, props.project],
+    [chatId, context, picked, running, title, follow, addCards, cards, props.project],
   );
 
   const stop = () => {
@@ -422,7 +432,7 @@ export function Assistant(props: {
           onKeyUp={(e) => e.shiftKey && placeReply()}
         >
           {messages.length === 0 ? (
-            <Welcome looking={context} project={!!props.project} onPick={(t) => void send(t)} />
+            <Welcome looking={context} picked={picked} project={!!props.project} onPick={(t) => void send(t)} />
           ) : (
             messages.map((m, i) =>
               m.role === "user" ? (
@@ -468,6 +478,8 @@ export function Assistant(props: {
           onStop={stop}
           context={context}
           onDropContext={() => looking && setDropped(looking.id)}
+          picked={picked}
+          onDropPicked={() => setDroppedPick(pickKey)}
           lastAsked={messages.findLast((m) => m.role === "user")?.text}
         />
       </div>
@@ -655,8 +667,12 @@ function ago(iso: string) {
 
 // ---------- Empty state ----------
 
-function Welcome({ looking, project, onPick }: { looking: Ref | null; project?: boolean; onPick: (t: string) => void }) {
-  const ideas = project && !looking
+function Welcome({ looking, picked, project, onPick }: { looking: Ref | null; picked: CanvasSelection | null; project?: boolean; onPick: (t: string) => void }) {
+  const ideas = picked
+    ? picked.nodes.length === 1
+      ? ["What's worth taking from this?", "Find more like this", "What would pair with this?", "Does this suit the project?"]
+      : ["What do these have in common?", "Which of these fits the project best?", "Find more like these", "Compare these"]
+    : project && !looking
     ? ["Pull typography references for this project", "Suggest palettes that suit what's locked", "What's still undecided here?", "Sum up the decisions so far"]
     : looking
     ? ["What's worth taking from this?", "Find saves with a palette like this one", "What type would pair with this?", "Find motion that would suit this"]
@@ -671,7 +687,7 @@ function Welcome({ looking, project, onPick }: { looking: Ref | null; project?: 
       <Mark size={40} />
       <h2>Ask your library</h2>
       <p>Find references by feeling, color, type or motion, and put them together into something new.</p>
-      <div className="ask-ideas" key={looking?.id ?? (project ? "project" : "all")}>
+      <div className="ask-ideas" key={looking?.id ?? (picked ? `pick-${picked.nodes.length === 1}` : project ? "project" : "all")}>
         {ideas.map((t, i) => (
           <button key={t} className="ask-idea" style={{ animationDelay: `${120 + i * 50}ms` }} onClick={() => onPick(t)}>
             {t}
@@ -686,6 +702,7 @@ function Welcome({ looking, project, onPick }: { looking: Ref | null; project?: 
 
 function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, RefCard>; onOpen: (id: string) => void }) {
   const about = m.context?.open ? cards.get(m.context.open) : null;
+  const pick = m.context?.label ? m.context : null;
   // A reply starts with what it replies to, as "> " lines.
   const q = m.text.match(/^((?:>[^\n]*(?:\n|$))+)\s*/);
   const quoted = q ? q[1]!.split("\n").map((l) => l.replace(/^> ?/, "")).join("\n").trim() : null;
@@ -699,6 +716,16 @@ function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, 
           {about.thumb && <img src={about.thumb} alt="" />}
           <span>{about.title}</span>
         </button>
+      )}
+      {pick && (
+        <span className="msg-about">
+          {pick.thumbs?.length ? (
+            <span className="composer-thumbs">{pick.thumbs.map((t) => <img key={t} src={t} alt="" />)}</span>
+          ) : (
+            <Icon name="grid" size={12} />
+          )}
+          <span>{pick.label}</span>
+        </span>
       )}
       {quoted && (
         <div className="msg-quote">
@@ -1001,6 +1028,8 @@ function Composer(props: {
   onMention: (c: RefCard) => void;
   quote: string | null;
   onDropQuote: () => void;
+  picked: CanvasSelection | null;
+  onDropPicked: () => void;
 }) {
   const { value, running, context } = props;
   // Saves mentioned with @, by the label written in the text ("@Swiss poster").
@@ -1125,6 +1154,21 @@ function Composer(props: {
           </button>
         </div>
       )}
+      {props.picked && (
+        <div className="composer-context picked" key={props.picked.nodes.join(",")}>
+          {props.picked.thumbs.length > 0 && (
+            <span className="composer-thumbs">
+              {props.picked.thumbs.map((t) => <img key={t} src={t} alt="" />)}
+            </span>
+          )}
+          <span className="composer-context-text">
+            <span className="faint">On the canvas</span> {props.picked.label}
+          </span>
+          <button onClick={props.onDropPicked} aria-label="Don't include this" title="Don't include this">
+            <Icon name="x" size={11} />
+          </button>
+        </div>
+      )}
       {props.quote && (
         <div className="composer-quote" key={props.quote}>
           <Icon name="reply" size={12} />
@@ -1149,7 +1193,7 @@ function Composer(props: {
           ref={props.inputRef}
           value={value}
           rows={1}
-          placeholder={props.quote ? "Reply to this" : context ? "Ask about this, or anything in your library. @ to mention a save" : "Ask anything about your library. @ to mention a save"}
+          placeholder={props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this, or anything in your library. @ to mention a save" : "Ask anything about your library. @ to mention a save"}
           onChange={(e) => {
             props.setValue(e.target.value);
             look(e.target.value, e.target.selectionStart);
