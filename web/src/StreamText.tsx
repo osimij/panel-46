@@ -220,7 +220,7 @@ export function RichText({ text, live, ctx }: { text: string; live: boolean; ctx
 
 const short = (t: string, n = 34) => (t.length > n ? `${t.slice(0, n - 1).trimEnd()}…` : t);
 
-function RefChip({ id, ctx }: { id: string; ctx: Ctx }) {
+export function RefChip({ id, ctx }: { id: string; ctx: Ctx }) {
   const card = ctx.cards.get(id);
   const [peek, setPeek] = useState<DOMRect | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);

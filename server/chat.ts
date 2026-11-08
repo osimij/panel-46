@@ -230,6 +230,15 @@ function partialInput(json: string): Record<string, unknown> {
   return found;
 }
 
+/** A message with each [[id]] written as the save's name, for titles. */
+function readable(text: string) {
+  const { docs } = load();
+  return text.replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+    const d = docs.get(id);
+    return d ? cardOf(d).title : all;
+  });
+}
+
 export async function send(chatId: string, text: string, context: { open?: string; project?: string } = {}) {
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
   if (!chat) throw new Error("That conversation is gone.");
@@ -245,7 +254,7 @@ export async function send(chatId: string, text: string, context: { open?: strin
   const messageId = newId();
   db.run("INSERT INTO chat_messages (id, chat_id, role, parts, status, created_at) VALUES (?, ?, 'assistant', '[]', 'streaming', ?)", [messageId, chatId, now()]);
   db.run("UPDATE chats SET updated_at = ?, title = CASE WHEN title = '' THEN ? ELSE title END WHERE id = ?", [
-    now(), clean.replace(/\s+/g, " ").slice(0, 80), chatId,
+    now(), readable(clean).replace(/\s+/g, " ").slice(0, 80), chatId,
   ]);
 
   const run: Run = { messageId, parts: [], events: [], listeners: new Set(), proc: null, stopped: false };
@@ -263,10 +272,17 @@ export async function send(chatId: string, text: string, context: { open?: strin
     const d = load().docs.get(context.open);
     if (d) said.push(`The designer has [[${d.r.id}]] open (${cardOf(d).title}).`);
   }
+  // Saves the designer mentioned with @ arrive as [[id]] in what they wrote.
+  const named = [...new Set([...clean.matchAll(/\[\[([0-9a-f]{16})\]\]/g)].map((x) => x[1]!))];
+  if (named.length) {
+    const { docs } = load();
+    const list = named.flatMap((id) => (docs.get(id) ? [`[[${id}]] (${cardOf(docs.get(id)!).title})`] : []));
+    if (list.length) said.push(`The designer mentions ${list.join(", ")}: each [[id]] in their message is that save; look at it with get_reference when it matters.`);
+  }
   if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
   void drive(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
   // A short name for a new conversation, made alongside the answer.
-  if (!chat.title) void nameChat(chatId, clean, run);
+  if (!chat.title) void nameChat(chatId, readable(clean), run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
 }
 

@@ -105,6 +105,8 @@ Press **⌘B** to tuck the sidebar away to a thin strip on the left; point at th
 
 Press **⌘J** (or the small gray orb in the dock) to open Ask beside the library. It answers questions about your saves and pulls references for a brief: "a journaling app for slow mornings, warm and paper-like: color, type and motion". Saves it mentions show up as names with thumbnails, a row of pictures, or color chips you can click to copy. Click one to open it; point at one to see it larger and to light up its card in the grid.
 
+Type **@** in Ask to mention a save: a list of your saves appears (the newest, or what matches the words after the @); pick one with the arrow keys and Enter, or click. Claude gets that exact save, and it shows as a chip in your message.
+
 - **Through your Claude plan**, like the reads: each message runs Claude Code (`claude -p`, Opus 5.5) with Panel's own MCP tools and nothing else, so it can search, match colors, look at the pictures and save to a collection, but can't touch files. The conversation continues with Claude Code's session, so follow-ups ("put those in a collection") just work.
 - **It knows what you have open.** With a save open, "this" means that save (the composer says so; × leaves it out).
 - **Type a question in search** and press ⇥ (or ↵ when it ends with "?") to ask it instead.

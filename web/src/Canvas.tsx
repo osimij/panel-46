@@ -80,6 +80,8 @@ const useActions = () => useContext(Ctx)!;
 
 /** How long things take to leave, so they can be seen going. */
 const LEAVE_MS = 170;
+/** How far the canvas moves for a two-finger swipe: 1 is one to one with your fingers (React Flow's own is 0.5). */
+const PAN_SPEED = 1.15;
 const stagger = (i?: number) => (i === undefined ? undefined : ({ "--i": Math.min(i, 18) } as React.CSSProperties));
 
 function Handles() {
@@ -909,6 +911,7 @@ function Board({ id, dock, onOpenRef, onError, onRenamed, onDeleted }: CanvasPro
           maxZoom={2.5}
           zoomOnDoubleClick={false}
           panOnScroll
+          panOnScrollSpeed={PAN_SPEED}
           selectionOnDrag
           panOnDrag={[1, 2]}
           deleteKeyCode={["Backspace", "Delete"]}

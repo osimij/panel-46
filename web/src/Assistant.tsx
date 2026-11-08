@@ -3,10 +3,10 @@
 // you browse, knows what you have open, and keeps every conversation.
 
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef } from "react";
-import { chatApi, displayTitle, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
+import { api, chatApi, displayTitle, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
-import { Gallery, highlight, RichText, useSmoothText } from "./StreamText.tsx";
+import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
 import { Popover } from "./TagRow.tsx";
 
 export interface AssistantHandle {
@@ -138,6 +138,8 @@ export function Assistant(props: {
   const missing = useMemo(() => {
     const ids = new Set<string>();
     for (const m of messages) {
+      // Saves the designer mentioned with @.
+      if (m.role === "user") for (const x of m.text.matchAll(REF_IN_TEXT)) if (!cards.has(x[1]!)) ids.add(x[1]!);
       for (const p of m.parts) {
         if (p.type === "text") for (const x of p.text.matchAll(REF_IN_TEXT)) if (!cards.has(x[1]!)) ids.add(x[1]!);
         if (p.type === "tool") for (const id of (p.input?.ids as string[] | undefined) ?? []) if (!cards.has(id)) ids.add(id);
@@ -403,7 +405,9 @@ export function Assistant(props: {
           value={draft}
           setValue={setDraft}
           running={running}
-          onSend={() => void send(draft)}
+          onSend={(text) => void send(text)}
+          onMention={(c) => addCards([c])}
+          cards={cards}
           onStop={stop}
           context={context}
           onDropContext={() => looking && setDropped(looking.id)}
@@ -610,6 +614,8 @@ function Welcome({ looking, project, onPick }: { looking: Ref | null; project?: 
 
 function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, RefCard>; onOpen: (id: string) => void }) {
   const about = m.context?.open ? cards.get(m.context.open) : null;
+  // Saves mentioned with @ travel as [[id]] and show as their chips.
+  const pieces = m.text.split(/(\[\[[0-9a-f]{16}\]\])/);
   return (
     <div className="msg-user">
       {about && (
@@ -618,7 +624,12 @@ function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, 
           <span>{about.title}</span>
         </button>
       )}
-      <div className="msg-bubble">{m.text}</div>
+      <div className="msg-bubble">
+        {pieces.map((t, i) => {
+          const id = t.match(/^\[\[([0-9a-f]{16})\]\]$/)?.[1];
+          return id ? <RefChip key={i} id={id} ctx={{ cards, onOpen }} /> : t;
+        })}
+      </div>
     </div>
   );
 }
@@ -887,18 +898,35 @@ function Seconds() {
 
 // ---------- Composer ----------
 
+/** The words after an @ being typed, up to the caret: "@inter", "@swiss poster". */
+const MENTION_AT = /(?:^|\s)@((?:[^\s@]+ ?){0,4})$/;
+const labelFor = (c: RefCard) => {
+  const t = c.title.replace(/\s+/g, " ").trim();
+  return t.length > 36 ? `${t.slice(0, 35).trimEnd()}…` : t || "Untitled";
+};
+
 function Composer(props: {
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   value: string;
   setValue: (v: string) => void;
   running: boolean;
-  onSend: () => void;
+  onSend: (text: string) => void;
   onStop: () => void;
   context: Ref | null;
   onDropContext: () => void;
   lastAsked?: string;
+  cards: Map<string, RefCard>;
+  onMention: (c: RefCard) => void;
 }) {
   const { value, running, context } = props;
+  // Saves mentioned with @, by the label written in the text ("@Swiss poster").
+  const mentions = useRef(new Map<string, RefCard>());
+  const [picker, setPicker] = useState<{ query: string; start: number } | null>(null);
+  const [found, setFound] = useState<RefCard[]>([]);
+  const [pick, setPick] = useState(0);
+  // Esc closes the list until the next @.
+  const dismissed = useRef<number | null>(null);
+
   // Grows with what you write, up to a point, then scrolls.
   useLayoutEffect(() => {
     const el = props.inputRef.current;
@@ -906,10 +934,102 @@ function Composer(props: {
     el.style.height = "0px";
     el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
   }, [value, props.inputRef]);
+
+  /** Is an @ being typed at the caret? */
+  const look = (text: string, caret: number) => {
+    const m = text.slice(0, caret).match(MENTION_AT);
+    if (!m) {
+      dismissed.current = null;
+      return setPicker(null);
+    }
+    const start = caret - m[1]!.length - 1;
+    // Just after a mention already made ("@Swiss poster |"): that's not a new one.
+    if (dismissed.current === start || [...mentions.current.keys()].some((l) => m[1]!.startsWith(l))) return setPicker(null);
+    setPicker((p) => (p?.start === start && p.query === m[1] ? p : { query: m[1]!, start }));
+  };
+
+  // Saves for the list: the newest with nothing typed yet, else the best matches.
+  const query = picker?.query.trim() ?? null;
+  useEffect(() => {
+    if (query === null) return;
+    let live = true;
+    const t = setTimeout(() => {
+      api
+        .refs({ q: query || undefined, library: true })
+        .then((list) => {
+          if (!live) return;
+          setFound(list.slice(0, 7).map(cardFromRef));
+          setPick(0);
+        })
+        .catch(() => live && setFound([]));
+    }, query ? 110 : 0);
+    return () => {
+      live = false;
+      clearTimeout(t);
+    };
+  }, [query]);
+  const open = !!picker && found.length > 0;
+
+  const choose = (c: RefCard) => {
+    if (!picker) return;
+    let label = labelFor(c);
+    // Two saves with the same name stay apart.
+    for (let n = 2; mentions.current.has(label) && mentions.current.get(label)!.id !== c.id; n++) label = `${labelFor(c)} (${n})`;
+    mentions.current.set(label, c);
+    props.onMention(c);
+    const el = props.inputRef.current;
+    const caret = el?.selectionStart ?? value.length;
+    const next = `${value.slice(0, picker.start)}@${label} ${value.slice(caret)}`;
+    props.setValue(next);
+    setPicker(null);
+    const at = picker.start + label.length + 2;
+    requestAnimationFrame(() => {
+      el?.focus();
+      el?.setSelectionRange(at, at);
+    });
+  };
+
+  /** What's sent: each mention as [[id]], which Claude reads as that save. */
+  const resolve = (text: string) => {
+    let out = text;
+    // Longest first, so "@Poster (2)" isn't taken for "@Poster".
+    for (const [label, c] of [...mentions.current].sort((a, b) => b[0].length - a[0].length)) out = out.split(`@${label}`).join(`[[${c.id}]]`);
+    return out;
+  };
+  const mentioned = [...mentions.current].filter(([label]) => value.includes(`@${label}`));
+  const send = () => {
+    if (running || !value.trim()) return;
+    const text = resolve(value);
+    mentions.current.clear();
+    setPicker(null);
+    props.onSend(text);
+  };
+
   const can = !!value.trim();
   const thumb = context ? context.media[0]?.thumb_url ?? context.preview_url ?? context.avatar_url : null;
   return (
     <div className={`composer ${running ? "working" : ""} ${can ? "has-text" : ""}`}>
+      {open && (
+        <div className="mention-pick" role="listbox" aria-label="Mention a save">
+          <div className="mention-head">{picker!.query.trim() ? "Saves matching" : "Mention a save"}</div>
+          {found.map((c, i) => (
+            <button
+              key={c.id}
+              role="option"
+              aria-selected={i === pick}
+              className={`mention-row ${i === pick ? "on" : ""}`}
+              style={{ "--i": i } as React.CSSProperties}
+              onMouseEnter={() => setPick(i)}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => choose(c)}
+            >
+              <span className="mention-thumb">{c.thumb && <img src={c.thumb} alt="" />}</span>
+              <span className="mention-title">{c.title}</span>
+              <span className="mention-type">{c.type}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {context && (
         <div className="composer-context" key={context.id}>
           {thumb && <img src={thumb} alt="" />}
@@ -921,23 +1041,63 @@ function Composer(props: {
           </button>
         </div>
       )}
+      {mentioned.length > 0 && (
+        <div className="composer-mentions">
+          {mentioned.map(([label, c]) => (
+            <span key={label} className="composer-mention" title={c.title}>
+              {c.thumb && <img src={c.thumb} alt="" />}
+              <span>{label}</span>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="composer-row">
         <textarea
           ref={props.inputRef}
           value={value}
           rows={1}
-          placeholder={context ? "Ask about this, or anything in your library" : "Ask anything about your library"}
-          onChange={(e) => props.setValue(e.target.value)}
+          placeholder={context ? "Ask about this, or anything in your library. @ to mention a save" : "Ask anything about your library. @ to mention a save"}
+          onChange={(e) => {
+            props.setValue(e.target.value);
+            look(e.target.value, e.target.selectionStart);
+          }}
+          onSelect={(e) => look(e.currentTarget.value, e.currentTarget.selectionStart)}
+          onBlur={() => setPicker(null)}
           onKeyDown={(e) => {
+            if (open) {
+              if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                e.preventDefault();
+                setPick((i) => (i + (e.key === "ArrowDown" ? 1 : found.length - 1)) % found.length);
+                return;
+              }
+              if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                choose(found[pick] ?? found[0]!);
+                return;
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                dismissed.current = picker!.start;
+                setPicker(null);
+                return;
+              }
+            }
             // ↑ in an empty composer brings back what you last asked, to change it.
             if (e.key === "ArrowUp" && !value && props.lastAsked) {
               e.preventDefault();
-              props.setValue(props.lastAsked);
+              const again = props.lastAsked.replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+                const c = props.cards.get(id);
+                if (!c) return all;
+                mentions.current.set(labelFor(c), c);
+                return `@${labelFor(c)}`;
+              });
+              props.setValue(again);
               return;
             }
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              if (!running) props.onSend();
+              send();
             }
             if (e.key === "Escape") {
               // Only leaves the composer; doesn't also close what's open behind it.
@@ -953,7 +1113,7 @@ function Composer(props: {
             <Icon name="stop" size={14} />
           </button>
         ) : (
-          <button className="composer-btn send" key="send" onClick={props.onSend} disabled={!can} aria-label="Send" title="Send (↵)">
+          <button className="composer-btn send" key="send" onClick={send} disabled={!can} aria-label="Send" title="Send (↵)">
             <Icon name="arrow-up" size={15} />
           </button>
         )}
