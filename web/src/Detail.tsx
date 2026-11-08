@@ -6,6 +6,7 @@ import {
 } from "./api.ts";
 import { Avatar, FadeImg, PersonAvatar } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
+import { Mark } from "./Glow.tsx";
 import { VideoPlayer } from "./VideoPlayer.tsx";
 import { DesignReadField, readable } from "./Reading.tsx";
 
@@ -18,6 +19,8 @@ export function Detail(props: {
   onChanged: () => Promise<void>;
   onDeleted: () => void;
   onTag: (name: string, section: Section) => void;
+  /** Ask the assistant about this save. */
+  onAsk?: () => void;
 }) {
   const { initial, onClose, onPrev, onNext, onChanged } = props;
   const [ref, setRef] = useState<Ref>(initial);
@@ -138,6 +141,11 @@ export function Detail(props: {
             <Icon name="x" size={14} />
           </button>
           <div className="detail-bar-right">
+            {props.onAsk && (
+              <button className="round-btn ask-here" onClick={props.onAsk} aria-label="Ask about this" title="Ask about this (⌘J)">
+                <Mark size={14} />
+              </button>
+            )}
             <button
               className={`round-btn ${showInfo ? "on" : ""}`}
               onClick={toggleInfo}

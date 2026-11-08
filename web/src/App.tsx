@@ -108,6 +108,16 @@ export function App() {
     }
   }, []);
   const [askRunning, setAskRunning] = useState(false);
+  // An answer that finished while Ask was closed: a dot on its button until you look.
+  const [askUnread, setAskUnread] = useState(false);
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !askRunning && !askOpen) setAskUnread(true);
+    wasRunning.current = askRunning;
+  }, [askRunning, askOpen]);
+  useEffect(() => {
+    if (askOpen) setAskUnread(false);
+  }, [askOpen]);
   const askRef = useRef<AssistantHandle>(null);
   const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const [confirmRemove, setConfirmRemove] = useState(false);
@@ -678,7 +688,7 @@ export function App() {
             />
             <AddFiles onFiles={uploadFiles} skills={scope.kind === "skills"} inputRef={fileInputRef} />
             <button
-              className={`round-btn ask-btn ${askOpen ? "on" : ""}`}
+              className={`round-btn ask-btn ${askOpen ? "on" : ""} ${askUnread ? "unread" : ""}`}
               onClick={() => setAskOpen(!askOpen)}
               aria-pressed={askOpen}
               aria-label="Ask"
@@ -703,6 +713,10 @@ export function App() {
             setOpen(null);
             say("Moved to Trash");
             void refresh();
+          }}
+          onAsk={() => {
+            setAskOpen(true);
+            setTimeout(() => askRef.current?.focus(), 140);
           }}
           onTag={(name, tagSection) => {
             setOpen(null);

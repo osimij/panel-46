@@ -350,16 +350,17 @@
 /* ---- The mark: a drop of light, gray at rest ---- */
 .mark {
   position: relative; display: inline-block; flex: none; border-radius: 50%; overflow: hidden; isolation: isolate;
-  background: radial-gradient(circle at 34% 28%, oklch(0.99 0 0), oklch(0.8 0 0) 58%, oklch(0.62 0 0));
-  box-shadow: inset 0 0 0 0.5px oklch(0 0 0 / 0.14), inset 0 -1.5px 3px oklch(0 0 0 / 0.12);
-  filter: grayscale(1) contrast(0.9);
+  background: radial-gradient(circle at 34% 26%, oklch(1 0 0), oklch(0.9 0 0) 48%, oklch(0.76 0 0));
+  box-shadow: inset 0 0 0 0.5px oklch(0 0 0 / 0.12), inset 0 -1.5px 3px oklch(0 0 0 / 0.1), inset 0 1px 1px oklch(1 0 0 / 0.9);
+  /* At rest: a pale opal, only a breath of its colors left. */
+  filter: saturate(0.18) brightness(1.04);
   transition: filter 0.7s var(--ease);
 }
 @media (prefers-color-scheme: dark) {
   .mark { background: radial-gradient(circle at 34% 28%, oklch(0.92 0 0), oklch(0.62 0 0) 58%, oklch(0.4 0 0)); box-shadow: inset 0 0 0 0.5px oklch(1 0 0 / 0.16), inset 0 -1.5px 3px oklch(0 0 0 / 0.3); }
 }
 .mark i {
-  position: absolute; width: 72%; height: 72%; border-radius: 50%; filter: blur(2.5px); opacity: 0.85;
+  position: absolute; width: 72%; height: 72%; border-radius: 50%; filter: blur(2.5px); opacity: 0.7;
   animation-duration: 9s; animation-iteration-count: infinite; animation-timing-function: linear; animation-play-state: paused;
   mix-blend-mode: multiply;
 }
@@ -369,6 +370,7 @@
 @keyframes orbit { to { rotate: 360deg; } }
 .mark .mark-a, .mark .mark-b, .mark .mark-c { transform-origin: 50% 50%; translate: 0 0; }
 .mark.active, :is(button, a):hover .mark, .ask-btn.on .mark { filter: none; }
+.mark.active i, :is(button, a):hover .mark i, .ask-btn.on .mark i { opacity: 0.9; }
 .mark.active i, :is(button, a):hover .mark i { animation-play-state: running; }
 .mark.active { animation: mark-pulse 2.4s ease-in-out infinite; }
 @keyframes mark-pulse { 50% { transform: scale(1.08); } }
@@ -378,6 +380,18 @@
 .dock .ask-btn .mark i { filter: blur(4px); }
 .dock .ask-btn.on { background: color-mix(in oklch, var(--raised) 88%, transparent); color: var(--text); box-shadow: inset 0 0 0 1.5px var(--text), 0 14px 40px -14px oklch(0 0 0 / 0.5); }
 .dock .ask-btn.on:hover { background: var(--raised); }
+
+/* Ask, from an open save */
+.round-btn.ask-here .mark { width: 15px; height: 15px; }
+.round-btn.ask-here .mark i { filter: blur(2px); }
+
+/* An answer came in while Ask was closed */
+.dock .ask-btn { position: relative; }
+.dock .ask-btn::after {
+  content: ""; position: absolute; top: 5px; right: 5px; width: 9px; height: 9px; border-radius: 50%;
+  background: var(--text); box-shadow: 0 0 0 2px var(--raised); transform: scale(0); transition: transform 0.35s var(--spring);
+}
+.dock .ask-btn.unread::after { transform: scale(1); }
 
 /* A question typed in search can go to Ask */
 .command-ask {
