@@ -16,7 +16,7 @@
 .main { transition: margin-right 0.5s var(--drawer); }
 .app.chat-open .main { margin-right: var(--chat); }
 .app.chat-open .detail { right: var(--chat); }
-.detail { transition: left var(--peek), right 0.5s var(--drawer); }
+.detail, .app.detail-open .detail { transition: left var(--peek), right 0.5s var(--drawer); }
 .app.chat-open .dock { left: calc(var(--side) + (100vw - var(--side) - var(--chat)) / 2); }
 .app.chat-open .dock .command { width: min(500px, calc(100vw - var(--side) - var(--chat) - 200px)); }
 .app.chat-open .dock .command:focus-within, .app.chat-open .dock .command.has-value { width: min(560px, calc(100vw - var(--side) - var(--chat) - 200px)); }
@@ -389,6 +389,9 @@
 .command-ask kbd { color: var(--faint); }
 .command-ask .mark { width: 15px; height: 15px; }
 .command-ask .mark i { filter: blur(2px); }
+
+/* Cards that only moved to another column (a re-layout) don't play their entrance again. */
+.card.settled { animation: none; }
 
 /* A save the assistant is talking about, lit up in the grid while you point at it. */
 .masonry [data-ref] { transition: box-shadow 0.3s var(--ease), transform 0.3s var(--ease); }

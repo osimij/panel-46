@@ -375,8 +375,15 @@ export function App() {
   // ---- From the assistant ----
 
   const openFromAsk = useCallback((id: string) => {
-    api.ref(id).then((r) => transition(() => setOpen(r))).catch(() => say("That save isn't in the library any more.", "error"));
-  }, [say]);
+    api
+      .ref(id)
+      .then((r) => {
+        // In a narrow window Ask covers everything, so it steps aside for the save.
+        if (innerWidth <= 900) setAskOpen(false);
+        transition(() => setOpen(r));
+      })
+      .catch(() => say("That save isn't in the library any more.", "error"));
+  }, [say, setAskOpen]);
 
   const showPicked = useCallback((ids: string[], title: string) => {
     setOpen(null);

@@ -547,6 +547,7 @@ export type ChatEvent =
   | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
   | { t: "tool_result"; id: string; refs: string[]; cards: RefCard[]; total?: number; error?: string }
   | { t: "text"; delta: string }
+  | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string }
   | { t: "idle" };
 

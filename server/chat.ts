@@ -69,6 +69,7 @@ export type ChatEvent =
   | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
   | { t: "tool_result"; id: string; refs: string[]; cards: Card[]; total?: number; error?: string }
   | { t: "text"; delta: string }
+  | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string };
 
 export interface MessageOut {
@@ -251,7 +252,42 @@ export async function send(chatId: string, text: string, context: { open?: strin
     if (d) prompt = `<panel-context>The designer has [[${d.r.id}]] open (${cardOf(d).title}).</panel-context>\n\n${clean}`;
   }
   void drive(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  // A short name for a new conversation, made alongside the answer.
+  if (!chat.title) void nameChat(chatId, clean, run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
+}
+
+/** Two to five words for the conversation, from a small fast model, in the background. */
+async function nameChat(chatId: string, first: string, run: Run) {
+  try {
+    const bin = await claudeBinary();
+    if (!bin) return;
+    const token = await claudeToken();
+    const proc = Bun.spawn(
+      [
+        bin, "-p", `Name this conversation:\n\n${first.slice(0, 600)}`,
+        "--model", "claude-haiku-5-5", "--effort", "low", "--output-format", "json",
+        "--system-prompt",
+        "You name a designer's conversations with their design-reference library. Answer with only a title of 2 to 5 words in sentence case: the subject, not the request (\"Dark technical type\", \"One-accent palettes\", \"Calm banking app\"). No quotes, no period.",
+        "--tools", "", "--setting-sources", "", "--no-session-persistence", "--strict-mcp-config",
+      ],
+      {
+        cwd: CHAT_DIR,
+        env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
+        stdout: "pipe", stderr: "pipe",
+      },
+    );
+    const timer = setTimeout(() => proc.kill(), 45_000);
+    const text = await new Response(proc.stdout).text();
+    clearTimeout(timer);
+    const res = JSON.parse(text) as { result?: string; is_error?: boolean };
+    const title = (res.result ?? "").split("\n")[0]!.replace(/^["'“”]+|["'“”.]+$/g, "").trim().slice(0, 60);
+    if (res.is_error || !title || title.split(/\s+/).length > 8) return;
+    db.run("UPDATE chats SET title = ? WHERE id = ?", [title, chatId]);
+    if (runs.get(chatId) === run) emit(chatId, run, { t: "title", title });
+  } catch {
+    /* the first words of the message stay the title */
+  }
 }
 
 function finish(chatId: string, run: Run, status: "done" | "stopped" | "error", error?: string) {

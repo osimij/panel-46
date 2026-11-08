@@ -92,6 +92,20 @@ claude mcp add --scope user panel -- ~/.bun/bin/bun /Users/osimij/Desktop/Panel4
 
 For Claude Desktop or Cursor, the same command goes in their MCP config (`"command": "/Users/osimij/.bun/bin/bun", "args": ["/Users/osimij/Desktop/Panel46/server/mcp.ts"]`). Or over HTTP while Panel runs: `http://127.0.0.1:4646/mcp` (only this Mac's own addresses are accepted).
 
+### Ask: the assistant
+
+Press **⌘J** (or the small gray orb in the dock) to open Ask beside the library. It answers questions about your saves and pulls references for a brief: "a journaling app for slow mornings, warm and paper-like: color, type and motion". Saves it mentions show up as names with thumbnails, a row of pictures, or color chips you can click to copy. Click one to open it; point at one to see it larger and to light up its card in the grid.
+
+- **Through your Claude plan**, like the reads: each message runs Claude Code (`claude -p`, Opus 5.5) with Panel's own MCP tools and nothing else, so it can search, match colors, look at the pictures and save to a collection, but can't touch files. The conversation continues with Claude Code's session, so follow-ups ("put those in a collection") just work.
+- **It knows what you have open.** With a save open, "this" means that save (the composer says so; × leaves it out).
+- **Type a question in search** and press ⇥ (or ↵ when it ends with "?") to ask it instead.
+- **What it's doing** shows as a quiet timeline: searches with their results, saves it looked at, thinking time. It folds into one line once the answer starts. **Stop** ends it at once.
+- **Every conversation is kept** (SQLite, `chats` and `chat_messages`), named in a few words by Haiku, and listed under the clock button. Reload mid-answer and it picks up where it was.
+- **How hard it thinks** (Quick, Thorough, Deep) is in the same menu. Thorough is the default.
+- **Show N in the library** puts every save from an answer in the grid together.
+- Drag the panel's left edge to resize it; double-click to reset. In a narrow window it covers the library.
+- Panel stays grayscale: color appears only while Ask works, as a soft glow rising behind the composer (a WebGL shader) and a thin iridescent rim. Both are off with reduced motion.
+
 ## Not built yet
 
 A Brief view that pulls references by facet and suggests combinations, Apple Foundation Models with a strict offline mode, the Dock app wrapper, backup to the external SSD, export, and cloud sync.

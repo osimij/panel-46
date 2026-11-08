@@ -8,7 +8,6 @@ import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
 import { Gallery, highlight, RichText, useSmoothText } from "./StreamText.tsx";
 import { Popover } from "./TagRow.tsx";
-import "./assistant.css";
 
 export interface AssistantHandle {
   ask: (text: string) => void;
@@ -163,6 +162,7 @@ export function Assistant(props: {
           after,
           (e) => {
             if (e.t === "idle") return;
+            if (e.t === "title") return setTitle(e.title);
             if (e.t === "start") runId.current = e.message.id;
             if (e.t === "tool") toolNames.current.set(e.id, e.name);
             if (e.t === "tool_result") {

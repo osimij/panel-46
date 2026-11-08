@@ -50,6 +50,17 @@ export function Masonry({
     return () => ro.disconnect();
   }, []);
 
+  // When the column count changes (the window, or Ask opening beside the grid), cards move
+  // between columns and remount. Ones already on screen just take their new place instead
+  // of playing their entrance again; only cards you haven't seen yet animate in.
+  const seen = useRef(new Set<string>());
+  const lastCols = useRef(cols);
+  const reflow = lastCols.current !== cols;
+  useEffect(() => {
+    lastCols.current = cols;
+    for (const r of items) seen.current.add(r.id);
+  });
+
   const columns: { r: Ref; i: number }[][] = Array.from({ length: cols }, () => []);
   const heights = new Array(cols).fill(0);
   items.forEach((r, i) => {
@@ -67,6 +78,7 @@ export function Masonry({
               key={r.id}
               r={r}
               index={i}
+              settled={reflow && seen.current.has(r.id)}
               onOpen={onOpen}
               onFavorite={onFavorite}
               onHide={onHide}
@@ -99,9 +111,12 @@ function Card({
   onHide,
   onDelete,
   selection,
+  settled: settledProp,
 }: {
   r: Ref;
   index: number;
+  /** Already on screen before a re-layout: no entrance animation. */
+  settled?: boolean;
   onOpen: (r: Ref, thumb: HTMLElement) => void;
   onFavorite: (r: Ref) => void;
   onHide: (r: Ref) => void;
@@ -109,6 +124,8 @@ function Card({
   selection: Selection;
 }) {
   const m = r.media[0];
+  // Decided once, when the card mounts: a later render mustn't restart its entrance.
+  const [settled] = useState(!!settledProp);
   const thumbRef = useRef<HTMLDivElement>(null);
   const poster = m?.thumb_url ?? r.preview_url;
   const moving = m && m.type !== "image" && m.url;
@@ -124,7 +141,7 @@ function Card({
 
   return (
     <article
-      className={`card ${r.status} ${picked ? "picked" : ""}`}
+      className={`card ${r.status} ${picked ? "picked" : ""} ${settled ? "settled" : ""}`}
       data-ref={r.id}
       style={{ "--i": Math.min(index, 14) } as React.CSSProperties}
       onClick={(e) => activate(e.shiftKey)}
