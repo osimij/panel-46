@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { db, getSetting, newId, now, setSetting } from "./db.ts";
 import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
+import { findProject } from "./projects.ts";
 import { claudeBinary, claudeToken, settings as readSettings, type Effort } from "./read.ts";
 
 db.exec(`
@@ -223,7 +224,7 @@ function partialInput(json: string): Record<string, unknown> {
   return found;
 }
 
-export async function send(chatId: string, text: string, context: { open?: string } = {}) {
+export async function send(chatId: string, text: string, context: { open?: string; project?: string } = {}) {
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
   if (!chat) throw new Error("That conversation is gone.");
   if (runs.has(chatId)) throw new Error("Still answering the last message.");
@@ -247,10 +248,16 @@ export async function send(chatId: string, text: string, context: { open?: strin
   emit(chatId, run, { t: "start", message });
 
   let prompt = clean;
+  const said: string[] = [];
+  if (context.project) {
+    const p = findProject(context.project);
+    if (p) said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). When the question is about the project, read it with get_project first.`);
+  }
   if (context.open) {
     const d = load().docs.get(context.open);
-    if (d) prompt = `<panel-context>The designer has [[${d.r.id}]] open (${cardOf(d).title}).</panel-context>\n\n${clean}`;
+    if (d) said.push(`The designer has [[${d.r.id}]] open (${cardOf(d).title}).`);
   }
+  if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
   void drive(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
   // A short name for a new conversation, made alongside the answer.
   if (!chat.title) void nameChat(chatId, clean, run);

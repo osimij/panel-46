@@ -556,7 +556,7 @@ export const chatApi = {
   create: () => call<{ id: string }>("/api/chats", { method: "POST" }),
   get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
-  send: (id: string, text: string, context: { open?: string }) =>
+  send: (id: string, text: string, context: { open?: string; project?: string }) =>
     call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
   stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
   cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
@@ -592,3 +592,83 @@ export const chatApi = {
   },
 };
 
+
+// ---------- Projects: a canvas per piece of work ----------
+
+export type TopicFacet = "typography" | "color" | "layout" | "imagery" | "motion" | "components" | "other";
+export type RefState = "proposed" | "kept" | "chosen" | "ruled_out";
+
+export interface BoardNode {
+  id: string;
+  kind: "topic" | "ref" | "note";
+  ref_id: string | null;
+  /** topic: { title, facet, status, summary } · ref: { state, taking } · note: { text } */
+  data: Record<string, unknown>;
+  x: number;
+  y: number;
+  origin?: string;
+  created_at?: string;
+}
+export interface BoardEdge { id: string; source: string; target: string; label: string }
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  brief: string;
+  nodes: number;
+  refs: number;
+  topics: number;
+  locked: number;
+  created_at: string;
+  updated_at: string;
+}
+export interface ProjectFull {
+  id: string;
+  name: string;
+  brief: string;
+  seq: number;
+  nodes: BoardNode[];
+  edges: BoardEdge[];
+  cards: RefCard[];
+}
+
+export type BoardOp =
+  | { op: "add_node"; node: { id?: string; kind: BoardNode["kind"]; ref_id?: string | null; data?: Record<string, unknown>; x: number; y: number } }
+  | { op: "update_node"; id: string; data?: Record<string, unknown>; x?: number; y?: number }
+  | { op: "remove_node"; id: string }
+  | { op: "add_edge"; edge: { id?: string; source: string; target: string; label?: string } }
+  | { op: "remove_edge"; id: string }
+  | { op: "update_project"; name?: string; brief?: string };
+
+export interface BoardEvent { seq: number; at: string; actor: string; client: string | null; ops: BoardOp[] }
+
+/** Ids made here, so a node can be drawn before the companion has answered. Same shape as the companion's. */
+export const localId = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+
+export const projectApi = {
+  list: () => call<ProjectSummary[]>("/api/projects"),
+  create: (name: string, brief = "") => call<{ id: string; name: string; brief: string }>("/api/projects", { method: "POST", body: body({ name, brief }) }),
+  get: (id: string) => call<ProjectFull>(`/api/projects/${id}`),
+  remove: (id: string) => call<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
+  ops: (id: string, ops: BoardOp[], client: string) =>
+    call<{ seq: number; ops: BoardOp[]; cards: RefCard[] }>(`/api/projects/${id}/ops`, { method: "POST", body: body({ ops, client }) }),
+  /** Follow changes made anywhere (other windows, Claude over MCP) from `after` on, until `signal` aborts. */
+  async follow(id: string, after: number, on: (e: BoardEvent | { gone: true }) => void, signal: AbortSignal) {
+    const res = await fetch(`/api/projects/${id}/stream?after=${after}`, { signal });
+    if (!res.body) return;
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += value;
+      let end: number;
+      while ((end = buf.indexOf("\n\n")) >= 0) {
+        const chunk = buf.slice(0, end);
+        buf = buf.slice(end + 2);
+        const data = chunk.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("");
+        if (data) on(JSON.parse(data));
+      }
+    }
+  },
+};

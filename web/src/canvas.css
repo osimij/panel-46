@@ -1,0 +1,228 @@
+/* ============ Project canvas ============ */
+/* Grayscale like the rest of Panel: the saves bring the color. */
+
+.app.on-canvas .main { padding: 0; }
+.canvas {
+  --out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dot: oklch(0 0 0 / 0.13);
+  position: relative; height: 100vh; overflow: hidden; background: var(--bg);
+}
+@media (prefers-color-scheme: dark) { .canvas { --dot: oklch(1 0 0 / 0.11); } }
+.canvas .react-flow { background: transparent; }
+.canvas .react-flow__pane { cursor: default; }
+.canvas .react-flow__pane.dragging { cursor: grabbing; }
+
+/* ---- Nodes ---- */
+
+.bn {
+  position: relative; background: var(--raised); color: var(--text);
+  border-radius: calc(14px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 0 0 1px var(--line), 0 1px 2px oklch(0 0 0 / 0.04), 0 10px 30px -18px oklch(0 0 0 / 0.35);
+  transition: box-shadow 0.2s var(--ease), opacity 0.25s var(--ease), filter 0.25s var(--ease), transform 0.35s var(--spring);
+}
+.react-flow__node:hover .bn { box-shadow: 0 0 0 1px var(--faint), 0 1px 2px oklch(0 0 0 / 0.05), 0 16px 40px -20px oklch(0 0 0 / 0.4); }
+.react-flow__node.selected .bn { box-shadow: 0 0 0 1.5px var(--text), 0 18px 44px -20px oklch(0 0 0 / 0.45); }
+
+/* Arriving: up out of a slight blur, one after another. */
+@keyframes bn-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.94); filter: blur(10px); }
+  60% { filter: blur(0); }
+}
+.bn.enter { animation: bn-in 0.7s var(--out) backwards; animation-delay: calc(var(--i, 0) * 55ms); }
+.bn.leaving { opacity: 0; transform: scale(0.92); filter: blur(6px); transition-duration: 0.17s; pointer-events: none; }
+
+/* Handles: out of the way until you're on the node. */
+.canvas .bn-handle {
+  width: 10px; height: 10px; min-width: 0; min-height: 0; border-radius: 50%;
+  background: var(--raised); border: 1.5px solid var(--text); opacity: 0; transition: opacity 0.15s var(--ease), transform 0.15s var(--ease);
+}
+.react-flow__node:hover .bn-handle, .react-flow__node.selected .bn-handle { opacity: 1; }
+.canvas .bn-handle:hover { transform: translate(-50%, -50%) scale(1.3); }
+.canvas .bn-handle.react-flow__handle-top { transform: translate(-50%, -50%); }
+.canvas .bn-handle.react-flow__handle-bottom { transform: translate(-50%, 50%); }
+.canvas .bn-handle.react-flow__handle-left { transform: translate(-50%, -50%); }
+.canvas .bn-handle.react-flow__handle-right { transform: translate(50%, -50%); }
+.canvas .bn-handle.react-flow__handle-bottom:hover { transform: translate(-50%, 50%) scale(1.3); }
+.canvas .bn-handle.react-flow__handle-right:hover { transform: translate(50%, -50%) scale(1.3); }
+.canvas.connecting .bn-handle { opacity: 1; }
+
+/* Topic: a decision to make. Locked ones turn solid. */
+.bn.topic { width: 248px; padding: 13px 16px 15px; }
+.topic-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.topic-facet { font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.topic-status { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; color: var(--muted); }
+.topic-title { font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; cursor: text; overflow-wrap: anywhere; }
+.topic-title-input {
+  width: 100%; font-size: 20px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15;
+  border: 0; outline: 0; background: transparent; padding: 0;
+}
+.topic-summary, .note-text, .canvas-brief {
+  display: block; width: 100%; resize: none; border: 0; outline: 0; background: transparent; padding: 0; overflow: hidden;
+}
+.topic-summary { margin-top: 10px; font-size: 12.5px; line-height: 1.45; color: inherit; opacity: 0.86; }
+.topic-summary::placeholder { color: inherit; opacity: 0.5; }
+.bn.topic.locked { background: var(--text); color: var(--bg); box-shadow: 0 0 0 1px var(--text), 0 18px 40px -18px oklch(0 0 0 / 0.55); }
+.bn.topic.locked .topic-facet, .bn.topic.locked .topic-status { color: color-mix(in oklch, var(--bg) 62%, transparent); }
+.react-flow__node.selected .bn.topic.locked { box-shadow: 0 0 0 1.5px var(--text), 0 0 0 4px var(--bg), 0 0 0 5.5px var(--text), 0 18px 40px -18px oklch(0 0 0 / 0.55); }
+/* Locking settles it with a small press. */
+@keyframes lock-in { 40% { transform: scale(0.97); } }
+.bn.topic.locked { animation: lock-in 0.4s var(--spring); }
+.bn.topic.locked.enter { animation: bn-in 0.7s var(--out) backwards; animation-delay: calc(var(--i, 0) * 55ms); }
+
+/* A save. */
+.bn.ref { width: 220px; padding: 6px 6px 9px; }
+.ref-thumb {
+  position: relative; width: 100%; max-height: 300px; overflow: hidden; background: var(--card);
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
+}
+.ref-thumb img { display: block; width: 100%; height: 100%; object-fit: cover; transition: filter 0.3s var(--ease), opacity 0.3s var(--ease); }
+.ref-empty { width: 100%; height: 100%; }
+.ref-meta { display: flex; align-items: flex-start; gap: 8px; padding: 8px 4px 0; }
+.ref-title {
+  flex: 1; min-width: 0; font-size: 12px; line-height: 1.35; color: var(--text);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.ref-palette { display: flex; flex: none; margin-top: 3px; }
+.ref-palette i { width: 10px; height: 10px; border-radius: 50%; margin-left: -3px; box-shadow: 0 0 0 1.5px var(--raised); }
+.ref-badge {
+  position: absolute; top: 7px; left: 7px; display: inline-flex; align-items: center; gap: 3px;
+  height: 20px; padding: 0 8px; border-radius: 999px; font-size: 10.5px; font-weight: 600;
+  background: var(--text); color: var(--bg); animation: badge-in 0.4s var(--spring);
+}
+.ref-badge.out { background: var(--glass); color: #fff; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.ref-badge.soft { background: color-mix(in oklch, var(--raised) 85%, transparent); color: var(--text); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+@keyframes badge-in { from { opacity: 0; transform: scale(0.7); } }
+.bn.ref.s-chosen { box-shadow: 0 0 0 2px var(--text), 0 18px 44px -18px oklch(0 0 0 / 0.5); }
+.react-flow__node.selected .bn.ref.s-chosen { box-shadow: 0 0 0 2px var(--text), 0 0 0 5px var(--bg), 0 0 0 6.5px var(--faint), 0 18px 44px -18px oklch(0 0 0 / 0.5); }
+.bn.ref.s-ruled_out .ref-thumb img { filter: grayscale(1); opacity: 0.45; }
+.bn.ref.s-ruled_out .ref-title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.bn.ref.s-ruled_out .ref-palette { opacity: 0.35; }
+.bn.ref.s-proposed { box-shadow: 0 0 0 1px var(--line), 0 0 0 1px transparent; outline: 1.5px dashed var(--faint); outline-offset: 3px; }
+
+/* A note: the designer's words. */
+.bn.note { width: 228px; padding: 11px 13px; background: var(--card); box-shadow: 0 0 0 1px var(--line); }
+.note-text { font-size: 13px; line-height: 1.45; min-height: 19px; }
+.note-text::placeholder, .canvas-brief::placeholder { color: var(--faint); }
+
+/* ---- Lines ---- */
+
+.fe-line { fill: none; stroke: var(--faint); stroke-width: 1.5; transition: stroke 0.2s var(--ease), opacity 0.2s var(--ease); }
+.fe-flow .fe-line { stroke: var(--muted); stroke-width: 2; }
+.fe-note .fe-line { stroke-dasharray: 2 5; stroke-linecap: round; }
+.fe.chosen .fe-line { stroke: var(--text); stroke-width: 1.75; }
+.fe.out .fe-line { opacity: 0.4; }
+.fe.sel .fe-line, .react-flow__edge:hover .fe-line { stroke: var(--text); }
+.fe.leaving { opacity: 0; transition: opacity 0.15s; }
+/* Drawn in from one end (pathLength is 1, so the dash is the whole line). */
+@keyframes fe-draw { from { stroke-dashoffset: 1; } }
+.fe-link .fe-line, .fe-flow .fe-line { stroke-dasharray: 1; animation: fe-draw 0.7s var(--out) 0.15s backwards; }
+@keyframes fe-fade { from { opacity: 0; } }
+.fe-note .fe-line { animation: fe-fade 0.5s var(--ease) 0.15s backwards; }
+.canvas .react-flow__connection-path { stroke: var(--text); stroke-width: 1.5; }
+.canvas .react-flow__selection { background: var(--fill); border: 1px solid var(--faint); border-radius: 6px; }
+.canvas .react-flow__nodesselection-rect { background: transparent; border: 1px dashed var(--faint); border-radius: 8px; }
+
+/* ---- A node's tools, above it while selected ---- */
+
+.bn-tools {
+  display: flex; gap: 2px; padding: 4px; border-radius: 999px;
+  background: color-mix(in oklch, var(--raised) 90%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8); backdrop-filter: blur(20px) saturate(1.8);
+  box-shadow: inset 0 0 0 1px var(--line), 0 10px 30px -12px oklch(0 0 0 / 0.4);
+  animation: tools-in 0.28s var(--out);
+}
+@keyframes tools-in { from { opacity: 0; transform: translateY(6px) scale(0.96); } }
+.bn-tool {
+  display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 10px 0 8px; border-radius: 999px;
+  font-size: 12px; color: var(--muted); white-space: nowrap; transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.bn-tool:hover { background: var(--fill); color: var(--text); }
+.bn-tool.on { background: var(--text); color: var(--bg); }
+.bn-tool.danger:hover { color: var(--bad); }
+
+/* ---- The project's name and brief ---- */
+
+.canvas-head {
+  position: absolute; top: 16px; left: 22px; right: 120px; z-index: 5; max-width: 560px;
+  pointer-events: none;
+}
+.canvas-head > * { pointer-events: auto; }
+.canvas-name {
+  display: block; width: 100%; border: 0; outline: 0; background: transparent; padding: 0;
+  font-size: 22px; font-weight: 600; letter-spacing: -0.025em; line-height: 1.25;
+}
+.canvas-brief { margin-top: 2px; font-size: 13px; line-height: 1.45; color: var(--muted); max-width: 480px; }
+.canvas-brief:focus { color: var(--text); }
+.canvas-head-tools { position: fixed; top: 18px; right: 22px; display: flex; gap: 6px; }
+.app.chat-open .canvas-head-tools { right: calc(var(--chat) + 22px); }
+
+/* ---- Empty ---- */
+
+.canvas-empty {
+  position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 6px;
+  text-align: center; pointer-events: none; animation: bn-in 0.8s var(--out) 0.1s backwards;
+}
+.canvas-empty-title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.015em; }
+.canvas-empty-text { margin: 0 0 10px; max-width: 340px; color: var(--muted); line-height: 1.5; }
+.canvas-empty-row { display: flex; gap: 6px; pointer-events: auto; }
+.canvas-chip {
+  display: inline-flex; align-items: center; gap: 5px; height: 30px; padding: 0 13px; border-radius: 999px;
+  background: var(--fill); font-size: 12.5px; transition: background-color var(--fast) var(--ease);
+}
+.canvas-chip:hover { background: var(--fill-hover); }
+
+/* ---- The tools, in the dock ---- */
+
+.canvas-bar {
+  display: flex; align-items: center; gap: 2px; height: 52px; padding: 0 7px; border-radius: 999px;
+  background: color-mix(in oklch, var(--raised) 88%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8); backdrop-filter: blur(24px) saturate(1.8);
+  box-shadow: inset 0 0 0 1px var(--line), 0 14px 40px -14px oklch(0 0 0 / 0.5), 0 2px 6px oklch(0 0 0 / 0.08);
+}
+.canvas-bar-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 38px; padding: 0 14px 0 12px; border-radius: 999px;
+  font-size: 13.5px; color: var(--muted); transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.canvas-bar-btn.icon { width: 38px; padding: 0; justify-content: center; }
+.canvas-bar-btn:hover { background: var(--fill); color: var(--text); }
+.canvas-bar-btn.on { background: var(--text); color: var(--bg); }
+.canvas-bar-sep { width: 1px; height: 20px; margin: 0 4px; background: var(--line); }
+
+/* ---- Saves from the library ---- */
+
+.tray {
+  position: absolute; top: 96px; left: 14px; bottom: 92px; width: 292px; z-index: 6;
+  display: flex; flex-direction: column; border-radius: calc(16px * var(--smooth)); corner-shape: var(--corner);
+  background: color-mix(in oklch, var(--raised) 92%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(1.8); backdrop-filter: blur(24px) saturate(1.8);
+  box-shadow: inset 0 0 0 1px var(--line), 0 24px 60px -24px oklch(0 0 0 / 0.5);
+  animation: tray-in 0.45s var(--out);
+}
+@keyframes tray-in { from { opacity: 0; transform: translateX(-16px) scale(0.98); } }
+.tray-head { display: flex; align-items: center; gap: 4px; padding: 10px 10px 4px; }
+.tray-search { flex: 1; height: 32px; border: 0; outline: 0; border-radius: 999px; background: var(--fill); padding: 0 12px; }
+.tray-x { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); }
+.tray-x:hover { background: var(--fill); color: var(--text); }
+.tray-hint { margin: 4px 14px 8px; font-size: 11.5px; color: var(--muted); line-height: 1.4; }
+.tray-hint b { color: var(--text); font-weight: 600; }
+.tray-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.tray-grid { padding: 0 10px 12px; columns: 2; column-gap: 6px; }
+.tray-item {
+  display: block; width: 100%; margin-bottom: 6px; break-inside: avoid; overflow: hidden; background: var(--card);
+  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner); cursor: grab;
+  transition: transform 0.2s var(--spring), box-shadow 0.2s var(--ease);
+}
+.tray-item:hover { transform: scale(1.02); box-shadow: 0 0 0 1.5px var(--text); }
+.tray-item:active { cursor: grabbing; }
+.tray-item img { display: block; width: 100%; max-height: 220px; object-fit: cover; }
+.tray-blank { display: block; padding: 18px 10px; font-size: 11px; color: var(--muted); text-align: left; }
+.tray-none { column-span: all; color: var(--muted); font-size: 12px; margin: 8px 4px; }
+
+/* ---- Sidebar ---- */
+
+.side-project-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--faint); flex: none; margin-right: 1px; }
+.side-link.on .side-project-dot { background: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .bn, .bn.enter, .bn.topic.locked, .ref-badge, .bn-tools, .tray, .canvas-empty, .fe-line { animation: none !important; transition: none !important; }
+}

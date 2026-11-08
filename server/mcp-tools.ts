@@ -3,6 +3,7 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { chosenRefs, listProjects, projectsOf, summary } from "./projects.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, saveToCollection, search, similar } from "./library.ts";
 
 const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
@@ -15,6 +16,7 @@ Use it to find references for a brief and to combine them: color from one save, 
 - similar_to finds saves like one you have, by facet.
 - get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend.
 - save_to_collection puts the saves you chose in a Panel collection the designer can open.
+- Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one. When working on a project, read it first and build from its locked decisions.
 Always give the designer the "open" link for each save you recommend, so they can watch or look at the original.`;
 
 const facet = z.enum(FACETS);
@@ -124,7 +126,8 @@ export function createMcpServer() {
     for (const id of ids) {
       try {
         const { data, pictures } = reference(id);
-        content.push({ type: "text", text: JSON.stringify(data) });
+        const used = projectsOf(id);
+        content.push({ type: "text", text: JSON.stringify(used.length ? { ...data, in_projects: used.map((p) => ({ project: p.name, state: p.state ?? "kept" })) } : data) });
         for (const p of images === "none" ? [] : images === "first" ? pictures.slice(0, 1) : pictures) {
           const file = Bun.file(p.path);
           if (!(await file.exists())) continue;
@@ -136,6 +139,46 @@ export function createMcpServer() {
       }
     }
     return { content };
+  });
+
+  server.registerTool("list_projects", {
+    title: "List projects",
+    description: "The designer's projects, most recently worked on first: each is a canvas of design decisions for one piece of work (a site, an app, a brand), with how many topics it has and how many are locked.",
+    inputSchema: {},
+    annotations: readOnly,
+  }, safe(() => listProjects().map((p) => ({
+    id: p.id, name: p.name, brief: p.brief || undefined, topics: p.topics, locked: p.locked, saves: p.refs, updated_at: p.updated_at,
+  }))));
+
+  server.registerTool("get_project", {
+    title: "Read a project",
+    description: "A project's canvas as decisions: the brief, then each topic (Typography, Color, …) in the order the designer connected them, with its status (locked or exploring), the saves chosen, kept, proposed and ruled out for it, what each offers for that topic, and the designer's notes on why. Then saves and notes not filed under a topic yet. Locked topics are settled: build from them. Read this before designing or building anything for a project.",
+    inputSchema: {
+      project: z.string().describe("The project's id or its name."),
+      pictures: z.boolean().optional().describe("Also return the first picture of each chosen save, to see them. Default false."),
+    },
+    annotations: readOnly,
+  }, async ({ project, pictures = false }) => {
+    try {
+      const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
+        { type: "text", text: JSON.stringify(summary(project)) },
+      ];
+      if (pictures) {
+        for (const id of chosenRefs(project).slice(0, 12)) {
+          try {
+            const pic = reference(id).pictures[0];
+            if (!pic || !(await Bun.file(pic.path).exists())) continue;
+            content.push({ type: "text", text: `${id} picture: ${pic.label}` });
+            content.push({ type: "image", data: Buffer.from(await Bun.file(pic.path).arrayBuffer()).toString("base64"), mimeType: "image/jpeg" });
+          } catch {
+            /* a save that's gone has no picture */
+          }
+        }
+      }
+      return { content };
+    } catch (e) {
+      return failure(e);
+    }
   });
 
   server.registerTool("save_to_collection", {

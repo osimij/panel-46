@@ -9,6 +9,7 @@ import { abs } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
+import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, type Op } from "./projects.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat } from "./chat.ts";
 
 const DIST = join(import.meta.dir, "..", "dist");
@@ -343,7 +344,7 @@ async function handle(req: Request): Promise<Response> {
       return json({ ok: true });
     }
     if (sub === "/messages" && m === "POST") {
-      const b = (await req.json().catch(() => ({}))) as { text?: string; context?: { open?: string } };
+      const b = (await req.json().catch(() => ({}))) as { text?: string; context?: { open?: string; project?: string } };
       try {
         return json(await send(id, String(b.text ?? ""), b.context ?? {}));
       } catch (e) {
@@ -357,6 +358,49 @@ async function handle(req: Request): Promise<Response> {
       });
     }
     if (sub === "/stop" && m === "POST") return json({ stopped: stopChat(id) });
+  }
+
+  // ---- Projects: a canvas per piece of work ----
+  // Only Panel's own page may change them (not another website, not DNS tricks).
+  if (path.startsWith("/api/projects") && !fromPanel(req)) return bad("Not allowed from here.", 403);
+  if (path === "/api/projects" && m === "GET") return json(listProjects());
+  if (path === "/api/projects" && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { name?: string; brief?: string };
+    try {
+      return json(createProject(String(b.name ?? ""), String(b.brief ?? "")));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream)?$/);
+  if (projectRoute) {
+    const [, id, sub] = projectRoute as unknown as [string, string, string | undefined];
+    if (!sub && m === "GET") {
+      const p = getProject(id);
+      if (!p) return bad("That project is gone.", 404);
+      const ids = [...new Set(p.nodes.flatMap((n) => (n.ref_id ? [n.ref_id] : [])))];
+      return json({ ...p, cards: cards(ids) });
+    }
+    if (!sub && m === "DELETE") {
+      deleteProject(id);
+      return json({ ok: true });
+    }
+    if (sub === "/ops" && m === "POST") {
+      const b = (await req.json().catch(() => ({}))) as { ops?: Op[]; client?: string };
+      try {
+        const res = apply(id, b.ops ?? [], "designer", typeof b.client === "string" ? b.client.slice(0, 40) : null);
+        const added = res.ops.flatMap((o) => (o.op === "add_node" && o.node.ref_id ? [o.node.ref_id] : []));
+        return json({ ...res, cards: cards(added) });
+      } catch (e) {
+        return bad((e as Error).message, 409);
+      }
+    }
+    if (sub === "/stream" && m === "GET") {
+      const after = Number(url.searchParams.get("after") ?? 0) || 0;
+      return new Response(followProject(id, after, req.signal), {
+        headers: { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" },
+      });
+    }
   }
 
   if (path === "/api/health") return json({ ok: true, libraryDir: LIBRARY_DIR });

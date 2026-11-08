@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { RailHandle } from "./RailHandle.tsx";
 import { flushSync } from "react-dom";
 import {
-  api, formatBytes, prefersReducedMotion, STATUS_LABEL,
-  type Collection, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
+  api, formatBytes, prefersReducedMotion, projectApi, STATUS_LABEL,
+  type Collection, type ProjectSummary, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
 } from "./api.ts";
 import { Detail } from "./Detail.tsx";
 import { Masonry } from "./Grid.tsx";
@@ -14,6 +14,9 @@ import { Assistant, type AssistantHandle } from "./Assistant.tsx";
 import { Mark } from "./Glow.tsx";
 import { Popover, TagRow } from "./TagRow.tsx";
 
+// The canvas (and React Flow with it) loads only when a project is opened.
+const ProjectCanvas = lazy(() => import("./Canvas.tsx"));
+
 type Scope =
   | { kind: "all" }
   | { kind: "favorites" }
@@ -23,6 +26,8 @@ type Scope =
   | { kind: "hidden" }
   | { kind: "status"; status: RefStatus }
   | { kind: "collection"; id: string }
+  /** A project's canvas. */
+  | { kind: "project"; id: string }
   /** Saves the assistant brought up, shown together in the grid. */
   | { kind: "picked"; ids: string[]; title: string };
 type MediaFilter = "all" | "image" | "video";
@@ -95,14 +100,25 @@ export function App() {
   const [tags, setTags] = useState<TagInfo[]>([]);
   const [tagGroups, setTagGroups] = useState<TagGroup[]>([]);
   const [open, setOpen] = useState<Ref | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [dockSlot, setDockSlot] = useState<HTMLElement | null>(null);
 
-  // The extension links straight to something it saved: /?open=<id>.
+  // The extension links straight to something it saved: /?open=<id>. Claude links to a
+  // project the same way: /?project=<id>.
   useEffect(() => {
-    const id = new URLSearchParams(location.search).get("open");
-    if (!id) return;
+    const params = new URLSearchParams(location.search);
+    const id = params.get("open");
+    const project = params.get("project");
+    if (!id && !project) return;
     history.replaceState(null, "", location.pathname);
-    api.ref(id).then(setOpen).catch(() => {});
+    if (project && /^[0-9a-f]{16}$/.test(project)) setScope({ kind: "project", id: project });
+    if (id) api.ref(id).then(setOpen).catch(() => {});
   }, []);
+  // An open project stays in the address, so a reload comes back to its canvas.
+  useEffect(() => {
+    const want = scope.kind === "project" ? `${location.pathname}?project=${scope.id}` : location.pathname;
+    if (location.pathname + location.search !== want) history.replaceState(null, "", want);
+  }, [scope]);
   const [toast, setToast] = useState<{ id: number; text: string; tone?: "error" } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [online, setOnline] = useState(navigator.onLine);
@@ -175,7 +191,9 @@ export function App() {
     lastSection.current = section;
   }, [section]);
 
+  const refreshProjects = useCallback(() => projectApi.list().then(setProjects).catch(() => {}), []);
   const refresh = useCallback(async () => {
+    void refreshProjects();
     const [r, s, c, t, g] = await Promise.all([
       api.refs(filters), api.stats(), api.collections(), api.tags(section), api.tagGroups(section),
     ]);
@@ -184,7 +202,7 @@ export function App() {
     setCollections(c);
     setTags(t);
     setTagGroups(g);
-  }, [filters, section]);
+  }, [filters, section, refreshProjects]);
 
   const say = useCallback((text: string, tone?: "error") => setToast({ id: Date.now(), text, tone }), []);
 
@@ -597,8 +615,26 @@ export function App() {
     </>
   );
 
+  const onCanvas = scope.kind === "project";
+  const leaveProject = useCallback(() => {
+    setScope({ kind: "all" });
+    void refreshProjects();
+  }, [refreshProjects]);
+  const askButton = (
+    <button
+      className={`round-btn ask-btn ${askOpen ? "on" : ""} ${askUnread ? "unread" : ""}`}
+      onClick={() => setAskOpen(!askOpen)}
+      aria-pressed={askOpen}
+      aria-label="Ask"
+      title="Ask about your library (⌘J)"
+      aria-keyshortcuts="Meta+J"
+    >
+      <Mark size={24} active={askRunning} />
+    </button>
+  );
+
   return (
-    <div className={`app ${open ? "detail-open" : ""} ${open && peek ? "side-peek" : ""} ${askOpen ? "chat-open" : ""}`} {...dropHandlers}>
+    <div className={`app ${open ? "detail-open" : ""} ${open && peek ? "side-peek" : ""} ${askOpen ? "chat-open" : ""} ${onCanvas ? "on-canvas" : ""}`} {...dropHandlers}>
       {/* While something is open the sidebar tucks away to this strip; hover it to bring the sidebar back. */}
       {open && (
         <div className="side-rail" aria-hidden onMouseEnter={() => peekTo(true, 70)} onMouseLeave={() => peekTo(false, 220)}>
@@ -610,6 +646,8 @@ export function App() {
         setScope={changeScope}
         stats={stats}
         collections={collections}
+        projects={projects}
+        onProjectsChanged={refreshProjects}
         online={online}
         onChanged={refresh}
         onError={(t) => say(t, "error")}
@@ -618,6 +656,20 @@ export function App() {
       />
 
       <main className="main">
+        {scope.kind === "project" ? (
+          <Suspense fallback={null}>
+            <ProjectCanvas
+              key={scope.id}
+              id={scope.id}
+              dock={dockSlot}
+              onOpenRef={openFromAsk}
+              onError={(t) => say(t, "error")}
+              onRenamed={refreshProjects}
+              onDeleted={leaveProject}
+            />
+          </Suspense>
+        ) : (
+        <>
         <header className="header">
           <div className="title-row">
             <h1 key={title}>{title}</h1>
@@ -668,11 +720,19 @@ export function App() {
             selection={{ active: selecting, ids: picked, toggle: togglePick }}
           />
         )}
+        </>
+        )}
       </main>
 
       {/* The primary action: search, or paste a link to save. Floats at the bottom of the grid. */}
       <div className="dock">
-        {selecting ? (
+        {onCanvas ? (
+          <>
+            {/* The canvas puts its tools here. */}
+            <div ref={setDockSlot} style={{ display: "contents" }} />
+            {askButton}
+          </>
+        ) : selecting ? (
           <div className="select-bar" role="toolbar" aria-label="Selection" key="select">
             <span className="select-count">
               {pickedRefs.length ? `${pickedRefs.length} selected` : "Pick references"}
@@ -719,16 +779,7 @@ export function App() {
               }}
             />
             <AddFiles onFiles={uploadFiles} skills={scope.kind === "skills"} inputRef={fileInputRef} />
-            <button
-              className={`round-btn ask-btn ${askOpen ? "on" : ""} ${askUnread ? "unread" : ""}`}
-              onClick={() => setAskOpen(!askOpen)}
-              aria-pressed={askOpen}
-              aria-label="Ask"
-              title="Ask about your library (⌘J)"
-              aria-keyshortcuts="Meta+J"
-            >
-              <Mark size={24} active={askRunning} />
-            </button>
+            {askButton}
           </>
         )}
       </div>
@@ -767,6 +818,7 @@ export function App() {
         open={askOpen}
         onClose={() => setAskOpen(false)}
         looking={open}
+        project={scope.kind === "project" ? scope.id : null}
         onOpenRef={openFromAsk}
         onShowInGrid={showPicked}
         onRunning={setAskRunning}
@@ -820,6 +872,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
       const c = collections.find((x) => x.id === scope.id);
       return { title: c?.name ?? "Collection", subtitle: c ? `${c.n} reference${c.n === 1 ? "" : "s"}` : "" };
     }
+    case "project": return { title: "Project", subtitle: "" };
   }
 }
 
@@ -979,6 +1032,8 @@ function Sidebar(props: {
   setScope: (s: Scope) => void;
   stats: Stats | null;
   collections: Collection[];
+  projects: ProjectSummary[];
+  onProjectsChanged: () => Promise<void>;
   online: boolean;
   onChanged: () => Promise<void>;
   onError: (text: string) => void;
@@ -987,7 +1042,20 @@ function Sidebar(props: {
 }) {
   const { scope, setScope, stats, collections } = props;
   const [creating, setCreating] = useState(false);
+  const [creatingProject, setCreatingProject] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+
+  const createProject = async (name: string) => {
+    setCreatingProject(false);
+    if (!name) return;
+    try {
+      const p = await projectApi.create(name);
+      await props.onProjectsChanged();
+      setScope({ kind: "project", id: p.id });
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
 
   const link = (s: Scope, label: React.ReactNode, count?: number, extra?: React.ReactNode, key?: string) => (
     <button
@@ -1057,6 +1125,29 @@ function Sidebar(props: {
           ))}
         </div>
       )}
+
+      <div className="side-group">
+        <div className="side-heading">
+          Projects
+          <button className="side-add" onClick={() => setCreatingProject(true)} aria-label="New project" title="New project">
+            <Icon name="plus" size={13} />
+          </button>
+        </div>
+        {props.projects.map((p) => (
+          <div key={p.id}>
+            {link({ kind: "project", id: p.id }, p.name, undefined, <span className="side-project-dot" />)}
+          </div>
+        ))}
+        {creatingProject ? (
+          <InlineName initial="" placeholder="Project name" onDone={createProject} onCancel={() => setCreatingProject(false)} />
+        ) : (
+          props.projects.length === 0 && (
+            <button className="side-link faint" onClick={() => setCreatingProject(true)}>
+              <span className="side-label">New project</span>
+            </button>
+          )
+        )}
+      </div>
 
       <div className="side-group">
         <div className="side-heading">

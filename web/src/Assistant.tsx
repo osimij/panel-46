@@ -92,6 +92,8 @@ export function Assistant(props: {
   onClose: () => void;
   /** The save open in the detail view, if any: what "this" means. */
   looking: Ref | null;
+  /** The project open on the canvas, if any: Ask reads it when asked about "the project". */
+  project?: string | null;
   onOpenRef: (id: string) => void;
   onShowInGrid: (ids: string[], title: string) => void;
   onRunning: (running: boolean) => void;
@@ -222,7 +224,7 @@ export function Assistant(props: {
       setDraft("");
       stick.current = true;
       let id = chatId;
-      const ctx = context ? { open: context.id } : {};
+      const ctx = { ...(context ? { open: context.id } : {}), ...(props.project ? { project: props.project } : {}) };
       if (context && !cards.has(context.id)) addCards([cardFromRef(context)]);
       const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: context ? { open: context.id } : null, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
       const pending: Msg = { id: "pending", key: `a${Date.now()}`, role: "assistant", text: "", context: null, parts: [], status: "streaming", error: null, created_at: temp.created_at };
@@ -244,7 +246,7 @@ export function Assistant(props: {
         setMessages((ms) => ms.map((m) => (m.id === "pending" ? { ...m, status: "error", error: (e as Error).message } : m)));
       }
     },
-    [chatId, context, running, title, follow, addCards, cards],
+    [chatId, context, running, title, follow, addCards, cards, props.project],
   );
 
   const stop = () => {

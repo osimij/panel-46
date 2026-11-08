@@ -83,6 +83,8 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | `similar_to` | Saves like one save, by the facets you choose |
 | `gather_for_brief` | The best saves per facet for a brief, so color, type and motion can come from different saves |
 | `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from |
+| `list_projects` | Your projects, most recently worked on first |
+| `get_project` | A project's canvas as decisions: each topic, locked or exploring, with the saves chosen, kept, suggested and ruled out, and your notes on why. Optionally with pictures of the chosen saves |
 | `save_to_collection` | Puts chosen saves in a Panel collection (only adds) |
 
 Two ways to connect. Over stdio, which works even when Panel isn't running:
@@ -106,6 +108,17 @@ Press **⌘J** (or the small gray orb in the dock) to open Ask beside the librar
 - **Show N in the library** puts every save from an answer in the grid together.
 - Drag the panel's left edge to resize it; double-click to reset. In a narrow window it covers the library.
 - Panel stays grayscale: color appears only while Ask works, as a soft glow rising behind the composer (a WebGL shader) and a thin iridescent rim. Both are off with reduced motion.
+
+### Projects: a canvas per piece of work
+
+Under **Projects** in the sidebar, each project is a canvas for working out a design: a brief, then **topics** for the decisions (Typography, Color, Layout…), the **saves** you're considering for each, and **notes** on why.
+
+- **Topics** are *exploring* until you **Lock** one. A locked topic turns solid and takes a sentence for the decision ("humanist serif for headings, grotesk for forms").
+- **Saves** come from **Saves** in the dock: drag one onto the canvas, or select a topic and click saves to file them under it. Select a save to **Choose** it, **Rule it out**, add a **Note** or open it.
+- **Connect** anything by dragging from the dot on a node's edge, e.g. Typography → Color, to say one leads to the next. Double-click empty space for a note. Backspace removes what's selected.
+- **Claude reads it as decisions**, not as boxes: `get_project` returns each topic in the order you connected them, what was chosen and ruled out, and your notes. When Ask is open on a canvas it knows which project you mean.
+- **Live**: every change is a small logged step (`project_events`), so a change made anywhere, including from Claude Code over MCP (its own process), shows up on an open canvas within half a second.
+- The canvas code (React Flow) loads only when a project is opened, so the library stays as light as before.
 
 ## Not built yet
 
