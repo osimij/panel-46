@@ -280,6 +280,14 @@ function removeRef(id: string) {
   db.run("DELETE FROM tags WHERE kept = 0 AND id NOT IN (SELECT tag_id FROM ref_tags)");
 }
 
+/** A request from Panel's own page (or a tool on this Mac with no Origin), not from another site. */
+function fromPanel(req: Request) {
+  const own = [`${HOST}:${PORT}`, `localhost:${PORT}`];
+  const host = req.headers.get("host") ?? "";
+  const origin = req.headers.get("origin");
+  return own.includes(host) && (!origin || own.some((h) => origin === `http://${h}`));
+}
+
 // ---------- Router ----------
 
 async function handle(req: Request): Promise<Response> {
@@ -309,6 +317,9 @@ async function handle(req: Request): Promise<Response> {
   }
 
   // ---- The assistant ----
+  // It spends your Claude plan and can change collections, so only Panel's own page may use
+  // it: not another website (Origin) and not one reached by DNS tricks (Host).
+  if ((path.startsWith("/api/chat") || path === "/api/cards") && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/chats" && m === "GET") return json(listChats());
   if (path === "/api/chats" && m === "POST") return json(createChat());
   if (path === "/api/chat/settings" && m === "GET") return json({ model: chatSettings.model(), effort: chatSettings.effort() });
