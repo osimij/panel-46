@@ -475,27 +475,61 @@ const DEPTHS = [
   { value: "xhigh", label: "Deep", hint: "Takes its time: more searches, more looking." },
 ];
 
+/**
+ * Ask's width, kept in a rule of its own that sets --chat on just the elements that use
+ * it. Set on :root it would restyle every element in the library each frame of a drag.
+ */
+let widthRule: CSSStyleDeclaration | null = null;
+function setChatWidth(px: number | null) {
+  if (!widthRule) {
+    const style = document.createElement("style");
+    style.textContent = ":root .app > .main, :root .app > .ask, :root .app > .detail, :root .app > .dock {}";
+    document.head.append(style);
+    widthRule = (style.sheet!.cssRules[0] as CSSStyleRule).style;
+  }
+  if (px == null) widthRule.removeProperty("--chat");
+  else widthRule.setProperty("--chat", `${px}px`);
+}
+
 /** Drag the panel's left edge to make it wider or narrower; remembered. Double-click resets it. */
 function Resizer() {
   const [dragging, setDragging] = useState(false);
   useEffect(() => {
     const saved = Number(store.get("panel.ask.width"));
-    if (saved >= 340 && saved <= 720) document.documentElement.style.setProperty("--chat", `${saved}px`);
+    if (saved >= 340 && saved <= 720) setChatWidth(saved);
   }, []);
   const begin = (e: React.PointerEvent) => {
     e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     el.setPointerCapture(e.pointerId);
     setDragging(true);
-    document.documentElement.classList.add("ask-resizing");
+    const root = document.documentElement;
+    root.classList.add("ask-resizing");
+    // Keep the edge where it was grabbed, rather than snapping it under the pointer.
+    const startX = e.clientX;
+    const startW = el.parentElement!.getBoundingClientRect().width;
+    let width = startW;
+    let x = startX;
+    let frame = 0;
+    // Pointer events can come several times a frame on a fast drag; apply only the latest,
+    // once per frame, so the page lays out once per frame and the edge stays on the pointer.
+    const apply = () => {
+      frame = 0;
+      const w = Math.round(Math.min(720, Math.max(340, startW + startX - x)));
+      if (w === width) return;
+      width = w;
+      setChatWidth(w);
+    };
     const move = (ev: PointerEvent) => {
-      const w = Math.round(Math.min(720, Math.max(340, innerWidth - ev.clientX)));
-      document.documentElement.style.setProperty("--chat", `${w}px`);
+      x = ev.clientX;
+      if (!frame) frame = requestAnimationFrame(apply);
     };
     const end = () => {
+      if (frame) cancelAnimationFrame(frame);
+      apply();
       setDragging(false);
-      document.documentElement.classList.remove("ask-resizing");
-      store.set("panel.ask.width", getComputedStyle(document.documentElement).getPropertyValue("--chat").replace("px", "").trim());
+      root.classList.remove("ask-resizing");
+      store.set("panel.ask.width", String(width));
       el.removeEventListener("pointermove", move);
       el.removeEventListener("pointerup", end);
       el.removeEventListener("pointercancel", end);
@@ -509,7 +543,7 @@ function Resizer() {
       className={`ask-resize ${dragging ? "on" : ""}`}
       onPointerDown={begin}
       onDoubleClick={() => {
-        document.documentElement.style.removeProperty("--chat");
+        setChatWidth(null);
         store.set("panel.ask.width", null);
       }}
       role="separator"

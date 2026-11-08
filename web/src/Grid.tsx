@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import { displayTitle, formatDuration, personFace, prefersReducedMotion, skillParts, STATUS_LABEL, type Ref } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
@@ -11,10 +12,6 @@ const IDEAL_COL = 320;
 const MAX_COLS = 4;
 const columnsFor = (width: number) => Math.min(MAX_COLS, Math.max(width < 340 ? 1 : 2, Math.round(width / IDEAL_COL)));
 
-/**
- * Masonry that keeps reading order left-to-right: each card goes into the
- * currently shortest column, using its known aspect ratio (no layout jumps).
- */
 /** While selecting, clicking a card picks it instead of opening it. */
 export interface Selection {
   active: boolean;
@@ -22,6 +19,45 @@ export interface Selection {
   toggle: (r: Ref, range: boolean) => void;
 }
 
+/** Where a card sits in the grid, in px from the grid's top left. */
+interface Spot {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** The same curve the Ask drawer and the sidebar move on, so the grid moves with them. */
+const GLIDE_EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
+
+/**
+ * The width the grid is headed for. While Ask slides open or shut, .main's margin is
+ * mid-transition; laying out for every in-between width would re-flow the columns
+ * several times on the way (2, then 3, then 4). Lay out once, for where it ends up.
+ */
+function targetWidth(el: HTMLElement) {
+  // Fractional, unlike clientWidth, so it lines up exactly with the fractional margin.
+  const w = el.getBoundingClientRect().width;
+  const main = el.closest<HTMLElement>(".main");
+  if (!main) return { now: w, target: w };
+  for (const a of main.getAnimations()) {
+    if (!(a instanceof CSSTransition) || a.transitionProperty !== "margin-right") continue;
+    const frames = (a.effect as KeyframeEffect | null)?.getKeyframes() ?? [];
+    const to = parseFloat(String(frames[frames.length - 1]?.marginRight ?? ""));
+    const now = parseFloat(getComputedStyle(main).marginRight);
+    if (Number.isFinite(to) && Number.isFinite(now)) return { now: w, target: w + now - to };
+  }
+  return { now: w, target: w };
+}
+
+/**
+ * Masonry that keeps reading order left-to-right: each card goes into the currently
+ * shortest column, using its known aspect ratio (no layout jumps).
+ *
+ * Cards are placed absolutely, all in one parent, so a re-layout (the window, or Ask
+ * opening beside the grid) never remounts them: they glide from where they were to
+ * where they go, and their images and videos carry on undisturbed.
+ */
 export function Masonry({
   items,
   onOpen,
@@ -38,55 +74,131 @@ export function Masonry({
   selection: Selection;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  // First guess from the window (minus sidebar and padding); the ResizeObserver corrects it before paint.
-  const [cols, setCols] = useState(() => columnsFor(innerWidth - (innerWidth > 820 ? 276 : 24)));
+  // Cards get handlers that never change, which call the latest ones: a card then only
+  // re-renders when something about it changed, not whenever the page around it does.
+  const latest = useRef({ onOpen, onFavorite, onHide, onDelete, toggle: selection.toggle });
+  latest.current = { onOpen, onFavorite, onHide, onDelete, toggle: selection.toggle };
+  const handlers = useMemo<CardHandlers>(
+    () => ({
+      onOpen: (r, thumb) => latest.current.onOpen(r, thumb),
+      onFavorite: (r) => latest.current.onFavorite(r),
+      onHide: (r) => latest.current.onHide(r),
+      onDelete: (r) => latest.current.onDelete(r),
+      onToggle: (r, range) => latest.current.toggle(r, range),
+    }),
+    [],
+  );
+  // First guess from the window (minus sidebar and padding); measured before the first paint.
+  const [box, setBox] = useState(() => ({
+    w: innerWidth - (innerWidth > 820 ? 276 : 24),
+    gap: innerWidth > 820 ? 12 : 8,
+  }));
+  // Set when the width changed because Ask is sliding, rather than the window being dragged.
+  const sliding = useRef(false);
 
   useLayoutEffect(() => {
     const el = ref.current!;
-    const measure = () => setCols(columnsFor(el.clientWidth));
+    const measure = () => {
+      const { now, target } = targetWidth(el);
+      const w = Math.round(target * 2) / 2;
+      const gap = parseFloat(getComputedStyle(el).columnGap) || 12;
+      const slide = Math.abs(target - now) > 1;
+      sliding.current = slide;
+      // Under half a pixel is rounding, not a new layout; mid-slide the target can also
+      // read a hair different frame to frame.
+      setBox((b) => (b.gap === gap && Math.abs(b.w - w) < (slide ? 2 : 0.5) ? b : { w, gap }));
+    };
     measure();
-    const ro = new ResizeObserver(measure);
+    // Re-lay out before the browser paints the resized grid, never a frame later.
+    const ro = new ResizeObserver(() => flushSync(measure));
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // When the column count changes (the window, or Ask opening beside the grid), cards move
-  // between columns and remount. Ones already on screen just take their new place instead
-  // of playing their entrance again; only cards you haven't seen yet animate in.
-  const seen = useRef(new Set<string>());
-  const lastCols = useRef(cols);
-  const reflow = lastCols.current !== cols;
-  useEffect(() => {
-    lastCols.current = cols;
-    for (const r of items) seen.current.add(r.id);
-  });
-
-  const columns: { r: Ref; i: number }[][] = Array.from({ length: cols }, () => []);
-  const heights = new Array(cols).fill(0);
-  items.forEach((r, i) => {
+  const cols = columnsFor(box.w);
+  const colW = Math.max(0, (box.w - box.gap * (cols - 1)) / cols);
+  const spots = new Map<string, Spot>();
+  const heights = new Array<number>(cols).fill(0);
+  for (const r of items) {
     const c = heights.indexOf(Math.min(...heights));
-    columns[c]!.push({ r, i });
-    heights[c] += cardRatio(r) + 0.05;
+    const h = colW * cardRatio(r);
+    spots.set(r.id, { x: c * (colW + box.gap), y: heights[c]!, w: colW, h });
+    heights[c]! += h + box.gap;
+  }
+  const height = Math.max(0, Math.max(...heights) - box.gap);
+
+  // FLIP: each card that moved starts where it was (or where its last glide had got to)
+  // and glides to its new spot. Only cards on or near the screen animate.
+  const last = useRef<{ spots: Map<string, Spot>; cols: number; w: number } | null>(null);
+  const glides = useRef(new Map<string, { anim: Animation; from: Spot; to: Spot }>());
+  useLayoutEffect(() => {
+    const el = ref.current!;
+    // Cards are placed here rather than through their props: when the width changes (a
+    // drag of Ask's edge or the window's, every frame) no card re-renders, only these
+    // three numbers each change, which the browser restyles and lays out in well under a ms.
+    for (const card of el.children as HTMLCollectionOf<HTMLElement>) {
+      const s = card.dataset.ref && spots.get(card.dataset.ref);
+      if (!s) continue;
+      card.style.left = `${s.x}px`;
+      card.style.top = `${s.y}px`;
+      card.style.width = `${s.w}px`;
+    }
+    const prev = last.current;
+    last.current = { spots, cols, w: box.w };
+    if (!prev || prefersReducedMotion()) return;
+    // Dragging the window edge with the same columns: follow the edge exactly, no glide.
+    const widthOnly = prev.w !== box.w && prev.cols === cols && !sliding.current;
+    const duration = sliding.current || prev.w !== box.w ? 500 : 420;
+    const top = el.getBoundingClientRect().top;
+    const near = (s: Spot) => top + s.y + s.h > -200 && top + s.y < innerHeight + 200;
+
+    for (const card of el.children as HTMLCollectionOf<HTMLElement>) {
+      const id = card.dataset.ref;
+      const to = id && spots.get(id);
+      if (!to) continue;
+      const g = glides.current.get(id!);
+      let from: Spot | undefined;
+      if (g && g.anim.playState === "running") {
+        // Mid-glide: start from where it is on screen right now.
+        const p = g.anim.effect?.getComputedTiming().progress ?? 1;
+        from = {
+          x: g.from.x + (g.to.x - g.from.x) * p,
+          y: g.from.y + (g.to.y - g.from.y) * p,
+          w: g.from.w + (g.to.w - g.from.w) * p,
+          h: g.from.h + (g.to.h - g.from.h) * p,
+        };
+        g.anim.cancel();
+        glides.current.delete(id!);
+      } else if (!widthOnly) {
+        from = prev.spots.get(id!);
+      }
+      if (!from || (Math.abs(from.x - to.x) < 0.5 && Math.abs(from.y - to.y) < 0.5 && Math.abs(from.w - to.w) < 0.5)) continue;
+      if (!to.w || (!near(from) && !near(to))) continue;
+      const anim = card.animate(
+        [
+          { transformOrigin: "0 0", transform: `translate(${from.x - to.x}px, ${from.y - to.y}px) scale(${from.w / to.w})` },
+          { transformOrigin: "0 0", transform: "none" },
+        ],
+        { duration, easing: GLIDE_EASE },
+      );
+      glides.current.set(id!, { anim, from, to });
+      anim.onfinish = anim.oncancel = () => {
+        if (glides.current.get(id!)?.anim === anim) glides.current.delete(id!);
+      };
+    }
   });
 
   return (
-    <div className={`masonry ${selection.active ? "selecting" : ""}`} ref={ref}>
-      {columns.map((col, c) => (
-        <div className="masonry-col" key={c}>
-          {col.map(({ r, i }) => (
-            <Card
-              key={r.id}
-              r={r}
-              index={i}
-              settled={reflow && seen.current.has(r.id)}
-              onOpen={onOpen}
-              onFavorite={onFavorite}
-              onHide={onHide}
-              onDelete={onDelete}
-              selection={selection}
-            />
-          ))}
-        </div>
+    <div className={`masonry ${selection.active ? "selecting" : ""}`} ref={ref} style={{ height }}>
+      {items.map((r, i) => (
+        <Card
+          key={r.id}
+          r={r}
+          index={i}
+          selecting={selection.active}
+          picked={selection.ids.has(r.id)}
+          handlers={handlers}
+        />
       ))}
     </div>
   );
@@ -103,33 +215,34 @@ function cardRatio(r: Ref) {
   return Math.min(Math.max(ratio, 0.45), 1.7);
 }
 
-function Card({
-  r,
-  index,
-  onOpen,
-  onFavorite,
-  onHide,
-  onDelete,
-  selection,
-  settled: settledProp,
-}: {
-  r: Ref;
-  index: number;
-  /** Already on screen before a re-layout: no entrance animation. */
-  settled?: boolean;
+interface CardHandlers {
   onOpen: (r: Ref, thumb: HTMLElement) => void;
   onFavorite: (r: Ref) => void;
   onHide: (r: Ref) => void;
   onDelete: (r: Ref) => void;
-  selection: Selection;
+  onToggle: (r: Ref, range: boolean) => void;
+}
+
+const Card = memo(function Card({
+  r,
+  index,
+  selecting,
+  picked,
+  handlers: { onOpen, onFavorite, onHide, onDelete, onToggle },
+}: {
+  r: Ref;
+  index: number;
+  selecting: boolean;
+  picked: boolean;
+  handlers: CardHandlers;
 }) {
   const m = r.media[0];
-  // Decided once, when the card mounts: a later render mustn't restart its entrance.
-  const [settled] = useState(!!settledProp);
+  // Its entrance is staggered by where it first appeared; a later move mustn't change
+  // the delay of an entrance that already played (that could replay it).
+  const [stagger] = useState(() => Math.min(index, 14));
   const thumbRef = useRef<HTMLDivElement>(null);
   const poster = m?.thumb_url ?? r.preview_url;
   const moving = m && m.type !== "image" && m.url;
-  const picked = selection.ids.has(r.id);
   // Delete takes a second click on the same spot, so a stray click can't lose a post.
   const [arming, setArming] = useState(false);
   useEffect(() => {
@@ -137,18 +250,19 @@ function Card({
     const t = setTimeout(() => setArming(false), 2500);
     return () => clearTimeout(t);
   }, [arming]);
-  const activate = (range: boolean) => (selection.active ? selection.toggle(r, range) : onOpen(r, thumbRef.current!));
+  const activate = (range: boolean) => (selecting ? onToggle(r, range) : onOpen(r, thumbRef.current!));
 
   return (
     <article
-      className={`card ${r.status} ${picked ? "picked" : ""} ${settled ? "settled" : ""}`}
+      className={`card ${r.status} ${picked ? "picked" : ""}`}
       data-ref={r.id}
-      style={{ "--i": Math.min(index, 14) } as React.CSSProperties}
+      // Its place (left, top, width) is set by the grid, straight on the element.
+      style={{ "--i": stagger } as React.CSSProperties}
       onClick={(e) => activate(e.shiftKey)}
       tabIndex={0}
       onKeyDown={(e) => e.key === "Enter" && activate(e.shiftKey)}
       aria-label={displayTitle(r)}
-      aria-selected={selection.active ? picked : undefined}
+      aria-selected={selecting ? picked : undefined}
     >
       <div className="thumb" ref={thumbRef} style={{ aspectRatio: `1 / ${cardRatio(r)}` }}>
         {r.person && r.status !== "pending" ? (
@@ -177,7 +291,7 @@ function Card({
           aria-label={picked ? "Deselect" : "Select"}
           onClick={(e) => {
             e.stopPropagation();
-            selection.toggle(r, e.shiftKey);
+            onToggle(r, e.shiftKey);
           }}
         >
           <Icon name="check" size={14} />
@@ -244,7 +358,7 @@ function Card({
       </div>
     </article>
   );
-}
+});
 
 /** Images fade in once decoded instead of popping in line by line. */
 export function FadeImg({ src, className = "" }: { src: string; className?: string }) {

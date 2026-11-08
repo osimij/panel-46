@@ -1,7 +1,6 @@
 /* ============ Ask: the assistant beside the library ============ */
 
 :root {
-  --chat: 408px;
   --drawer: cubic-bezier(0.32, 0.72, 0, 1);
   /* The assistant's colors: only ever seen while it's working. */
   --iris-1: #ffd36e;
@@ -10,6 +9,14 @@
   --iris-4: #66a6ff;
   --iris-5: #63e0dc;
 }
+
+/*
+ * Ask's width. Dragging its edge changes it every frame, so it isn't inherited: .main
+ * passing it down would restyle every card in the library each time (~8ms a frame).
+ * Assistant.tsx sets it on the few elements that use it; the dock hands it to its field.
+ */
+@property --chat { syntax: "<length>"; inherits: false; initial-value: 408px; }
+.dock .command { --chat: inherit; }
 
 /* The library makes room for it rather than hiding under it. */
 .main, .detail, .dock { transition-property: margin, right, left, opacity, transform; }
@@ -406,9 +413,6 @@
 .command-ask kbd { color: var(--faint); }
 .command-ask .mark { width: 15px; height: 15px; }
 .command-ask .mark i { filter: blur(2px); }
-
-/* Cards that only moved to another column (a re-layout) don't play their entrance again. */
-.card.settled { animation: none; }
 
 /* A save the assistant is talking about, lit up in the grid while you point at it. */
 .masonry [data-ref] { transition: box-shadow 0.3s var(--ease), transform 0.3s var(--ease); }

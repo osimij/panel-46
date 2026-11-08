@@ -38,13 +38,26 @@ const looksLikeQuestion = (s: string) => {
     (words >= 4 && /^(what|which|how|why|where|who|find|show|give|suggest|gather|get|any|is|are|do|does|can|could|should|would|help|compare|pair|recommend|i need|i want|i'm|im|make|build|design)\b/i.test(t));
 };
 
-/** Run a DOM change as a View Transition when the browser supports it. */
-function transition(update: () => void) {
+/**
+ * Run a DOM change as a View Transition when the browser supports it.
+ *
+ * "open" (an item opening over the grid): the page is not cross-faded. The open item
+ * brings its own entrances (scrim, panel, filmstrip) and the sidebar its own slide, so
+ * only one copy of the page is ever on screen; a cross-fade would show the old sidebar
+ * and grid ghosting through the new panel. Only the hero morphs.
+ * "close": the item fades away over the grid, and the sidebar, lifted out of the
+ * page into a layer of its own, slides back in once instead of fading in twice.
+ */
+function transition(update: () => void, kind: "open" | "close" = "open") {
   const doc = document as Document & { startViewTransition?: (cb: () => void) => ViewTransition };
   if (!doc.startViewTransition || prefersReducedMotion()) {
     update();
     return null;
   }
+  const root = document.documentElement;
+  // Set before the old state is captured, so the sidebar has its name in both states.
+  root.classList.remove("vt-open", "vt-close");
+  root.classList.add("vt", `vt-${kind}`);
   let done = false;
   const run = () => {
     if (done) return;
@@ -53,7 +66,11 @@ function transition(update: () => void) {
   };
   const t = doc.startViewTransition(run);
   t.ready.catch(() => {});
-  t.finished.catch(() => {});
+  t.finished.catch(() => {}).finally(() => {
+    // A newer transition may have started meanwhile; it set its own classes.
+    if (current === t) root.classList.remove("vt", "vt-open", "vt-close");
+  });
+  current = t;
   // If the page isn't painting (hidden window), don't hold the UI hostage to the animation.
   setTimeout(() => {
     if (!done) {
@@ -63,6 +80,7 @@ function transition(update: () => void) {
   }, 250);
   return t;
 }
+let current: ViewTransition | null = null;
 
 export function App() {
   const [scope, setScope] = useState<Scope>({ kind: "all" });
@@ -361,7 +379,20 @@ export function App() {
 
   // ---- Opening and closing: the card's media morphs into the detail view ----
 
+  // The grid thumb that last carried the "hero" name back on close. Opening again before
+  // its name was cleared would leave two heroes, and the browser drops the whole transition.
+  const lastHero = useRef<{ el: HTMLElement; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const clearHero = () => {
+    if (!lastHero.current) return;
+    clearTimeout(lastHero.current.timer);
+    lastHero.current.el.style.viewTransitionName = "";
+    lastHero.current = null;
+  };
+
   const openRef = (r: Ref, thumb: HTMLElement) => {
+    // Something is already open: its stage holds the hero name, so just switch to this one.
+    if (open) return setOpen(r);
+    clearHero();
     thumb.style.viewTransitionName = "hero";
     const t = transition(() => {
       thumb.style.viewTransitionName = "";
@@ -375,11 +406,12 @@ export function App() {
     transition(() => {
       setOpen(null);
       const thumb = id && document.querySelector<HTMLElement>(`[data-ref="${id}"] .thumb`);
+      clearHero();
       if (thumb) {
         thumb.style.viewTransitionName = "hero";
-        requestAnimationFrame(() => setTimeout(() => (thumb.style.viewTransitionName = ""), 600));
+        lastHero.current = { el: thumb, timer: setTimeout(clearHero, 600) };
       }
-    });
+    }, "close");
   }, [open?.id]);
 
   // ---- From the assistant ----

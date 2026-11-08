@@ -386,8 +386,9 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 
 /* ============ Grid ============ */
 
-.masonry { display: flex; gap: 12px; align-items: flex-start; padding-top: 2px; }
-.masonry-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+/* Cards are placed by Masonry (left/top/width); the gap here is the one it lays out with. */
+.masonry { position: relative; gap: 12px; margin-top: 2px; }
+.masonry > .card { position: absolute; }
 .card {
   cursor: pointer; outline: none; border-radius: calc(var(--radius) * var(--smooth)); corner-shape: var(--corner);
   animation: card-in 0.55s var(--ease) both; animation-delay: calc(var(--i) * 28ms);
@@ -937,6 +938,17 @@ a.cover-btn { text-decoration: none; }
 ::view-transition-old(hero), ::view-transition-new(hero) { animation-duration: 0.3s; height: 100%; object-fit: cover; overflow: hidden; }
 ::view-transition-image-pair(hero) { border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); overflow: hidden; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 0.28s; animation-timing-function: var(--ease); }
+/* Opening: no page cross-fade (see transition() in App.tsx); the new page shows at once and plays its own entrances. */
+:root.vt-open::view-transition-old(root) { display: none; }
+:root.vt-open::view-transition-new(root) { animation: none; }
+/* During a transition the sidebar is its own layer and the transition moves it, so its
+   CSS slide is off (it would play inside the layer as well) and it stays visible
+   while off-screen, so it is captured there and slides from or to that spot. */
+:root.vt .sidebar { view-transition-name: sidebar; transition: none !important; visibility: visible !important; }
+::view-transition-group(sidebar) { animation-duration: 0.42s; animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1); }
+/* Same picture at both ends: no fade, only the slide. */
+::view-transition-old(sidebar), ::view-transition-new(sidebar) { animation: none; }
+::view-transition-old(sidebar) { display: none; }
 
 /* ============ Drop + toast ============ */
 
@@ -974,7 +986,7 @@ a.cover-btn { text-decoration: none; }
   .sidebar, .side-rail { display: none; }
   .app.detail-open .detail { left: 0; }
   .main { margin-left: 0; padding: 0 12px 40px; }
-  .masonry, .masonry-col { gap: 8px; }
+  .masonry { gap: 8px; }
   .detail { inset: 0; flex-direction: column-reverse; overflow-y: auto; }
   .detail-panel { width: auto; }
   .detail-stage { padding: 16px; flex: none; }
