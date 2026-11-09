@@ -854,8 +854,8 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
   if (p.type === "thinking") {
     const s = Math.round((p.ms ?? 0) / 1000);
     // With two models on one answer, say which one is thinking.
-    if (p.model) return { doing: `${p.model} is thinking`, done: s >= 1 ? `${p.model} thought for ${s}s` : `${p.model} thought it over` };
-    return { doing: "Thinking", done: s >= 1 ? `Thought for ${s}s` : "Thought it over" };
+    if (p.model) return { doing: `${p.model} is thinking`, done: s >= 1 ? `${p.model} thought for ${duration(s)}` : `${p.model} thought it over` };
+    return { doing: "Thinking", done: s >= 1 ? `Thought for ${duration(s)}` : "Thought it over" };
   }
   if (p.type === "compact") {
     const k = (n: number) => `${Math.round(n / 1000)}K`;
@@ -1080,6 +1080,13 @@ function Thumbs({ ids, ctx }: { ids: string[]; ctx: Ctx }) {
   );
 }
 
+/** A time in seconds as people say it: "45s", then "10m 46s", then "1h 5m". */
+function duration(s: number) {
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ${s % 60}s`;
+  return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
 /** Seconds since it started thinking, ticking. */
 function Seconds() {
   const [s, setS] = useState(0);
@@ -1088,7 +1095,7 @@ function Seconds() {
     const t = setInterval(() => setS(Math.floor((Date.now() - t0) / 1000)), 500);
     return () => clearInterval(t);
   }, []);
-  return s >= 2 ? <span className="step-secs"> {s}s</span> : null;
+  return s >= 2 ? <span className="step-secs"> {duration(s)}</span> : null;
 }
 
 // ---------- Composer ----------
