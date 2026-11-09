@@ -9,6 +9,7 @@ import { Detail } from "./Detail.tsx";
 import { Masonry } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { ReadingSettings } from "./Reading.tsx";
+import { BackupSettings } from "./Backup.tsx";
 import { InlineName } from "./InlineName.tsx";
 import { Assistant, type AssistantHandle } from "./Assistant.tsx";
 import { Mark } from "./Glow.tsx";
@@ -16,6 +17,33 @@ import { Popover, TagRow } from "./TagRow.tsx";
 
 // The canvas (and React Flow with it) loads only when a project is opened.
 const ProjectCanvas = lazy(() => import("./Canvas.tsx"));
+
+/** How many saves the grid starts with, and how many more it brings in each time its end comes near. */
+const PAGE = 200;
+
+/**
+ * A fresh list from the companion, with every save that came back unchanged kept as the
+ * object the grid already has: its card isn't drawn again, and when nothing changed at all
+ * (the usual case while checking on downloads) the grid isn't either.
+ */
+const asText = new WeakMap<Ref, string>();
+function textOf(r: Ref) {
+  let t = asText.get(r);
+  if (t === undefined) asText.set(r, (t = JSON.stringify(r)));
+  return t;
+}
+function keepSame(was: Ref[] | null, now: Ref[]) {
+  if (!was) return now;
+  const old = new Map(was.map((r) => [r.id, r]));
+  let same = was.length === now.length;
+  const out = now.map((r, i) => {
+    const o = old.get(r.id);
+    const kept = o && textOf(o) === textOf(r) ? o : r;
+    if (kept !== was[i]) same = false;
+    return kept;
+  });
+  return same ? was : out;
+}
 
 type Scope =
   | { kind: "all" }
@@ -95,6 +123,12 @@ export function App() {
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [refs, setRefs] = useState<Ref[] | null>(null);
+  // What the grid last got: for which view, how many it asked for, how many that view has
+  // in all, and the tags among all of them (not only the ones loaded so far).
+  const [got, setGot] = useState<{ for: Filters; limit: number; total: number; tags: string[] } | null>(null);
+  // Past the first page: how many saves this view should show.
+  const [more, setMore] = useState<{ for: Filters; n: number } | null>(null);
+  const [gridEnd, setGridEnd] = useState<HTMLElement | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [tags, setTags] = useState<TagInfo[]>([]);
@@ -217,17 +251,45 @@ export function App() {
   }, [section]);
 
   const refreshProjects = useCallback(() => projectApi.list().then(setProjects).catch(() => {}), []);
+  // The grid shows the first `want` saves of the view and asks for more as its end comes
+  // near. A change of view starts again from the first page.
+  const want = more?.for === filters ? more.n : PAGE;
+  const wantRef = useRef(want);
+  wantRef.current = want;
+  const refsAsked = useRef(0);
+  const loadRefs = useCallback(async () => {
+    const asked = ++refsAsked.current;
+    const limit = wantRef.current;
+    const page = await api.refsPage(filters, limit);
+    // Asked again since (another view, or more of this one): that answer is the one to show.
+    if (asked !== refsAsked.current) return;
+    setRefs((was) => keepSame(was, page.items));
+    setGot({ for: filters, limit, total: page.total, tags: page.tags });
+  }, [filters]);
   const refresh = useCallback(async () => {
     void refreshProjects();
-    const [r, s, c, t, g] = await Promise.all([
-      api.refs(filters), api.stats(), api.collections(), api.tags(section), api.tagGroups(section),
+    const [, s, c, t, g] = await Promise.all([
+      loadRefs(), api.stats(), api.collections(), api.tags(section), api.tagGroups(section),
     ]);
-    setRefs(r);
     setStats(s);
     setCollections(c);
     setTags(t);
     setTagGroups(g);
-  }, [filters, section, refreshProjects]);
+  }, [loadRefs, section, refreshProjects]);
+
+  // Everything asked for has arrived and the view has more: the next page can be brought in.
+  const canLoadMore = !!got && got.for === filters && got.limit === want && got.total > want;
+  const loadMore = useCallback(() => setMore({ for: filters, n: want + PAGE }), [filters, want]);
+  useEffect(() => {
+    if (more && more.for === filters) loadRefs().catch(() => {});
+  }, [more, filters, loadRefs]);
+  // Well before the end of the grid scrolls into view, so the next saves are there on arrival.
+  useEffect(() => {
+    if (!gridEnd || !canLoadMore) return;
+    const io = new IntersectionObserver(([e]) => e?.isIntersecting && loadMore(), { rootMargin: "0px 0px 2400px 0px" });
+    io.observe(gridEnd);
+    return () => io.disconnect();
+  }, [gridEnd, canLoadMore, loadMore]);
 
   const say = useCallback((text: string, tone?: "error") => setToast({ id: Date.now(), text, tone }), []);
   const sayError = useCallback((text: string) => say(text, "error"), [say]);
@@ -557,8 +619,27 @@ export function App() {
 
   // Only what's on screen counts, so a filter can't hide what's about to be removed.
   const pickedRefs = useMemo(() => refs?.filter((r) => picked.has(r.id)) ?? [], [refs, picked]);
-  const allPicked = !!refs?.length && pickedRefs.length === refs.length;
-  const pickAll = useCallback(() => setPicked(new Set(refs?.map((r) => r.id))), [refs]);
+  // "All" means the whole view, so the saves further down that haven't been loaded yet are
+  // brought in first, then picked with the rest.
+  const unloaded = got && got.for === filters && refs ? Math.max(0, got.total - refs.length) : 0;
+  const allPicked = !!refs?.length && pickedRefs.length === refs.length && !unloaded;
+  const pickingAll = useRef<{ for: Filters; n: number } | null>(null);
+  const pickAll = useCallback(() => {
+    if (!refs) return;
+    if (unloaded && got) {
+      pickingAll.current = { for: filters, n: got.total };
+      setMore({ for: filters, n: got.total });
+    } else setPicked(new Set(refs.map((r) => r.id)));
+  }, [refs, unloaded, got, filters]);
+  useEffect(() => {
+    const p = pickingAll.current;
+    if (!p) return;
+    if (p.for !== filters) pickingAll.current = null;
+    else if (refs && got?.for === filters && got.limit >= p.n) {
+      pickingAll.current = null;
+      setPicked(new Set(refs.map((r) => r.id)));
+    }
+  }, [refs, got, filters]);
 
   const removePicked = async () => {
     try {
@@ -646,13 +727,22 @@ export function App() {
   };
 
   // Tags that appear in the current results; the others would empty the grid.
-  const available = useMemo(() => new Set(refs?.flatMap((r) => r.tags) ?? []), [refs]);
+  const available = useMemo(
+    () => new Set(got?.for === filters ? got.tags : refs?.flatMap((r) => r.tags) ?? []),
+    [got, filters, refs],
+  );
 
   const openIndex = refs && open ? refs.findIndex((r) => r.id === open.id) : -1;
+  // Stepping through saves one by one: bring in the next page before the last loaded one is reached.
+  useEffect(() => {
+    if (refs && openIndex >= 0 && openIndex >= refs.length - 3 && canLoadMore) loadMore();
+  }, [refs, openIndex, canLoadMore, loadMore]);
+  // How many the view has in all, not how many are loaded so far.
+  const matching = got?.for === filters ? got.total : refs?.length ?? 0;
   const { title, subtitle: baseSubtitle } = headingFor(scope, collections, stats);
   // While tags, media type or search narrow the grid, say how many are showing.
   const narrowed = scope.kind === "all" && refs && stats && (selectedTags.length > 0 || media !== "all" || !!debounced);
-  const subtitle = narrowed ? `${refs.length} of ${stats.total} references` : baseSubtitle;
+  const subtitle = narrowed ? `${matching} of ${stats.total} references` : baseSubtitle;
 
   const tools = (
     <>
@@ -772,7 +862,7 @@ export function App() {
         {debounced && refs && (
           <p className="results-note">
             {refs.length
-              ? `${refs.length} match${refs.length === 1 ? "" : "es"} for “${debounced}”`
+              ? `${matching} match${matching === 1 ? "" : "es"} for “${debounced}”`
               : looksLikeQuestion(debounced)
                 ? "No save matches those exact words. Press ⇥ to ask FRIDAY instead: FRIDAY reads the whole library."
                 : `Nothing matches “${debounced}” yet.`}
@@ -782,14 +872,18 @@ export function App() {
         {refs === null ? null : refs.length === 0 ? (
           !debounced && <Empty scope={scope} filtered={media !== "all" || selectedTags.length > 0} />
         ) : (
-          <Masonry
-            items={refs}
-            onOpen={openRef}
-            onFavorite={toggleFavorite}
-            onHide={toggleHidden}
-            onDelete={removeOne}
-            selection={{ active: selecting, ids: picked, toggle: togglePick }}
-          />
+          <>
+            <Masonry
+              items={refs}
+              onOpen={openRef}
+              onFavorite={toggleFavorite}
+              onHide={toggleHidden}
+              onDelete={removeOne}
+              selection={{ active: selecting, ids: picked, toggle: togglePick }}
+            />
+            {/* The end of what's loaded: when it comes near, the next saves are brought in. */}
+            <div ref={setGridEnd} aria-hidden style={{ height: 1 }} />
+          </>
         )}
         </>
         )}
@@ -1324,6 +1418,7 @@ function Settings({ stats, online, onClose }: { stats: Stats; online: boolean; o
         </dl>
 
         <ReadingSettings />
+        <BackupSettings />
 
         <button className="btn-wide" onClick={() => api.revealLibrary()}>
           <Icon name="folder" size={14} /> Show library in Finder

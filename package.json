@@ -6,7 +6,9 @@
     "dev": "trap 'kill 0' EXIT; bun --watch server/index.ts & vite",
     "build": "vite build",
     "start": "vite build && bun server/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test tests",
+    "copy": "scripts/copy.sh"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.319",

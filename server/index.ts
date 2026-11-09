@@ -1,4 +1,4 @@
-import { join, normalize, basename } from "node:path";
+import { join, normalize, basename, resolve } from "node:path";
 import { existsSync, mkdirSync, renameSync, rmSync, statSync, statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { HOST, LIBRARY_DIR, MEDIA_DIR, PORT } from "./config.ts";
@@ -14,9 +14,10 @@ import { apply, createProject, deleteProject, follow as followProject, getProjec
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
 import { sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
+import { backupStatus, mirror, setBackupDir, snapshot, startBackups } from "./backup.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 
-const DIST = process.env.PANEL_DIST ?? join(import.meta.dir, "..", "dist");
+const DIST = resolve(process.env.PANEL_DIST ?? join(import.meta.dir, "..", "dist"));
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
@@ -40,24 +41,40 @@ interface ColRow { ref_id: string; id: string; name: string }
 
 function hydrate(refs: RefRow[], full = false) {
   if (!refs.length) return [];
-  const ids = refs.map((r) => r.id);
-  const ph = ids.map(() => "?").join(",");
-  const media = db
-    .query<MediaRow, string[]>(`SELECT * FROM media WHERE ref_id IN (${ph}) ORDER BY COALESCE(position, idx), idx`)
-    .all(...ids);
-  const tags = db
-    .query<TagRow, string[]>(
-      `SELECT rt.ref_id, t.name, rt.source FROM ref_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.ref_id IN (${ph}) ORDER BY t.name`,
-    )
-    .all(...ids);
-  const cols = db
-    .query<ColRow, string[]>(
-      `SELECT rc.ref_id, c.id, c.name FROM ref_collections rc JOIN collections c ON c.id = rc.collection_id WHERE rc.ref_id IN (${ph})`,
-    )
-    .all(...ids);
+  // Each save's media, tags and collections, grouped by save. Asked for a few hundred saves
+  // at a time, so a long grid (thousands of saves) stays within SQLite's limit on "?"s.
+  const mediaBy = new Map<string, MediaRow[]>(), tagsBy = new Map<string, TagRow[]>(), colsBy = new Map<string, ColRow[]>();
+  const into = <T extends { ref_id: string }>(by: Map<string, T[]>, rows: T[]) => {
+    for (const x of rows) {
+      const list = by.get(x.ref_id);
+      if (list) list.push(x);
+      else by.set(x.ref_id, [x]);
+    }
+  };
+  for (let i = 0; i < refs.length; i += 500) {
+    const ids = refs.slice(i, i + 500).map((r) => r.id);
+    const ph = ids.map(() => "?").join(",");
+    into(mediaBy, db.query<MediaRow, string[]>(`SELECT * FROM media WHERE ref_id IN (${ph}) ORDER BY COALESCE(position, idx), idx`).all(...ids));
+    into(
+      tagsBy,
+      db
+        .query<TagRow, string[]>(
+          `SELECT rt.ref_id, t.name, rt.source FROM ref_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.ref_id IN (${ph}) ORDER BY t.name`,
+        )
+        .all(...ids),
+    );
+    into(
+      colsBy,
+      db
+        .query<ColRow, string[]>(
+          `SELECT rc.ref_id, c.id, c.name FROM ref_collections rc JOIN collections c ON c.id = rc.collection_id WHERE rc.ref_id IN (${ph})`,
+        )
+        .all(...ids),
+    );
+  }
 
   return refs.map((r) => {
-    const own = media.filter((m) => m.ref_id === r.id);
+    const own = mediaBy.get(r.id) ?? [];
     return {
       ...r,
       favorite: !!r.favorite,
@@ -86,8 +103,8 @@ function hydrate(refs: RefRow[], full = false) {
       })),
       media_count: own.length,
       has_video: own.some((m) => m.type !== "image"),
-      tags: tags.filter((t) => t.ref_id === r.id).map((t) => t.name),
-      collections: cols.filter((c) => c.ref_id === r.id).map((c) => ({ id: c.id, name: c.name })),
+      tags: (tagsBy.get(r.id) ?? []).map((t) => t.name),
+      collections: (colsBy.get(r.id) ?? []).map((c) => ({ id: c.id, name: c.name })),
       read: full ? readOf(r.id) : undefined,
     };
   });
@@ -117,7 +134,18 @@ function ftsQuery(q: string) {
   return tokens.map((t) => `"${t}"*`).join(" ");
 }
 
-function listRefs(params: URLSearchParams) {
+/** A whole number from the address, or the fallback when it's missing or not a number. */
+function whole(v: string | null, fallback: number, max: number) {
+  const n = Math.floor(Number(v ?? fallback));
+  return Number.isFinite(n) && n >= 0 ? Math.min(n, max) : fallback;
+}
+
+/**
+ * The saves a view shows. Plain: just the list (200 unless a limit is given). With `page`:
+ * the first `limit` of them, plus how many there are in all and the tags among all of
+ * them, so the grid can load more as it's scrolled and still say what's there.
+ */
+function listRefs(params: URLSearchParams, page = false) {
   const where: string[] = [];
   const args: (string | number)[] = [];
   let from = "refs r";
@@ -172,10 +200,19 @@ function listRefs(params: URLSearchParams) {
       args.push(tag);
     }
   }
-  const limit = Math.min(Number(params.get("limit") ?? 200), 500);
-  const offset = Number(params.get("offset") ?? 0);
-  const sql = `SELECT r.* FROM ${from} ${where.length ? "WHERE " + where.join(" AND ") : ""} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`;
-  return hydrate(db.query<RefRow, (string | number)[]>(sql).all(...args));
+  const limit = whole(params.get("limit"), 200, page ? 20_000 : 500);
+  const offset = whole(params.get("offset"), 0, Number.MAX_SAFE_INTEGER);
+  const matching = `FROM ${from} ${where.length ? "WHERE " + where.join(" AND ") : ""}`;
+  const items = hydrate(db.query<RefRow, (string | number)[]>(`SELECT r.* ${matching} ORDER BY ${order} LIMIT ${limit} OFFSET ${offset}`).all(...args));
+  if (!page) return items;
+  const total = db.query<{ n: number }, (string | number)[]>(`SELECT COUNT(*) n ${matching}`).get(...args)!.n;
+  const tagNames = db
+    .query<{ name: string }, (string | number)[]>(
+      `SELECT DISTINCT t.name FROM ref_tags rt JOIN tags t ON t.id = rt.tag_id WHERE rt.ref_id IN (SELECT r.id ${matching})`,
+    )
+    .all(...args)
+    .map((t) => t.name);
+  return { items, total, tags: tagNames };
 }
 
 function stats() {
@@ -546,7 +583,30 @@ async function handle(req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
-  if (path === "/api/refs" && m === "GET") return json(listRefs(url.searchParams));
+  // ---- Backups: a daily snapshot, and a second place for it and the media ----
+  if (path.startsWith("/api/backup") && !fromPanel(req)) return bad("Not allowed from here.", 403);
+  if (path === "/api/backup" && m === "GET") return json(backupStatus());
+  if (path === "/api/backup" && m === "PATCH") {
+    const b = (await req.json().catch(() => ({}))) as { dir?: string };
+    try {
+      setBackupDir(String(b.dir ?? ""));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+    void mirror();
+    return json(backupStatus());
+  }
+  if (path === "/api/backup/run" && m === "POST") {
+    try {
+      await snapshot(true);
+    } catch (e) {
+      return bad((e as Error).message, 500);
+    }
+    void mirror();
+    return json(backupStatus());
+  }
+
+  if (path === "/api/refs" && m === "GET") return json(listRefs(url.searchParams, url.searchParams.get("page") === "1"));
 
   // ---- Design reads (AI) ----
   if (path === "/api/ai" && m === "GET") return json(await readingStatus());
@@ -885,6 +945,7 @@ fixEscapedText();
 void backfillAvatars();
 void upgradeSocialLinks();
 startReading();
+startBackups();
 
 Bun.serve({
   hostname: HOST,

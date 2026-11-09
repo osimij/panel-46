@@ -190,25 +190,59 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 const body = (data: unknown) => JSON.stringify(data);
 
+/** The library's snapshots: one a day on this Mac, and a second place for them and the media if set. */
+export interface BackupStatus {
+  snapshots: number;
+  newest: string | null;
+  last: string | null;
+  bytes: number;
+  folder: string;
+  dir: string | null;
+  dir_there: boolean;
+  mirror_last: string | null;
+  mirror_error: string | null;
+  mirroring: boolean;
+}
+
+function filterParams(f: Filters) {
+  const p = new URLSearchParams();
+  if (f.q) p.set("q", f.q);
+  if (f.status) p.set("status", f.status);
+  if (f.type) p.set("type", f.type);
+  if (f.favorite) p.set("favorite", "1");
+  if (f.hidden) p.set("hidden", "1");
+  if (f.site) p.set("site", "1");
+  if (f.person) p.set("person", "1");
+  if (f.skill) p.set("skill", "1");
+  if (f.library) p.set("library", "1");
+  if (f.collection) p.set("collection", f.collection);
+  if (f.ids?.length) p.set("ids", f.ids.join(","));
+  f.tags?.forEach((t) => p.append("tag", t));
+  if (f.tagMode === "any") p.set("tagMode", "any");
+  return p;
+}
+
+/** The first saves of a view, with how many it has in all and the tags among all of them. */
+export interface RefsPage {
+  items: Ref[];
+  total: number;
+  tags: string[];
+}
+
 export const api = {
-  refs(f: Filters) {
-    const p = new URLSearchParams();
-    if (f.q) p.set("q", f.q);
-    if (f.status) p.set("status", f.status);
-    if (f.type) p.set("type", f.type);
-    if (f.favorite) p.set("favorite", "1");
-    if (f.hidden) p.set("hidden", "1");
-    if (f.site) p.set("site", "1");
-    if (f.person) p.set("person", "1");
-    if (f.skill) p.set("skill", "1");
-    if (f.library) p.set("library", "1");
-    if (f.collection) p.set("collection", f.collection);
-    if (f.ids?.length) p.set("ids", f.ids.join(","));
-    f.tags?.forEach((t) => p.append("tag", t));
-    if (f.tagMode === "any") p.set("tagMode", "any");
-    return call<Ref[]>(`/api/refs?${p}`);
+  /** The newest 200 that match (a picker's list, not the whole view). */
+  refs: (f: Filters) => call<Ref[]>(`/api/refs?${filterParams(f)}`),
+  /** The first `limit` saves of a view: the grid asks for more as it's scrolled. */
+  refsPage(f: Filters, limit: number) {
+    const p = filterParams(f);
+    p.set("page", "1");
+    p.set("limit", String(limit));
+    return call<RefsPage>(`/api/refs?${p}`);
   },
   ref: (id: string) => call<Ref>(`/api/refs/${id}`),
+  backup: () => call<BackupStatus>("/api/backup"),
+  backupNow: () => call<BackupStatus>("/api/backup/run", { method: "POST" }),
+  setBackupDir: (dir: string) => call<BackupStatus>("/api/backup", { method: "PATCH", body: body({ dir }) }),
   stats: () => call<Stats>("/api/stats"),
   revealLibrary: () => call<{ ok: boolean }>("/api/library/reveal", { method: "POST" }),
   collections: () => call<Collection[]>("/api/collections"),

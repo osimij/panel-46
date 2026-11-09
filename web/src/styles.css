@@ -1177,6 +1177,8 @@ a.cover-btn { text-decoration: none; }
 }
 .cap-input { width: 4ch; field-sizing: content; min-width: 2ch; background: none; border: 0; padding: 0; font: inherit; color: inherit; text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; outline: none; }
 .cap-input:focus { text-decoration-color: currentColor; }
+.cap-input.backup-dir { width: auto; min-width: 22ch; max-width: 34ch; text-align: right; }
+.cap-input.backup-dir::placeholder { color: var(--faint); }
 .model-select { background: none; border: 0; font: inherit; color: inherit; text-align: right; cursor: pointer; padding: 0; }
 .reading-note { margin: -4px 0 0; font-size: 12px; }
 .btn-wide:disabled { opacity: 0.5; }
