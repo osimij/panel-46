@@ -11,6 +11,8 @@ bun run start        # builds the UI, then serves everything at http://127.0.0.1
 
 For development, run `bun run dev`. It starts the companion with reload on change, plus Vite at http://localhost:5173.
 
+To try a change without touching your real library, run `scripts/copy.sh`: it makes a copy of the library in `.copy/` (cloned, so it takes almost no disk) and tells you how to run it on port 4747, beside the real Panel. `bun test tests` checks the main things against a throwaway library. [CLAUDE.md](CLAUDE.md) has the rules for working on Panel's own code.
+
 To keep Panel running in the background, so it starts at login and comes back if it stops, run `scripts/autostart.sh install`. After changing the code, `scripts/autostart.sh restart` rebuilds and restarts it. Logs go to `~/Library/Logs/Panel/server.log`, and `scripts/autostart.sh uninstall` turns it off.
 
 | Env var | Default | |
@@ -27,6 +29,10 @@ Requires `ffmpeg`/`ffprobe` (verification and thumbnails). `yt-dlp` is an option
   library.sqlite          references, notes, tags, collections, full-text index
   media/<refId>/0.jpg     the saved originals
   media/<refId>/0.thumb.jpg
+  media/<refId>/0.loop.mp4   a small silent copy of a video, for the grid to play
+  projects/               sketches and materials, per project
+  backups/<date>/         a daily snapshot of the database and projects
+  models/                 the two small models for search by meaning and by look
 ```
 
 - **companion** (`server/`, Bun): owns the library, listens only on 127.0.0.1, and serves media straight from disk with Range support. Replaying a video never contacts X.
@@ -38,7 +44,11 @@ Requires `ffmpeg`/`ffprobe` (verification and thumbnails). `yt-dlp` is an option
 - **Any other link**: a direct image or video URL is saved as a file. A page from a video site `yt-dlp` knows (Vimeo, TikTok…) gets its video. Any other page is a **site**: Chrome, running headless with a throwaway profile, takes full-page screenshots at desktop (1440px, 2×) and phone (390px, 3×) size, at retina sharpness, and Panel keeps the site's name and icon. Sites have their own section in the sidebar. Without Chrome installed, a page is kept as a link with its preview image.
 - **Files**: drag in, paste, or use the `+` button.
 
+A saved site is also **measured in the page**: the fonts it really uses (and whether each has Cyrillic and Tajik letters), its text sizes, its colors as the CSS has them, and its corner radii. The detail view shows them under "Measured in the page", search finds a site by its font's name, and the design read is told the real fonts instead of guessing. Sites saved earlier are measured one at a time in the background.
+
 Paste a link anywhere on the page (⌘V) to save it. Pasting the same post again opens the copy you already have.
+
+The grid shows 200 saves and brings in more as you scroll; only the cards near the screen are kept on the page, so a library of thousands stays light. Videos in the grid play a small copy (640px, 30 seconds); the detail view plays the original.
 
 ### Honest status
 
@@ -51,6 +61,10 @@ A reference only counts as **Archived** when every file was fully downloaded (si
 | Copy failed | One or more files didn't save, or a saved file has since gone missing from disk. **Try again** re-downloads only what's missing |
 
 Removing a reference moves its files to the macOS Trash.
+
+### Backups
+
+Once a day Panel keeps a snapshot of the database and the projects folder in `backups/<date>/` (the last 7 days, then one a week for two months). In Library settings you can name a second folder, on another disk: it gets the newest snapshot and every saved file, so the library survives this Mac's disk. To go back to a snapshot, stop Panel and copy its `library.sqlite` (and `projects/`) over the library's.
 
 ### Design reads (AI)
 
@@ -78,9 +92,10 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | Tool | What it does |
 | --- | --- |
 | `library_overview` | Counts, tags, collections, and the words the reads use (moods, fonts, motion techniques…) |
-| `search_library` | Words, optionally inside facets (color, typography, layout, imagery, motion, mood, components), plus filters |
+| `search_library` | Words and meaning, optionally inside facets (color, typography, layout, imagery, motion, mood, components), plus filters. With `look`, by the pictures themselves ("a dark dashboard with glowing charts") |
 | `find_by_color` | Measured palettes near given hex colors (CIEDE2000), optionally by role (background, accent…) |
-| `similar_to` | Saves like one save, by the facets you choose |
+| `similar_to` | Saves like one save, by the facets you choose; `look` compares the pictures themselves |
+| `get_verdicts` | What you've chosen and ruled out across all projects, grouped by the reason you gave |
 | `gather_for_brief` | The best saves per facet for a brief, so color, type and motion can come from different saves |
 | `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from |
 | `list_projects` | Your projects, most recently worked on first |
@@ -93,6 +108,8 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | `make_sketch`, `edit_sketch`, `get_sketch` | Put a quick page on a project's canvas to try a direction, change it (each change a new version), read it back. Each returns pictures of the page as Chrome rendered it, plus any errors the page threw, so Claude sees it before you do |
 | `get_handoff`, `start_build`, `get_build`, `message_build`, `see_build` | Build a chosen sketch for real: the hand-off written down, Claude Code started in your project folder (its own branch), its progress, follow-up changes, and pictures of the running result for Claude Code to check |
 | `save_to_collection` | Puts chosen saves in a Panel collection (only adds) |
+
+**Search by meaning and by look.** Two small models run on this Mac (multilingual-e5-small for what the reads say, CLIP for the pictures; about 300 MB, fetched once into `models/`). Nothing about the library leaves the machine. With them, "quiet and bookish" finds a save described as "calm, literary", in English or Russian, and a save can be found by how it looks. Library settings turns it off; search then goes by words alone.
 
 Two ways to connect. Over stdio, which works even when Panel isn't running:
 
@@ -116,7 +133,8 @@ Type **@** in FRIDAY to mention a save: a list of your saves appears (the newest
 - **Type a question in search** and press ⇥ (or ↵ when it ends with "?") to ask it instead.
 - **What it's doing** shows as a quiet timeline: searches with their results, saves it looked at, thinking time. It folds into one line once the answer starts. **Stop** ends it at once.
 - **Every conversation is kept** (SQLite, `chats` and `chat_messages`), named in a few words by Haiku, and listed under the clock button. Reload mid-answer and it picks up where it was.
-- **How hard it thinks** (Quick, Thorough, Deep) is in the same menu. Thorough is the default.
+- **How hard it thinks** (Quick, Thorough, Deep) is in the same menu. Thorough is the default. A change to one part you pointed at in the studio always runs quick: it's a small job, and it comes back in seconds.
+- **A sketch shows while it's being written.** Under "Sketching…" the page takes shape as FRIDAY writes it, before it lands on the canvas.
 - **Show N in the library** puts every save from an answer in the grid together.
 - Drag the panel's left edge to resize it; double-click to reset. In a narrow window it covers the library.
 - Panel stays grayscale: color appears only while FRIDAY works, as a soft glow rising behind the composer (a WebGL shader) and a thin iridescent rim. Both are off with reduced motion.
@@ -127,11 +145,16 @@ Under **Projects** in the sidebar, each project is a canvas for working out a de
 
 - **Topics** are *exploring* until you **Lock** one. A locked topic turns solid and takes a sentence for the decision ("humanist serif for headings, grotesk for forms").
 - **Saves** come from **Saves** in the dock: drag one onto the canvas, or select a topic and click saves to file them under it. Select a save to **Choose** it, **Rule it out**, add a **Note** or open it.
+- **Verdicts by key.** With saves or sketches selected: **K** keeps, **C** chooses, **X** rules out. After a choice or a rule-out a strip asks why: press **1–5** for one of the reasons you use most, type your own, or ignore it. Judging a suggestion moves on to the next one waiting, so a row of them goes fast. FRIDAY reads the reasons (`get_verdicts`), leans on them, and when one keeps coming back offers a line for unugly.md.
 - **Connect** anything by dragging from the dot on a node's edge, e.g. Typography → Color, to say one leads to the next. Double-click empty space for a note. Backspace removes what's selected.
 - **The assistant works on the canvas.** With a project open, ask FRIDAY for references ("suggest palettes that suit what's locked") and it places them under the right topic, one after another, as **Suggested** cards with a line on why. The view glides to them. **Keep**, **Choose** or **Rule out** each one. It never chooses or locks on its own; "lock it with the second one" does.
 - **Sketches: try a direction before anyone builds it.** Ask FRIDAY to "sketch the hero" or "try the type in Tajik" and it makes a **sketch**: one small web page, built from the locked decisions, placed next to what it came from as a **Suggested** card showing its first screen. Before it answers, Claude looks at pictures of the page (rendered by the Chrome on this Mac, up to three screens down) and fixes what breaks your rules. Double-click a sketch (or **Open**) to use it live and full size; **New tab** opens it on its own. Changes make new versions (v2, v3…), kept on disk in `projects/<id>/sketches/`; ⌘Z or **Undo** goes back one. Keep, choose or rule out sketches like saves. A sketch runs in a sandbox: its scripts work, but it can't reach your library.
 - **Sketch from a save.** Select a save, a decision or several saves and press **Sketch** / **Sketch from these**: FRIDAY makes a sketch that takes from each, with dashed lines from the saves it used.
 - **The studio.** Open a sketch to click through it as a real page: phone, tablet or desktop; step through versions; jump between its screens and states (a flow like Login → Code → Error, or empty / loading / error), which FRIDAY declares with `<meta name="panel:states" content="login: Вход, code: Код">`. Press **Point** (or P), click any part, and say what should change: FRIDAY changes just that part, or **Try 3 alternates** branches three new sketches. The **Directions** rail shows the family of branches; **Choose** / **Rule out** take a reason that FRIDAY and the build read.
+- **Your rules are checked by measuring.** Each time a sketch (or a build) is rendered, Panel measures the page against unugly.md: corners without smoothing, a letter-spaced name in the navbar, a font with no Cyrillic or Tajik letters (asked of Chrome, letter by letter), and the signs of generic design (italics, eyebrows, tags, solid dividers, bordered boxes…). FRIDAY gets the findings with the pictures and fixes what breaks a rule before answering; the studio shows them next to the page ("2 against your rules"). A check runs only while unugly.md still mentions its rule.
+- **Knobs.** In the studio, **Knobs** lists the sketch's own variables (colors, fonts, sizes, radius, spacing) as swatches and sliders. Moving one changes the live page at once, with no AI. **Try a palette from a save** puts a save's measured colors on the page, keeping what was background, text and accent. **Keep as v3** writes your values into a new version; FRIDAY builds on them. FRIDAY gives every new sketch knobs; for an old one, "Ask FRIDAY to add them".
+- **Alternates, made at the same time.** "Try 3 alternates" starts three copies of FRIDAY at once, each with its own angle (the composition, the voice, the boldest idea), so three directions take about as long as one. They show taking shape together in FRIDAY's panel.
+- **Compare.** In the studio, **Compare** puts two or three directions side by side on the same screen size, scrolled together and switched between their states together. Choose or rule out from there, or say what to take from which ("the hero from A, the type from B") and FRIDAY makes the combination.
 - **Build with Claude Code.** From the studio, hand a chosen sketch to Claude Code with your project folder. Panel writes a hand-off (brief, rules, locked decisions with their saves' pictures, the sketch and its screens, what you ruled out and why) and runs Claude Code in a separate checkout on a branch of its own (`panel/<sketch>`), so your files stay as they are; a new folder starts a new project. A card under the sketch shows its plan as it works; Claude Code can call `see_build` to have Panel start the page and show it pictures, so it checks its own work. When it's done, Panel runs it and the card shows it: **Open**, ask Claude Code for changes (same session), or **Continue in terminal** (`claude --resume`). Builds live in `builds/`. The research behind this is in `docs/harness-research.md`. FRIDAY talks to Claude Code through the Agent SDK (`@anthropic-ai/claude-agent-sdk`, on your own `claude` and login), with only Panel's tools and each tool call checked by Panel; it falls back to the `claude -p` command line if the SDK can't start (set `chat_engine` to `cli` to always use it). Builds run the same way, with Claude Code's own system prompt and your repo's CLAUDE.md and settings; Panel checks each command a build wants to run (package managers, node tools, listing files and git without push are allowed; chained commands are refused), and `build_engine` set to `cli` uses the command line instead. Ask FRIDAY to "tell Claude Code to…" and it passes the request to the build's session (`message_build`).
 - **Locking folds away what wasn't chosen** into "+5 considered" on the topic; click it to see them again.
 - **Undo**: ⌘Z undoes your own changes, one at a time. After the assistant changes the canvas, a note above the dock says what it did, with **Undo**, which takes back its whole reply (a topic, the saves under it, a note) at once. Claude Code's changes show up and undo the same way.
@@ -143,4 +166,4 @@ Under **Projects** in the sidebar, each project is a canvas for working out a de
 
 ## Not built yet
 
-A Brief view that pulls references by facet and suggests combinations, Apple Foundation Models with a strict offline mode, the Dock app wrapper, backup to the external SSD, export, and cloud sync.
+A Brief view that pulls references by facet and suggests combinations, Apple Foundation Models with a strict offline mode, the Dock app wrapper, export, cloud sync, and search by meaning in the library's own search box (today it's for FRIDAY and other AI apps).
