@@ -9,7 +9,7 @@ import { Detail } from "./Detail.tsx";
 import { Masonry } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { ReadingSettings } from "./Reading.tsx";
-import { BackupSettings } from "./Backup.tsx";
+import { BackupSettings, MeaningSettings } from "./Backup.tsx";
 import { InlineName } from "./InlineName.tsx";
 import { Assistant, type AssistantHandle } from "./Assistant.tsx";
 import { Mark } from "./Glow.tsx";
@@ -1428,6 +1428,7 @@ function Settings({ stats, online, onClose }: { stats: Stats; online: boolean; o
         </dl>
 
         <ReadingSettings />
+        <MeaningSettings />
         <BackupSettings />
 
         <button className="btn-wide" onClick={() => api.revealLibrary()}>

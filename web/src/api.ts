@@ -194,6 +194,17 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
 
 const body = (data: unknown) => JSON.stringify(data);
 
+/** Search by meaning and by look: whether it's on, whether its models are here, how many saves are ready. */
+export interface MeaningStatus {
+  on: boolean;
+  meaning_ready: boolean;
+  look_ready: boolean;
+  by_meaning: number;
+  by_look: number;
+  saves: number;
+  working: boolean;
+}
+
 /** The library's snapshots: one a day on this Mac, and a second place for them and the media if set. */
 export interface BackupStatus {
   snapshots: number;
@@ -254,6 +265,8 @@ export const api = {
     return call<RefsPage>(`/api/refs?${p}`);
   },
   ref: (id: string) => call<Ref>(`/api/refs/${id}`),
+  meaning: () => call<MeaningStatus>("/api/meaning"),
+  setMeaning: (on: boolean) => call<MeaningStatus>("/api/meaning", { method: "PATCH", body: body({ on }) }),
   backup: () => call<BackupStatus>("/api/backup"),
   backupNow: () => call<BackupStatus>("/api/backup/run", { method: "POST" }),
   setBackupDir: (dir: string) => call<BackupStatus>("/api/backup", { method: "PATCH", body: body({ dir }) }),

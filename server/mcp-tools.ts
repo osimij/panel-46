@@ -17,9 +17,9 @@ const INSTRUCTIONS = `Panel is a designer's private library of saved design refe
 Use it to find references for a brief and to combine them: color from one save, type from another, motion from a third.
 - Start with library_overview to learn the words the library uses (moods, fonts, motion techniques).
 - gather_for_brief gives the best saves per facet for a brief in one call.
-- search_library finds by words, optionally within facets and filters; try synonyms if results are thin, since matching is by words, not meaning.
+- search_library finds by words and, when its answer says found_by includes "meaning", by meaning too (a save described in other words still comes up, in English or Russian). Give it look ("a dark dashboard with glowing charts") to find by the pictures themselves. If found_by is only "words", matching is by words alone: try synonyms when results are thin.
 - find_by_color matches measured palettes by hex (ΔE distance).
-- similar_to finds saves like one you have, by facet.
+- similar_to finds saves like one you have, by facet; the facet "look" compares the pictures themselves.
 - get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend. For a website it also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures. Searching typography for a font's name, or for "cyrillic" or "tajik", finds sites whose own fonts have those letters.
 - save_to_collection puts the saves you chose in a Panel collection the designer can open.
 - Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials (files and links the designer added: specs, brand books, sites); get_project_material reads a material in full. When working on a project, read it and the materials that matter first, and build from its locked decisions.
@@ -133,9 +133,10 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("search_library", {
     title: "Search the library",
-    description: "Find saves by words, ranked by how many of the words they match, then by relevance. With facets, the words must match within those facets only: e.g. query \"stagger spring\" with facets [\"motion\"] finds motion that staggers, not a poster that mentions springs. With no query, lists the newest saves that pass the filters. Combine with colors and filters freely. Matching is by words (with stemming and prefixes), not meaning, so search a few phrasings.",
+    description: "Find saves by words and by meaning: saves that match the words come first by how many they match, and saves whose design reads say the same thing in other words are found too (found_by in the answer says which ways were used; with only \"words\", search a few phrasings). With facets, the search stays within those facets only: e.g. query \"stagger spring\" with facets [\"motion\"] finds motion that staggers, not a poster that mentions springs. With look, saves are ranked by their pictures against your description. With no query, lists the newest saves that pass the filters. Combine with colors and filters freely.",
     inputSchema: {
       query: z.string().optional().describe("Words to look for: mood, style, technique, component, font, subject, creator…"),
+      look: z.string().optional().describe("How it should look, described plainly in English, e.g. \"a dark dashboard with glowing charts\" or \"a poster with one huge red word\". Matches the pictures themselves, not what was written about them. Alone or together with query."),
       facets: z.array(facet).optional().describe("Search only within these facets of the read."),
       colors: z.array(z.string()).optional().describe("Also require these colors in the measured palette: hex (#1d1765) or a plain name (navy, warm white)."),
       color_match: z.enum(["any", "all"]).optional().describe("With colors: any (default) or all must be present."),
@@ -163,10 +164,10 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("similar_to", {
     title: "Similar saves",
-    description: "Saves like a given one, judged by the facets you choose: color compares measured palettes; the others compare what the reads say about that facet. Several facets are combined, so [\"color\",\"motion\"] finds saves close in both. Use it for \"more like this\" or \"this palette but different type\".",
+    description: "Saves like a given one, judged by the facets you choose: color compares measured palettes; look compares the pictures themselves; the others compare what the reads say about that facet, by shared words and by meaning. Several facets are combined, so [\"color\",\"motion\"] finds saves close in both. Use it for \"more like this\" (look) or \"this palette but different type\".",
     inputSchema: {
       id: z.string().describe("The save to compare against."),
-      facets: z.array(z.enum([...FACETS, "overall"])).optional().describe("Default [\"overall\"]."),
+      facets: z.array(z.enum([...FACETS, "overall", "look"])).optional().describe("Default [\"overall\"]. look: by the pictures themselves."),
       ...filterShape,
       limit: z.number().int().min(1).max(40).optional().describe("Default 10."),
     },

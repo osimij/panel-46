@@ -52,7 +52,8 @@ rm -rf "$COPY/lib"
 mkdir -p "$COPY/lib"
 # .backup reads the database safely while Panel is using it.
 sqlite3 -readonly "$SRC/library.sqlite" ".backup '$COPY/lib/library.sqlite'"
-for d in media projects; do
+# (models: the two small models for search by meaning, so the copy doesn't fetch them again.)
+for d in media projects models; do
   [[ -d "$SRC/$d" ]] || continue
   # Cloned where the disk can (no extra space), copied otherwise.
   cp -c -R "$SRC/$d" "$COPY/lib/$d" 2>/dev/null || { rm -rf "$COPY/lib/$d"; cp -R "$SRC/$d" "$COPY/lib/$d"; }

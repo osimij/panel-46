@@ -28,7 +28,8 @@ export async function startPanel(): Promise<TestPanel> {
   const dir = mkdtempSync(join(tmpdir(), "panel-test-"));
   // Reading new saves by AI is off before Panel first looks, so a test never spends anything.
   const seed = new Database(join(dir, "library.sqlite"), { create: true });
-  seed.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO settings VALUES ('ai_auto', '0');");
+  // (Nor does it fetch the models for search by meaning.)
+  seed.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO settings VALUES ('ai_auto', '0'), ('meaning_search', '0');");
   seed.close();
 
   const port = sparePort();

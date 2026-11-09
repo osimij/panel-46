@@ -9,6 +9,7 @@ import { MEDIA_DIR, PORT } from "./config.ts";
 import { toLab, type Swatch } from "./palette.ts";
 import { fontLine, parseMeasured, type Measured } from "./sitefacts.ts";
 import { measuredWords } from "./db.ts";
+import { lookRank, lookReady, meaningRank, meaningReady, nearest, type ToIndex } from "./embed.ts";
 
 export const FACETS = ["color", "typography", "layout", "imagery", "motion", "mood", "components"] as const;
 export type Facet = (typeof FACETS)[number];
@@ -97,7 +98,7 @@ const words = (...v: unknown[]): string => {
 };
 
 /** The text each facet column is searched by. */
-function columnsOf(d: Doc): Record<Column, string> {
+export function columnsOf(d: Doc): Record<Column, string> {
   const p = d.profile ?? {};
   return {
     own: words(d.r.title, d.r.text, d.r.note, d.r.creator_name, d.r.creator_handle, d.tags, d.collections),
@@ -174,11 +175,20 @@ export function load() {
   return cache;
 }
 
+/** Every save as search by meaning wants it: what its read says per facet, and its first picture. */
+export function forMeaning(): ToIndex[] {
+  return [...load().docs.values()].map((d) => {
+    const m = d.media[0];
+    const picture = m?.thumb_path ?? d.r.preview_path;
+    return { id: d.r.id, texts: columnsOf(d), image: picture ? join(MEDIA_DIR, picture) : undefined };
+  });
+}
+
 // ---------- Text search ----------
 
 const STOP = new Set(
   ("a an the and or of for to in on with without by from at as is are be been was were has have this that these those it its into onto " +
-    "like some any very more most less really kind sort style feel feeling vibe look looks looking find show me give get want need " +
+    "like some any very more most less really kind sort style feel feels feeling vibe look looks looking find show me give get want need " +
     "something things thing stuff design designs reference references no not one two three each then than over under between while " +
     "which who there their they them so but all only just can also out up down about across through per via both other same own off " +
     "almost slightly rather quite mostly where when what how").split(" "),
@@ -389,6 +399,8 @@ export function card(d: Doc, extra: Record<string, unknown> = {}, focus?: Facet[
 
 export interface SearchInput extends Filters {
   query?: string;
+  /** How it should look, in plain words: ranked by the pictures themselves. */
+  look?: string;
   facets?: Facet[];
   colors?: string[];
   color_match?: "any" | "all";
@@ -396,43 +408,73 @@ export interface SearchInput extends Filters {
   offset?: number;
 }
 
-export function search(o: SearchInput) {
+/** The best of a ranking: the top `keep`, and only those close to the very best (the rest is noise). */
+function top(scores: Map<string, number> | null, keep: number, within: number): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!scores?.size) return out;
+  const sorted = [...scores.entries()].sort((a, b) => b[1] - a[1]);
+  const best = sorted[0]![1];
+  sorted.slice(0, keep).forEach(([id, s], i) => s >= best - within && out.set(id, i));
+  return out;
+}
+
+export async function search(o: SearchInput) {
   const { docs } = load();
   const cols = o.facets?.length ? (o.facets as Column[]) : null;
   const q = o.query?.trim() ?? "";
   const ranked = q ? textRank(q, cols) : null;
   const askedTerms = q ? terms(q).filter((t) => !(cols && FACET_WORDS.has(t))) : [];
+  // By meaning: saves whose reads say the same thing in other words. By look: saves whose
+  // pictures match a description. Each is a ranking of its own, joined with the words below.
+  const meaning = top(q ? await meaningRank(q, cols ?? [...COLUMNS]) : null, 40, 0.07);
+  const look = top(o.look?.trim() ? await lookRank(o.look) : null, 40, 0.06);
 
-  type Row = { d: Doc; hits: string[]; weight: number; bm25: number; color: ReturnType<typeof colorMatch> | null };
+  type Row = { d: Doc; hits: string[]; weight: number; bm25: number; color: ReturnType<typeof colorMatch> | null; found: boolean };
   const rows: Row[] = [];
   for (const d of docs.values()) {
     if (!passes(d, o)) continue;
     const t = ranked ? ranked.get(d.r.id) : { hits: [], weight: 0, bm25: 0 };
-    if (!t) continue;
+    // With words or a look asked for, a save has to be found by at least one of the ways.
+    if ((ranked || look.size) && !t && !meaning.has(d.r.id) && !look.has(d.r.id)) continue;
+    if (!ranked && o.look?.trim() && look.size && !look.has(d.r.id)) continue;
     let color: Row["color"] = null;
     if (o.colors?.length) {
       color = colorMatch(d, o.colors, { maxDistance: 12, minShare: 0.02 });
       const need = o.color_match === "all" ? o.colors.length : 1;
       if (color.hits.length < need) continue;
     }
-    rows.push({ d, hits: t.hits, weight: t.weight, bm25: t.bm25, color });
+    rows.push({ d, hits: t?.hits ?? [], weight: t?.weight ?? 0, bm25: t?.bm25 ?? 0, color, found: !!t });
   }
-  rows.sort(
-    (a, b) =>
-      // Rarer words count for more: "mono" says more about type than "dark" does.
-      b.weight - a.weight ||
-      (b.color?.score ?? 0) - (a.color?.score ?? 0) ||
-      a.bm25 - b.bm25 ||
-      b.d.r.created_at.localeCompare(a.d.r.created_at),
-  );
+  const byWords = (a: Row, b: Row) =>
+    // Rarer words count for more: "mono" says more about type than "dark" does.
+    b.weight - a.weight ||
+    (b.color?.score ?? 0) - (a.color?.score ?? 0) ||
+    a.bm25 - b.bm25 ||
+    b.d.r.created_at.localeCompare(a.d.r.created_at);
+  rows.sort(byWords);
+  if (meaning.size || look.size) {
+    // Each way of finding gives a place in line; a save high in several lines comes first.
+    const place = new Map<string, number>();
+    let n = 0;
+    for (const r of rows) if (r.found && ranked) place.set(r.d.r.id, n++);
+    const score = (r: Row) => {
+      const id = r.d.r.id;
+      return (place.has(id) ? 1 / (12 + place.get(id)!) : 0) + (meaning.has(id) ? 1 / (12 + meaning.get(id)!) : 0) + (look.has(id) ? 1 / (12 + look.get(id)!) : 0);
+    };
+    const scored = new Map(rows.map((r) => [r, score(r)]));
+    rows.sort((a, b) => scored.get(b)! - scored.get(a)! || byWords(a, b));
+  }
   const limit = Math.min(o.limit ?? 12, 60), offset = o.offset ?? 0;
   return {
     total: rows.length,
     showing: `${Math.min(rows.length, offset + 1)}–${Math.min(rows.length, offset + limit)} of ${rows.length}`,
     words_searched: askedTerms.length ? askedTerms : undefined,
+    found_by: q || o.look ? [q ? "words" : "", q && meaningReady() ? "meaning" : "", o.look?.trim() && lookReady() ? "look" : ""].filter(Boolean).join(" + ") : undefined,
     results: rows.slice(offset, offset + limit).map((x) =>
       card(x.d, {
-        matched: askedTerms.length ? `${x.hits.length}/${askedTerms.length}: ${x.hits.join(", ")}` : undefined,
+        matched: askedTerms.length && x.found ? `${x.hits.length}/${askedTerms.length}: ${x.hits.join(", ")}` : undefined,
+        close_in_meaning: meaning.has(x.d.r.id) || undefined,
+        looks_like_it: look.has(x.d.r.id) || undefined,
         colors_matched: x.color?.hits.map((h) => `${h.asked} → ${h.hex} ${h.name} ${pct(h.share)} (ΔE ${h.distance})`),
       }, o.facets),
     ),
@@ -473,7 +515,7 @@ export function findByColor(o: Filters & { colors: string[]; match?: "any" | "al
 }
 
 /** Saves like this one, in the chosen facets. Each facet ranks on its own; the ranks are then fused. */
-export function similar(o: Filters & { id: string; facets?: (Facet | "overall")[]; limit?: number }) {
+export function similar(o: Filters & { id: string; facets?: (Facet | "overall" | "look")[]; limit?: number }) {
   const { docs } = load();
   const base = docs.get(o.id);
   if (!base) throw new Error(`No save with id ${o.id}.`);
@@ -490,6 +532,11 @@ export function similar(o: Filters & { id: string; facets?: (Facet | "overall")[
   const allowed = new Set(candidates.map((d) => d.r.id));
 
   for (const f of facets) {
+    // How it looks: the pictures themselves compared, whatever was written about them.
+    if (f === "look") {
+      nearest(base.r.id, "look", 60).filter((x) => allowed.has(x.id)).forEach((x, i) => add(x.id, i, "looks alike"));
+      continue;
+    }
     if (f === "color") {
       candidates
         .map((d) => ({ d, dist: paletteDistance(base, d) }))
@@ -504,11 +551,15 @@ export function similar(o: Filters & { id: string; facets?: (Facet | "overall")[
       .filter(([id]) => allowed.has(id))
       .sort((a, b) => b[1].weight - a[1].weight || a[1].bm25 - b[1].bm25);
     ranked.forEach(([id, x], i) => add(id, i, `${f}: shares ${x.hits.slice(0, 6).join(", ")}`));
+    // And the saves whose reads say much the same about it in other words.
+    for (const kind of f === "overall" ? ["general", "mood"] : [f]) {
+      nearest(base.r.id, `t:${kind}`, 30).filter((x) => allowed.has(x.id)).forEach((x, i) => add(x.id, i, `${f}: close in meaning`));
+    }
   }
   const rows = [...fused.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, Math.min(o.limit ?? 10, 40));
   return {
-    like: card(base, {}, facets.filter((f): f is Facet => f !== "overall")),
-    results: rows.map(([id, x]) => card(docs.get(id)!, { why: x.why }, facets.filter((f): f is Facet => f !== "overall"))),
+    like: card(base, {}, facets.filter((f): f is Facet => f !== "overall" && f !== "look")),
+    results: rows.map(([id, x]) => card(docs.get(id)!, { why: [...new Set(x.why)] }, facets.filter((f): f is Facet => f !== "overall" && f !== "look"))),
   };
 }
 
@@ -516,7 +567,7 @@ export function similar(o: Filters & { id: string; facets?: (Facet | "overall")[
  * For a brief ("a calm, warm, editorial banking app"), the best saves for each facet on
  * its own, so color can come from one, type from another and motion from a third.
  */
-export function gather(o: Filters & { brief: string; facet_briefs?: Partial<Record<Facet, string>>; facets?: Facet[]; colors?: string[]; per_facet?: number }) {
+export async function gather(o: Filters & { brief: string; facet_briefs?: Partial<Record<Facet, string>>; facets?: Facet[]; colors?: string[]; per_facet?: number }) {
   const facets = o.facets?.length ? o.facets : (["color", "typography", "layout", "imagery", "motion"] as Facet[]);
   // A facet's own words ("mono, tight tracking") find better type than the whole brief does.
   const briefFor = (f: Facet) => o.facet_briefs?.[f]?.trim() || o.brief;
@@ -525,7 +576,7 @@ export function gather(o: Filters & { brief: string; facet_briefs?: Partial<Reco
   const out: Record<string, unknown[]> = {};
   for (const f of facets) {
     const filters: Filters = { ...o, ...(f === "motion" ? { has_motion: true } : f === "typography" ? { has_type: true } : {}) };
-    const found = search({ ...filters, query: briefFor(f), facets: [f], colors: f === "color" ? o.colors : undefined, limit: per * 4 }).results;
+    const found = (await search({ ...filters, query: briefFor(f), facets: [f], colors: f === "color" ? o.colors : undefined, limit: per * 4 })).results;
     // Prefer saves not already picked for another facet, so the mix is wider.
     const picks = [...found].sort((a, b) => (used.get(a.id) ?? 0) - (used.get(b.id) ?? 0)).slice(0, per);
     picks.forEach((p) => used.set(p.id, (used.get(p.id) ?? 0) + 1));

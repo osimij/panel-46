@@ -16,6 +16,8 @@ import { setSketchVars, sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
 import { startMeasuring } from "./measure.ts";
+import { indexForMeaning, meaningStatus } from "./embed.ts";
+import { forMeaning, load as loadLibrary } from "./library.ts";
 import { backupStatus, mirror, setBackupDir, snapshot, startBackups } from "./backup.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 
@@ -601,6 +603,16 @@ async function handle(req: Request): Promise<Response> {
     return json({ ok: true });
   }
 
+  // ---- Search by meaning and by look: on or off, and how far along it is ----
+  if (path === "/api/meaning" && m === "GET") return json(meaningStatus(loadLibrary().docs.size));
+  if (path === "/api/meaning" && m === "PATCH") {
+    if (!fromPanel(req)) return bad("Not allowed from here.", 403);
+    const b = (await req.json().catch(() => ({}))) as { on?: boolean };
+    setSetting("meaning_search", b.on === false ? "0" : "1");
+    if (b.on !== false) indexMeaning();
+    return json(meaningStatus(loadLibrary().docs.size));
+  }
+
   // ---- Backups: a daily snapshot, and a second place for it and the media ----
   if (path.startsWith("/api/backup") && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/backup" && m === "GET") return json(backupStatus());
@@ -965,6 +977,12 @@ void upgradeSocialLinks();
 startReading();
 startBackups();
 startMeasuring();
+
+// Search by meaning and by look: the library's reads and pictures as numbers, kept up to
+// date in the background (embed.ts). The first time, this fetches the two models.
+const indexMeaning = () => void indexForMeaning(forMeaning()).catch(() => {});
+setTimeout(indexMeaning, 15_000);
+setInterval(indexMeaning, 90_000);
 
 // Small copies of videos for the grid to play, made one at a time in the background: for
 // videos saved before this existed, and for each new one once its file is in.
