@@ -10,8 +10,10 @@
 // What FRIDAY changes arrives as a new version on the canvas, and loads here in place.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { studioApi, type Device, type RefState, type SketchInfo, type SketchPoint } from "./api.ts";
+import { studioApi, type Device, type RefState, type RuleFinding, type SketchInfo, type SketchPoint } from "./api.ts";
 import { Icon, type IconName } from "./Icon.tsx";
+import { Knobs, type PageVar, type Palette } from "./Knobs.tsx";
+import { Compare } from "./Compare.tsx";
 import "./studio.css";
 
 export interface StudioSketch {
@@ -30,9 +32,9 @@ const DEVICES: Record<Device, { w: number; h: number; label: string; icon: IconN
   phone: { w: 390, h: 844, label: "Phone", icon: "phone" },
 };
 
-// "?studio=2": the studio's own address for a page, so a copy a browser kept from before the
+// "?studio=3": the studio's own address for a page, so a copy a browser kept from before the
 // kit was added (pages used to be cached forever) is never used. Bump it when the kit changes.
-const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=2`;
+const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=3`;
 const pictureOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.jpg`;
 
 interface Picked {
@@ -55,7 +57,12 @@ export function Studio(props: {
   onClose: () => void;
   onSwitch: (id: string) => void;
   patch: (id: string, data: Record<string, unknown>) => void;
-  ask: (text: string, point?: SketchPoint) => void;
+  /** Ask FRIDAY about this sketch, or a part of it; `fan` makes that many alternates side by side. */
+  ask: (text: string, point?: SketchPoint, fan?: number) => void;
+  /** The measured palettes of the saves on this canvas, to try on the sketch. */
+  palettes: Palette[];
+  /** From the side-by-side view: make a new sketch that takes these things from these sketches. */
+  mix: (text: string, ids: string[]) => void;
   onBuilt: (title: string) => void;
   onError: (text: string) => void;
 }) {
@@ -72,6 +79,16 @@ export function Studio(props: {
   const [building, setBuilding] = useState(false);
   const [closing, setClosing] = useState(false);
   const [fresh, setFresh] = useState<number | null>(null);
+  // Knobs: the page's own variables, what's been moved and not yet kept.
+  const [knobs, setKnobs] = useState(false);
+  const [vars, setVars] = useState<PageVar[] | null>(null);
+  const [edits, setEdits] = useState<Record<string, string>>({});
+  const [keeping, setKeeping] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
+  /** Side by side with the other directions of its family. */
+  const [comparing, setComparing] = useState(false);
+  const editsRef = useRef(edits);
+  editsRef.current = edits;
   const frame = useRef<HTMLIFrameElement>(null);
   const stage = useRef<HTMLDivElement>(null);
   const [room, setRoom] = useState({ w: 1000, h: 700 });
@@ -129,6 +146,11 @@ export function Studio(props: {
         setStates(Array.isArray(m.states) ? m.states : []);
         setState(String(m.state ?? ""));
         if (pointingRef.current) post({ t: "pick", on: true });
+        // The page (re)loaded: read its knobs, and put back what was being tried.
+        post({ t: "vars" });
+        if (Object.keys(editsRef.current).length) post({ t: "set", vars: editsRef.current });
+      } else if (m.t === "vars") {
+        setVars(Array.isArray(m.vars) ? m.vars : []);
       } else if (m.t === "state") {
         setState(String(m.state ?? ""));
         setPicked(null);
@@ -161,6 +183,35 @@ export function Studio(props: {
     setState("");
     setPicked(null);
   }, [src, reload]);
+  // Another sketch or version: its own knobs, and nothing carried over.
+  useEffect(() => {
+    setVars(null);
+    setEdits({});
+    setRulesOpen(false);
+  }, [src]);
+
+  const turn = useCallback((changes: Record<string, string>) => {
+    if (!Object.keys(changes).length) return;
+    setEdits((e) => ({ ...e, ...changes }));
+    post({ t: "set", vars: changes });
+  }, [post]);
+  const resetKnobs = useCallback(() => {
+    post({ t: "set", vars: Object.fromEntries(Object.keys(editsRef.current).map((k) => [k, null])) });
+    setEdits({});
+  }, [post]);
+  const keepKnobs = async () => {
+    // Only values the browser accepts are written into the page.
+    const good = Object.fromEntries(Object.entries(edits).filter(([, v]) => v.trim() && !/[;{}<>]/.test(v)));
+    if (!Object.keys(good).length || keeping) return;
+    setKeeping(true);
+    try {
+      await studioApi.setVars(project, sketch.id, good, sketch.version);
+    } catch (e) {
+      props.onError((e as Error).message);
+    } finally {
+      setKeeping(false);
+    }
+  };
 
   const close = useCallback(() => {
     setClosing(true);
@@ -174,6 +225,7 @@ export function Studio(props: {
           setPicked(null);
           post({ t: "release" });
         } else if (pointing) setPointing(false);
+        else if (comparing && !typing) setComparing(false);
         else if (verdict || building) {
           setVerdict(null);
           setBuilding(false);
@@ -185,7 +237,7 @@ export function Studio(props: {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [close, picked, pointing, post, verdict, building]);
+  }, [close, picked, pointing, post, verdict, building, comparing]);
 
   // ---- Asking ----
   const ask = (text: string, mode: "change" | "alternates" = "change") => {
@@ -195,7 +247,7 @@ export function Studio(props: {
       props.ask(t || "Try alternates of this.", {
         sketch: sketch.id, version: sketch.version, label: picked.label, selector: picked.selector, text: picked.text,
         html: picked.html, style: picked.style, state: picked.state || undefined, device, mode,
-      });
+      }, mode === "alternates" ? 3 : undefined);
       setPicked(null);
       setPointing(false);
     } else props.ask(t);
@@ -208,8 +260,10 @@ export function Studio(props: {
     if (next) props.patch(sketch.id, { version: next.v });
   };
   const errors = versions[at]?.errors ?? 0;
+  const rules: RuleFinding[] = versions[at]?.rules ?? [];
+  const breaks = rules.filter((r) => r.level === "breaks").length;
   const family = info?.family ?? [];
-  const showRail = rail && family.length > 1;
+  const showRail = rail && family.length > 1 && !knobs;
 
   // Where the bubble goes: under the part pointed at, in the stage's own coordinates.
   const bubble = (() => {
@@ -243,11 +297,19 @@ export function Studio(props: {
           ))}
         </div>
         <span className="st-gap" />
-        <button className={`st-tool ${pointing ? "on" : ""}`} onClick={() => setPointing((v) => !v)} title="Point at a part to change it (P)">
+        <button className={`st-tool ${pointing ? "on" : ""}`} disabled={comparing} onClick={() => setPointing((v) => !v)} title="Point at a part to change it (P)">
           <Icon name="point" size={14} /> <span className="st-label">Point</span>
         </button>
         {family.length > 1 && (
-          <button className={`st-tool ${showRail ? "on" : ""}`} onClick={() => setRail((v) => !v)} title="Directions: the sketches branched from this one">
+          <button className={`st-tool ${comparing ? "on" : ""}`} onClick={() => { setComparing((v) => !v); setPointing(false); }} title="Compare: this direction beside the others, scrolled together">
+            <Icon name="compare" size={14} /> <span className="st-label">Compare</span>
+          </button>
+        )}
+        <button className={`st-tool ${knobs && !comparing ? "on" : ""}`} onClick={() => { setComparing(false); setKnobs((v) => (comparing ? true : !v)); }} title="Knobs: change its colors, type, corners and spacing yourself, live">
+          <Icon name="sliders" size={14} /> <span className="st-label">Knobs</span>
+        </button>
+        {family.length > 1 && (
+          <button className={`st-tool ${showRail ? "on" : ""}`} onClick={() => { setKnobs(false); setRail((v) => (knobs ? true : !v)); }} title="Directions: the sketches branched from this one">
             <Icon name="branch" size={14} /> {family.length}
           </button>
         )}
@@ -289,6 +351,21 @@ export function Studio(props: {
       </header>
 
       <div className="st-body">
+        {comparing && family.length > 1 ? (
+          <Compare
+            project={project}
+            family={family}
+            current={sketch.id}
+            device={device}
+            running={props.running}
+            patch={props.patch}
+            onOpen={(sid) => {
+              setComparing(false);
+              if (sid !== sketch.id) props.onSwitch(sid);
+            }}
+            onMix={props.mix}
+          />
+        ) : (
         <div className="st-main">
           <div className="st-bar">
             <button className="st-icon sm" onClick={() => setReload((n) => n + 1)} aria-label="Reload" title="Reload the page"><Icon name="refresh" size={13} /></button>
@@ -309,6 +386,25 @@ export function Studio(props: {
             )}
             <span className="st-gap" />
             {errors > 0 && <span className="st-errors" title="The page reported errors when it was rendered"><Icon name="alert" size={12} /> {errors} {errors === 1 ? "error" : "errors"}</span>}
+            {rules.length > 0 && (
+              <span className="st-rules-wrap">
+                <button className={`st-rules ${breaks ? "breaks" : ""}`} onClick={() => setRulesOpen((v) => !v)} aria-expanded={rulesOpen} title="What Panel measured in this page against your rules (unugly.md)">
+                  {breaks ? `${breaks} against your rules` : `${rules.length} to look at`}
+                </button>
+                {rulesOpen && (
+                  <div className="st-pop st-rules-pop" role="dialog" aria-label="Rule checks">
+                    <p className="st-pop-title">Measured against your rules</p>
+                    {rules.map((r, i) => (
+                      <div key={i} className={`st-rule ${r.level}`}>
+                        <span className="st-rule-name">{r.rule}{r.level === "breaks" ? "" : " · look"}</span>
+                        <p>{r.what}</p>
+                        {r.where?.length ? <p className="st-rule-where">{r.where.join(" · ")}</p> : null}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </span>
+            )}
             <span className="st-size">{d.w}×{device === "desktop" ? Math.round(fit.h) : d.h}{fit.scale < 1 ? ` · ${Math.round(fit.scale * 100)}%` : ""}</span>
             <a className="st-icon sm" href={src} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab"><Icon name="external" size={13} /></a>
           </div>
@@ -338,10 +434,24 @@ export function Studio(props: {
             )}
             {fresh && <div className="st-fresh" key={fresh}>Version {fresh} from FRIDAY</div>}
           </div>
-          <AskBar running={props.running} onSend={(t) => ask(t)} onAlternates={() => props.ask("Try 3 alternates of this sketch, each a different direction for the whole page.")} />
+          <AskBar running={props.running} onSend={(t) => ask(t)} onAlternates={() => props.ask("Try 3 alternates of this sketch, each a different direction for the whole page.", undefined, 3)} />
         </div>
+        )}
 
-        {showRail && (
+        {knobs && !comparing && (
+          <Knobs
+            vars={vars}
+            edits={edits}
+            palettes={props.palettes}
+            keeping={keeping}
+            nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
+            onChange={turn}
+            onReset={resetKnobs}
+            onKeep={() => void keepKnobs()}
+            onAskForKnobs={() => props.ask("Rewrite this sketch so its colors, fonts, type sizes, corner radius and spacing are CSS variables on :root (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space and whatever else it needs), used everywhere in place of the fixed values. Change nothing about how it looks.")}
+          />
+        )}
+        {showRail && !comparing && (
           <aside className="st-rail" aria-label="Directions">
             <div className="st-rail-head">Directions</div>
             <div className="st-tree">
@@ -398,7 +508,7 @@ function PointBubble({ picked, style, onSend, onCancel }: { picked: Picked; styl
         }}
       />
       <div className="st-bubble-actions">
-        <button className="st-quiet" onClick={() => onSend(text, "alternates")} title="FRIDAY makes three new sketches, each doing this part differently">
+        <button className="st-quiet" onClick={() => onSend(text, "alternates")} title="Three new sketches at once, each doing this part differently">
           <Icon name="branch" size={13} /> Try 3 alternates
         </button>
         <button className="st-send" disabled={!text.trim()} onClick={() => onSend(text)}>Change <span className="faint">↵</span></button>
@@ -425,7 +535,7 @@ function AskBar({ running, onSend, onAlternates }: { running: boolean; onSend: (
         placeholder={running ? "FRIDAY is working on it…" : "Ask FRIDAY for a change to this page, or press P to point at a part"}
         aria-label="Ask FRIDAY for a change"
       />
-      <button className="st-quiet" onClick={onAlternates} disabled={running} title="FRIDAY branches three new directions from this sketch"><Icon name="branch" size={13} /> Alternates</button>
+      <button className="st-quiet" onClick={onAlternates} disabled={running} title="Three new directions from this sketch, made at the same time"><Icon name="branch" size={13} /> Alternates</button>
       <button className="st-send" onClick={send} disabled={!text.trim() || running} aria-label="Send"><Icon name="arrow-up" size={14} /></button>
     </div>
   );

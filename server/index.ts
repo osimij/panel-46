@@ -12,7 +12,7 @@ import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
-import { sketchInfo } from "./board.ts";
+import { setSketchVars, sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
 import { startMeasuring } from "./measure.ts";
@@ -498,6 +498,17 @@ async function handle(req: Request): Promise<Response> {
   if (sketchRoute && m === "GET") {
     if (!getProject(sketchRoute[1]!)) return bad("That project is gone.", 404);
     return json(sketchInfo(sketchRoute[1]!, sketchRoute[2]!));
+  }
+
+  // The studio's knobs: a new version with some of the page's variables changed, no AI involved.
+  const varsRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/vars$/);
+  if (varsRoute && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { vars?: Record<string, string>; from_version?: number };
+    try {
+      return json(await setSketchVars(varsRoute[1]!, varsRoute[2]!, b.vars && typeof b.vars === "object" ? b.vars : {}, Number.isInteger(b.from_version) ? b.from_version : undefined));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
   }
 
   // Builds: a sketch handed to Claude Code to make for real.

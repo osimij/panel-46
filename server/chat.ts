@@ -186,8 +186,8 @@ interface Run {
   events: ChatEvent[];
   listeners: Set<(e: ChatEvent, seq: number) => void>;
   proc: ReturnType<typeof Bun.spawn> | null;
-  /** With the Agent SDK: the turn, to interrupt. */
-  sdk?: { q: Query; abort: AbortController };
+  /** With the Agent SDK: the turn (or the turns, when alternates are made side by side), to interrupt. */
+  sdks: Set<{ q: Query; abort: AbortController }>;
   stopped: boolean;
 }
 const runs = new Map<string, Run>();
@@ -222,6 +222,7 @@ Sketches (on a project's canvas):
 - Reply in a few lines: what it tries and what you'd look at. Don't paste its HTML or describe it at length; it's on the canvas. Say plainly what it doesn't do yet.
 - Changes to a sketch go through edit_sketch with small edits (exact find and replace). To keep a version and try something else, make a new sketch from it instead.
 - When the designer has a sketch selected, "this" means it: read it with get_sketch if you haven't seen it in this conversation.
+- Give every sketch knobs: declare its colors, fonts, type sizes, corner radius and spacing as CSS variables on :root and use them everywhere in place of fixed values (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space, and whatever else the page needs). The designer changes them live in the studio (Knobs) and tries palettes from their saves on them, without asking you. When they kept a change that way, the next version you read has their values: build on them, don't put yours back.
 - Pass uses: the ids of the saves it takes from (type from one, color from another), so lines on the canvas show where it came from.
 - Make it something they can click through, not a picture: buttons, tabs, menus and forms that work. A flow of screens or its states (empty, loading, error, success) go in one sketch: list them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; buttons between screens set location.hash. The studio shows these as a map they can jump around. Check the other states with get_sketch state.
 - A mobile app screen is made for a phone: device "phone" (390×844). To check a desktop sketch on a phone, get_sketch with device.
@@ -295,7 +296,11 @@ export interface Point {
   /** change: change that part · alternates: try a few versions of it, each as a new sketch. */
   mode?: "change" | "alternates";
 }
-export interface SendContext { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: Point }
+export interface SendContext {
+  open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: Point;
+  /** Make this many alternates of the sketch in question, each by its own run, at the same time. */
+  fan?: number;
+}
 
 export async function send(chatId: string, text: string, context: SendContext = {}) {
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
@@ -325,7 +330,7 @@ export async function send(chatId: string, text: string, context: SendContext = 
     now(), readable(clean).replace(/\s+/g, " ").slice(0, 80), chatId,
   ]);
 
-  const run: Run = { messageId, parts: [], events: [], listeners: new Set(), proc: null, stopped: false };
+  const run: Run = { messageId, parts: [], events: [], listeners: new Set(), proc: null, sdks: new Set(), stopped: false };
   runs.set(chatId, run);
   const message = out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(messageId)!);
   emit(chatId, run, { t: "start", message });
@@ -362,12 +367,24 @@ export async function send(chatId: string, text: string, context: SendContext = 
     const list = named.flatMap((id) => (docs.get(id) ? [`[[${id}]] (${cardOf(docs.get(id)!).title})`] : []));
     if (list.length) said.push(`The designer mentions ${list.join(", ")}: each [[id]] in their message is that save; look at it with get_reference when it matters.`);
   }
+  // What happened beside this conversation since its last message (alternates made in parallel).
+  const news = sideNews.get(chatId);
+  if (news) {
+    said.push(news);
+    sideNews.delete(chatId);
+  }
   if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
   // A small, pointed job ("make this button darker") doesn't need minutes of thought: it
   // runs at low effort whatever the setting, so the studio answers in seconds.
   const pointed = !!context.point && context.point.mode !== "alternates";
   const effort: Effort = pointed ? "low" : chatSettings.effort();
-  void drive(chatId, run, chat.session_id, prompt, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  // Alternates: one run each, side by side, instead of one run making them one after another.
+  const base = fanBase(context, nodes);
+  const n = Math.min(4, Math.max(0, Math.floor(Number(context.fan) || 0)));
+  if (base && n >= 2 && getSetting("chat_engine") !== "cli") {
+    void fanOut(chatId, run, chat.session_id, { context: said.join(" "), asked: clean, base, n, part: context.point?.mode === "alternates" ? context.point.label : undefined })
+      .catch((e) => finish(chatId, run, "error", (e as Error).message));
+  } else void drive(chatId, run, chat.session_id, prompt, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
   // A short name for a new conversation, made alongside the answer.
   if (!chat.title) void nameChat(chatId, readable(clean), run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
@@ -416,35 +433,103 @@ function finish(chatId: string, run: Run, status: "done" | "stopped" | "error", 
   runs.delete(chatId);
 }
 
-async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string, effort: Effort = chatSettings.effort()) {
+/** Things done beside a conversation that its next message should know about, by chat. */
+const sideNews = new Map<string, string>();
+
+/** The sketch that alternates would branch from: the one pointed into, or the one sketch selected. */
+function fanBase(context: SendContext, nodes: string[]): { id: string; title: string } | null {
+  if (!context.project) return null;
+  const p = findProject(context.project);
+  if (!p) return null;
+  const wanted = context.point?.sketch ?? (nodes.length === 1 ? nodes[0] : undefined);
+  if (!wanted) return null;
+  const row = db.query<{ id: string; data: string }, [string, string]>("SELECT id, data FROM board_nodes WHERE id = ? AND project_id = ? AND kind = 'sketch'").get(wanted, p.id);
+  if (!row) return null;
+  let title = "Untitled sketch";
+  try {
+    title = String((JSON.parse(row.data) as { title?: string }).title || title);
+  } catch {
+    /* unnamed */
+  }
+  return { id: row.id, title };
+}
+
+/** A different way in for each alternate, so three runs working alone don't arrive at the same page. */
+const ANGLES = {
+  page: [
+    ["the composition", "Rethink the composition: what comes first, the proportions, where the eye goes. Keep the type and the palette."],
+    ["the voice", "Rethink the voice: the typeface pairing, the scale, the density, the mood of the color. Keep the structure."],
+    ["the boldest idea", "Make the boldest departure that still fits the brief, the locked decisions and the rules: an idea the careful versions wouldn't try."],
+    ["the quietest version", "Make the quietest version: take away until only what's needed is left, and make what's left exact."],
+  ],
+  part: [
+    ["its layout", "Give that part a different layout: its order, alignment and proportions."],
+    ["its treatment", "Give that part a different treatment: its type, color, material or motion."],
+    ["the boldest idea", "Do that part the boldest way that still fits the brief, the locked decisions and the rules."],
+    ["the quietest version", "Do that part the quietest way: as little as it can be and still do its job."],
+  ],
+} as const;
+
+/**
+ * Alternates made side by side: `n` runs at once, each a copy of the conversation so far,
+ * each making one new sketch from the same base with its own angle. Their tool steps (and
+ * the sketches taking shape) show together in the one answer; their words come at the end.
+ * What used to take one run three sketches' worth of time takes about one.
+ */
+async function fanOut(chatId: string, run: Run, sessionId: string | null, o: { context: string; asked: string; base: { id: string; title: string }; n: number; part?: string }) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
-  // The rules are already in Ask's instructions, so its tools leave them out (rules=0).
   const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
-  const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
-  const args = [
-    bin, "-p", prompt,
-    "--model", chatSettings.model(), "--effort", effort,
-    "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-    "--system-prompt", systemPrompt(),
-    "--tools", "", "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__panel",
-    "--setting-sources", "",
-    ...(sessionId ? ["--resume", sessionId] : []),
-  ];
+  const angles = (o.part ? ANGLES.part : ANGLES.page).slice(0, o.n);
+  const effort = chatSettings.effort();
+  const jobs = angles.map(([name, how], i) => {
+    const others = angles.filter((_, j) => j !== i).map(([x]) => x).join(", ");
+    const prompt = `<panel-context>${o.context} You are one of ${o.n} copies of yourself working at the same time, each making one alternate of the sketch “${o.base.title}” (${o.base.id}).</panel-context>
 
+${o.asked}
+
+Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), ${o.part ? `the same page with only the ${o.part} done differently` : "a different direction for the whole page"}. Your angle is ${name}. ${how} The other copies are taking: ${others}. Commit to yours; don't hedge towards theirs. Read the sketch with get_sketch first if you haven't seen this version. Give yours a short title and a tries line that says how it differs. Look at the pictures that come back, fix what breaks the rules with edit_sketch, then answer in one line: its title, and what it tries. Don't make any other sketch and don't change the original.`;
+    const r = reader(chatId, run, true);
+    return viaSdk(run, bin, token, prompt, sessionId, mcpUrl, r.handle, effort, true).then((res) => ({ ...res, ...r.state, name }));
+  });
+  const done = await Promise.all(jobs);
+  if (run.stopped) return;
+  const good = done.filter((d) => d.gotResult && !d.resultError && d.text.trim());
+  if (!good.length) {
+    const why = done.map((d) => d.resultError || d.stderr).find(Boolean) ?? "Claude Code stopped.";
+    return finish(chatId, run, "error", friendly(String(why).split("\n").pop()!));
+  }
+  // The copies' one-liners, as one short answer.
+  const failed = done.length - good.length;
+  const text = [...good.map((d) => `- ${d.text.trim().replace(/\s*\n+\s*/g, " ")}`), failed ? `\n${failed} of the ${done.length} didn't finish.` : ""].filter(Boolean).join("\n");
+  run.parts.push({ type: "text", text });
+  emit(chatId, run, { t: "text", delta: text });
+  // The conversation itself didn't see this happen; its next message is told.
+  const made = run.parts.flatMap((p) => (p.type === "tool" && p.name === "make_sketch" && !p.error && typeof p.input?.title === "string" ? [`“${p.input.title}”`] : []));
+  sideNews.set(chatId, `Since your last message here, ${good.length} alternates of the sketch “${o.base.title}” (${o.base.id}) were made at the same time by copies of you${made.length ? `: ${made.join(", ")}` : ""}. You haven't seen them: get_project lists them, get_sketch shows one.`);
+  finish(chatId, run, "done");
+}
+
+/**
+ * Reads what Claude Code sends back for one run and turns it into the answer's parts and
+ * the events the app follows. `side` is for a run working beside others on the same answer
+ * (one alternate each): its tool steps show like any other, but its words are kept back
+ * until the end and it doesn't change which conversation the chat continues.
+ */
+function reader(chatId: string, run: Run, side = false) {
   // Per content block: what kind it is, and a tool's input as it's written.
   const blocks = new Map<number, { kind: string; toolId?: string; json?: string; started?: number; sketch?: boolean; drafted?: number; draft?: Extract<ChatEvent, { t: "draft" }> }>();
   const lastPart = () => run.parts.at(-1);
-  let resultError: string | null = null;
-  let gotResult = false;
+  const state = { resultError: null as string | null, gotResult: false, text: "" };
   let lastSave = 0;
 
   const handle = (d: any) => {
     // Stopped: whatever is still on its way out is dropped.
     if (run.stopped) return;
     if (d.type === "system" && d.subtype === "init" && d.session_id) {
-      db.run("UPDATE chats SET session_id = ? WHERE id = ?", [d.session_id, chatId]);
+      // A side run works in a copy of the conversation; the chat keeps its own.
+      if (!side) db.run("UPDATE chats SET session_id = ? WHERE id = ?", [d.session_id, chatId]);
       return;
     }
     if (d.type === "stream_event") {
@@ -453,6 +538,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
         const b = e.content_block;
         if (b.type === "thinking" || b.type === "redacted_thinking") {
           blocks.set(e.index, { kind: "thinking", started: Date.now() });
+          if (side) return;
           const last = lastPart();
           if (!(last?.type === "thinking" && !last.done)) run.parts.push({ type: "thinking" });
           emit(chatId, run, { t: "thinking", on: true });
@@ -464,6 +550,11 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
       } else if (e.type === "content_block_delta") {
         const b = blocks.get(e.index);
         if (e.delta.type === "text_delta" && e.delta.text) {
+          // Several side runs talking at once would garble: each one's words are kept for the end.
+          if (side) {
+            state.text += e.delta.text;
+            return;
+          }
           const last = lastPart();
           if (last?.type === "text") last.text += e.delta.text;
           else run.parts.push({ type: "text", text: e.delta.text });
@@ -494,7 +585,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
         }
       } else if (e.type === "content_block_stop") {
         const b = blocks.get(e.index);
-        if (b?.kind === "thinking") {
+        if (b?.kind === "thinking" && !side) {
           const part = [...run.parts].reverse().find((p) => p.type === "thinking");
           const ms = Date.now() - (b.started ?? Date.now());
           if (part && part.type === "thinking") Object.assign(part, { done: true, ms: (part.ms ?? 0) + ms });
@@ -534,8 +625,8 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
       return;
     }
     if (d.type === "result") {
-      gotResult = true;
-      if (d.is_error) resultError = String(d.result || d.subtype || "Claude couldn't answer.").slice(0, 400);
+      state.gotResult = true;
+      if (d.is_error) state.resultError = String(d.result || d.subtype || "Claude couldn't answer.").slice(0, 400);
       const u = d.usage;
       if (u) {
         db.run(
@@ -545,6 +636,27 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
       }
     }
   };
+  return { handle, state };
+}
+
+async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string, effort: Effort = chatSettings.effort()) {
+  const bin = await claudeBinary();
+  if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
+  const token = await claudeToken();
+  // The rules are already in Ask's instructions, so its tools leave them out (rules=0).
+  const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
+  const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
+  const args = [
+    bin, "-p", prompt,
+    "--model", chatSettings.model(), "--effort", effort,
+    "--output-format", "stream-json", "--verbose", "--include-partial-messages",
+    "--system-prompt", systemPrompt(),
+    "--tools", "", "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__panel",
+    "--setting-sources", "",
+    ...(sessionId ? ["--resume", sessionId] : []),
+  ];
+
+  const { handle, state } = reader(chatId, run);
 
   let code: number | null = 0;
   let stderr = "";
@@ -554,7 +666,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   let cli = getSetting("chat_engine") === "cli";
   if (!cli) {
     ({ code, stderr } = await viaSdk(run, bin, token, prompt, sessionId, mcpUrl, handle, effort));
-    if (stderr && !gotResult && !run.parts.length && !run.stopped) {
+    if (stderr && !state.gotResult && !run.parts.length && !run.stopped) {
       console.error("Chat: the Agent SDK couldn't answer, using the command line:", stderr);
       cli = true;
     }
@@ -592,12 +704,12 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   if (run.stopped) return;
   // A conversation whose saved session is gone (cleared by Claude Code) starts over quietly.
   const lost = (m: string) => /session|conversation/i.test(m) && /not found|no conversation|invalid|does not exist/i.test(m);
-  if (sessionId && run.parts.length === 0 && (lost(stderr) || lost(resultError ?? ""))) {
+  if (sessionId && run.parts.length === 0 && (lost(stderr) || lost(state.resultError ?? ""))) {
     db.run("UPDATE chats SET session_id = NULL WHERE id = ?", [chatId]);
     return drive(chatId, run, null, prompt, effort);
   }
-  if (resultError) return finish(chatId, run, "error", friendly(resultError));
-  if (!gotResult) return finish(chatId, run, "error", friendly(stderr.split("\n").pop() || `Claude Code stopped (code ${code}).`));
+  if (state.resultError) return finish(chatId, run, "error", friendly(state.resultError));
+  if (!state.gotResult) return finish(chatId, run, "error", friendly(stderr.split("\n").pop() || `Claude Code stopped (code ${code}).`));
   finish(chatId, run, "done");
 }
 
@@ -613,9 +725,9 @@ export function stop(chatId: string) {
   run.stopped = true;
   const proc = run.proc;
   proc?.kill();
-  if (run.sdk) {
-    void run.sdk.q.interrupt().catch(() => {});
-    setTimeout(() => run.sdk?.abort.abort(), 3000);
+  for (const sdk of run.sdks) {
+    void sdk.q.interrupt().catch(() => {});
+    setTimeout(() => sdk.abort.abort(), 3000);
   }
   // If it doesn't go quietly, it goes.
   if (proc) setTimeout(() => proc.exitCode === null && proc.kill("SIGKILL"), 3000);
@@ -677,7 +789,7 @@ export function setChatSettings(patch: { model?: string; effort?: string }) {
  * and every tool call checked here before it runs. Messages come out in the same shapes as
  * stream-json, so they go to the same handler.
  */
-async function viaSdk(run: Run, bin: string, token: string | null, prompt: string, sessionId: string | null, mcpUrl: string, handle: (d: unknown) => void, effort: Effort) {
+async function viaSdk(run: Run, bin: string, token: string | null, prompt: string, sessionId: string | null, mcpUrl: string, handle: (d: unknown) => void, effort: Effort, fork = false) {
   const abort = new AbortController();
   const q = query({
     prompt,
@@ -691,16 +803,18 @@ async function viaSdk(run: Run, bin: string, token: string | null, prompt: strin
       tools: [],
       mcpServers: { panel: { type: "http", url: mcpUrl } },
       strictMcpConfig: true,
-      allowedTools: ["mcp__panel"],
+      // No blanket allow: every tool call comes to canUseTool below, which lets only Panel's through.
       settingSources: [],
       includePartialMessages: true,
       abortController: abort,
       canUseTool: async (name, input) =>
         name.startsWith("mcp__panel__") ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "FRIDAY only uses Panel's tools." },
-      ...(sessionId ? { resume: sessionId } : {}),
+      // A fork starts from the conversation so far and goes its own way, leaving the chat's session as it is.
+      ...(sessionId ? { resume: sessionId, ...(fork ? { forkSession: true } : {}) } : {}),
     },
   });
-  run.sdk = { q, abort };
+  const sdk = { q, abort };
+  run.sdks.add(sdk);
   let stderr = "";
   try {
     for await (const m of q) {
@@ -710,7 +824,7 @@ async function viaSdk(run: Run, bin: string, token: string | null, prompt: strin
   } catch (e) {
     stderr = (e as Error).message;
   } finally {
-    run.sdk = undefined;
+    run.sdks.delete(sdk);
   }
   return { code: stderr ? 1 : 0, stderr };
 }

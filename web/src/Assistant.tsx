@@ -260,6 +260,7 @@ export function Assistant(props: {
         ...(props.project ? { project: props.project } : {}),
         ...(picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : {}),
         ...(picked?.point ? { point: picked.point } : {}),
+        ...(picked?.fan ? { fan: picked.fan } : {}),
       };
       if (context && !cards.has(context.id)) addCards([cardFromRef(context)]);
       const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: context ? { open: context.id } : picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : null, parts: [], status: "done", error: null, created_at: new Date().toISOString() };

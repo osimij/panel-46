@@ -55,6 +55,8 @@ const paths = {
   branch: <><circle cx="7" cy="5.5" r="2" /><circle cx="7" cy="18.5" r="2" /><circle cx="17" cy="8.5" r="2" /><path d="M7 7.5v9M17 10.5c0 4-10 2.5-10 6" /></>,
   tablet: <><rect x="5" y="3" width="14" height="18" rx="2.5" /><path d="M11 17.5h2" /></>,
   build: <path d="m9 7-5 5 5 5M15 7l5 5-5 5M13.5 4.5l-3 15" />,
+  sliders: <path d="M5 7h8M19 7h-2M5 17h2M19 17h-8M13 7a2 2 0 1 0 4 0 2 2 0 0 0-4 0ZM7 17a2 2 0 1 0 4 0 2 2 0 0 0-4 0Z" />,
+  compare: <><rect x="4" y="5" width="7" height="14" rx="1.5" /><rect x="13" y="5" width="7" height="14" rx="1.5" /></>,
   states: <><rect x="4" y="4" width="7" height="5" rx="1.5" /><rect x="13" y="15" width="7" height="5" rx="1.5" /><rect x="4" y="15" width="7" height="5" rx="1.5" /><path d="M7.5 9v6M7.5 12h9v3" /></>,
   terminal: <><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="m7.5 10 2.5 2-2.5 2M12.5 14.5h4" /></>,
   compose: <path d="M11.5 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4.5M17.2 4.8l2 2L12 14l-2.8.8.8-2.8 7.2-7.2Z" />,

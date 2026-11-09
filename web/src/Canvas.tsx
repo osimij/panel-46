@@ -1035,6 +1035,18 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
     [id, cards, patch, judge, remove, note, onOpenRef, clearFocus, onAsk, onError, sketchFrom, fold.considered, toggleConsidered],
   );
 
+  // The measured palettes of the saves on this canvas (not the ruled-out ones), for a sketch to try on.
+  const palettes = useMemo(() => {
+    const seen = new Set<string>();
+    return nodes.flatMap((n) => {
+      if (n.type !== "ref" || n.data.state === "ruled_out" || seen.has(n.data.refId)) return [];
+      const c = cards.get(n.data.refId);
+      if (!c || c.palette.length < 3) return [];
+      seen.add(n.data.refId);
+      return [{ id: c.id, title: c.title, colors: c.palette }];
+    }).slice(0, 24);
+  }, [nodes, cards]);
+
   // ---- What's selected, for Ask ----
   const picked = shownNodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
   const pickedKey = picked.map((n) => n.id).join(",");
@@ -1321,12 +1333,22 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
               sketch={{ id: open.id, ...open.data }}
               stamp={sketchStamp}
               running={askRunning}
+              palettes={palettes}
+              mix={(text: string, ids: string[]) => {
+                const these = ids.map((x) => nodes.find((n) => n.id === x)).filter((n): n is SketchNode => n?.type === "sketch");
+                if (these.length < 2) return;
+                const which = these.map((n, i) => `${"ABC"[i]} is “${n.data.title || "Untitled sketch"}” (${n.id})`).join(", ");
+                latest.current.onAskWith(
+                  `Make one new sketch that combines these directions. ${which}. What to take: ${text}. Start from the one that needs the least change (make_sketch with from: its id) and leave the rest of it as it is.`,
+                  describePicked(id, these, cards),
+                );
+              }}
               onClose={() => setViewing(null)}
               onSwitch={setViewing}
               patch={patch}
               onError={onError}
-              ask={(text: string, point?: SketchPoint) => {
-                const about = describePicked(id, [open], cards);
+              ask={(text: string, point?: SketchPoint, fan?: number) => {
+                const about = { ...describePicked(id, [open], cards), ...(fan ? { fan } : {}) };
                 latest.current.onAskWith(text, point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : about);
               }}
               onBuilt={(title) => {

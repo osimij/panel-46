@@ -143,7 +143,21 @@ const KIT = `<script data-panel-kit>(() => {
     if (m.t === "release") { hold = null; over = null; if (box) { box.style.display = "none"; tag.style.display = "none"; } }
     if (m.t === "state") { const h = m.slug ? "#" + m.slug : ""; if (location.hash !== h) { if (h) location.hash = h; else { history.replaceState(null, "", location.pathname + location.search); dispatchEvent(new HashChangeEvent("hashchange")); } } }
     if (m.t === "hello") hello();
+    if (m.t === "vars") post({ t: "vars", vars: vars() });
+    if (m.t === "set") { const root = document.documentElement.style; for (const k in m.vars) { if (!/^--[A-Za-z0-9_-]+$/.test(k)) continue; if (m.vars[k] == null) root.removeProperty(k); else root.setProperty(k, String(m.vars[k])); } }
+    if (m.t === "scroll") { quiet = true; scrollTo(0, m.y); requestAnimationFrame(() => requestAnimationFrame(() => { quiet = false; })); }
+    if (m.t === "follow") following = !!m.on;
   });
+  // The page's knobs: the CSS variables it declares on :root (its colors, fonts, sizes, radius, spacing).
+  const vars = () => {
+    const out = [], seen = new Set();
+    const walk = (rules) => { for (const r of rules) { if (r.cssRules && !r.selectorText) { walk(r.cssRules); continue; } if (r.style && /^(:root|html)$/.test((r.selectorText || "").trim())) for (const n of r.style) if (n.startsWith("--") && !seen.has(n)) { seen.add(n); out.push({ name: n, value: r.style.getPropertyValue(n).trim() }); } } };
+    for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
+    return out.slice(0, 80);
+  };
+  // Side by side with other sketches, the studio keeps them scrolled together.
+  let following = false, quiet = false, said = 0;
+  addEventListener("scroll", () => { if (!following || quiet) return; cancelAnimationFrame(said); said = requestAnimationFrame(() => post({ t: "scrolled", y: scrollY })); }, { passive: true });
 })();</script>`;
 
 /** A sketch's page as Panel serves it: as Claude wrote it, with the studio's kit at the end. */

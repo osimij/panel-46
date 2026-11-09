@@ -606,7 +606,7 @@ export const chatApi = {
   create: () => call<{ id: string }>("/api/chats", { method: "POST" }),
   get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
-  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: SketchPoint }) =>
+  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: SketchPoint; fan?: number }) =>
     call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
   stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
   cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
@@ -717,6 +717,8 @@ export interface CanvasSelection {
   thumbs: string[];
   /** A part of a sketch pointed at in the studio. */
   point?: SketchPoint;
+  /** Make this many alternates of the sketch, each by its own run, at the same time. */
+  fan?: number;
 }
 
 /** A part of a sketch the designer pointed at in the studio, for FRIDAY to change. */
@@ -735,8 +737,16 @@ export interface SketchPoint {
 
 export type Device = "desktop" | "tablet" | "phone";
 
+/** Where a sketch breaks or brushes against the designer's rules, as measured in the page. */
+export interface RuleFinding {
+  rule: string;
+  level: "breaks" | "check";
+  what: string;
+  where?: string[];
+}
+
 export interface SketchInfo {
-  versions: { v: number; errors: number; height: number }[];
+  versions: { v: number; errors: number; height: number; rules?: RuleFinding[] }[];
   states: { name: string; slug: string }[];
   family: { id: string; parent: string | null; depth: number; title: string; tries?: string; state: string; version: number; reason?: string }[];
 }
@@ -765,6 +775,9 @@ export interface Build {
 
 export const studioApi = {
   sketch: (project: string, sketch: string) => call<SketchInfo>(`/api/projects/${project}/sketches/${sketch}`),
+  /** Keep the knobs as they are now: a new version with these :root variables changed. */
+  setVars: (project: string, sketch: string, vars: Record<string, string>, from_version: number) =>
+    call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/vars`, { method: "POST", body: body({ vars, from_version }) }),
   folders: () => call<{ recent: string[]; found: string[]; home: string }>("/api/builds/folders"),
   build: (o: { project: string; sketch: string; folder: string; note?: string }) => call<Build>("/api/builds", { method: "POST", body: body(o) }),
   getBuild: (id: string) => call<Build>(`/api/builds/${id}`),

@@ -9,6 +9,7 @@ import { load } from "./library.ts";
 import { apply, findProject, getProject, TOPIC_FACETS, type BoardNode, type Op, type RefState, type TopicFacet } from "./projects.ts";
 import { PORT } from "./config.ts";
 import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionsOf, writeVersion, type Device, type Render } from "./sketches.ts";
+import { withVars } from "./pagevars.ts";
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components", other: "Other" };
 const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 }, sketch: { w: 360, h: 300 }, build: { w: 380, h: 330 } };
@@ -335,6 +336,24 @@ export async function editSketch(o: { project: string; sketch: string; html?: st
   const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { ...meta, version } }], "assistant", { label: `Changed ${title} (version ${version})` });
   return { project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`) };
+}
+
+/**
+ * The studio's knobs: a new version of a sketch with some of its :root variables changed
+ * by the designer (a color, a radius, a font). No AI involved; everything else in the page
+ * stays exactly as it was.
+ */
+export async function setSketchVars(projectId: string, sketchId: string, vars: Record<string, string>, fromVersion?: number) {
+  const b = board(projectId);
+  const node = findSketch(b, sketchId);
+  if (!node) throw new Error("That sketch is gone.");
+  const base = fromVersion ?? (Number(node.data.version) || 1);
+  if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
+  const html = withVars(readSketch(b.p.id, node.id, base), vars);
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
+  const n = Object.keys(vars).length;
+  apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed ${n} ${n === 1 ? "value" : "values"} in ${sketchName(node)} (version ${version})` });
+  return { version, rules: render.rules ?? [], errors: render.errors.length };
 }
 
 export async function getSketch(o: { project: string; sketch: string; version?: number; device?: Device; state?: string }) {
