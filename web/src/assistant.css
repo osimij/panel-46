@@ -362,6 +362,11 @@
 .mp-model.on .mp-name { font-weight: 500; }
 .mp-note { font-size: 11.5px; color: var(--faint); line-height: 1.35; }
 .mp-role + .mp-role { margin-top: 4px; }
+.model-full { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.model-full.high { color: var(--text); font-weight: 500; }
+.mp-use { margin: 8px 4px 0; padding: 9px 5px 2px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; font-size: 11.5px; color: var(--faint); }
+.mp-use-bar { height: 3px; border-radius: 2px; background: var(--fill); overflow: hidden; }
+.mp-use-bar i { display: block; height: 100%; background: var(--muted); border-radius: 2px; }
 .composer-btn.stop:hover { background: var(--fill-hover); }
 .composer-context {
   display: flex; align-items: center; gap: 7px; height: 28px; margin: 0 0 2px -8px; padding: 0 2px 0 3px;

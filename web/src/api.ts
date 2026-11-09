@@ -584,6 +584,8 @@ export interface RefCard {
 
 export type ChatPart =
   | { type: "text"; text: string }
+  // The conversation was summarized here to make room.
+  | { type: "compact"; pre: number; post?: number; done: true; model?: string }
   // `model`: which model did it, when one plans and another builds.
   | { type: "thinking"; ms?: number; done?: boolean; model?: string }
   | { type: "tool"; id: string; name: string; model?: string; input?: Record<string, unknown>; refs?: string[]; total?: number; error?: string; done?: boolean };
@@ -600,7 +602,9 @@ export interface ChatMessage {
 }
 
 export interface ChatSummary { id: string; title: string; updated_at: string; running: boolean }
-export interface ChatFull { id: string; title: string; messages: ChatMessage[]; cards: RefCard[]; running: boolean; seq: number }
+/** How full a conversation is, in tokens, and where it gets summarized to make room. */
+export interface ContextUse { used: number; limit: number }
+export interface ChatFull { id: string; title: string; messages: ChatMessage[]; cards: RefCard[]; running: boolean; seq: number; context: ContextUse | null }
 
 export type ChatEvent =
   | { t: "start"; message: ChatMessage }
@@ -611,6 +615,8 @@ export type ChatEvent =
   // A sketch's page as written so far, while FRIDAY is still writing it.
   | { t: "draft"; id: string; html: string }
   | { t: "text"; delta: string }
+  | { t: "compact"; pre: number; post?: number }
+  | { t: "context"; used: number; limit: number }
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string }
   | { t: "idle" };
@@ -831,6 +837,10 @@ export interface Material {
   file_url: string | null;
   thumb_url: string | null;
   created_at: string;
+  /** The page Claude wrote on what a long one says: '' not yet · working · done · error · short (read whole). */
+  summary_state: "" | "working" | "done" | "error" | "short";
+  summary: string;
+  summary_error: string | null;
 }
 
 export const projectApi = {
@@ -847,6 +857,8 @@ export const projectApi = {
     call<{ seq: number | null; ops: BoardOp[]; cards: RefCard[]; undid: string | null }>(`/api/projects/${id}/undo`, { method: "POST", body: body({ client, who }) }),
   /** Files and links that say what the project is, for Claude to read. */
   materials: (id: string) => call<Material[]>(`/api/projects/${id}/materials`),
+  /** Write a material's summary (again) now. */
+  summarize: (id: string, mid: string) => call<Material>(`/api/projects/${id}/materials/${mid}/summary`, { method: "POST" }),
   addFiles: (id: string, files: File[]) => {
     const form = new FormData();
     for (const f of files) form.append("file", f, f.name);

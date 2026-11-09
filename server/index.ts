@@ -9,7 +9,8 @@ import { abs, makeLoop } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
-import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
+import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
+import { startSummaries, summarize } from "./digest.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
 import { setSketchText, setSketchVars, sketchInfo } from "./board.ts";
@@ -440,6 +441,16 @@ async function handle(req: Request): Promise<Response> {
     const b = (await req.json().catch(() => ({}))) as { name?: string; brief?: string };
     try {
       return json(createProject(String(b.name ?? ""), String(b.brief ?? "")));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  // A material's summary, written (again) now: the About panel's "Summarize".
+  const summaryRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/materials\/([0-9a-f]{16})\/summary$/);
+  if (summaryRoute && m === "POST") {
+    try {
+      await summarize(summaryRoute[1]!, summaryRoute[2]!);
+      return json(listMaterials(summaryRoute[1]!).find((x) => x.id === summaryRoute[2]) ?? null);
     } catch (e) {
       return bad((e as Error).message);
     }
@@ -991,6 +1002,9 @@ void upgradeSocialLinks();
 startReading();
 startBackups();
 startMeasuring();
+// Project documents: the ones cut at the old length are read again whole, then each long one gets its summary.
+setTimeout(() => void rereadCut().catch((e) => console.error("Reading project documents again:", (e as Error).message)), 10_000);
+startSummaries();
 
 // Search by meaning and by look: the library's reads and pictures as numbers, kept up to
 // date in the background (embed.ts). The first time, this fetches the two models.

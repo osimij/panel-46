@@ -1557,6 +1557,35 @@ const readText = (m: Material) =>
 
 type Pending = { key: string; name: string; kind: "file" | "link" };
 
+/**
+ * Under a long document: the page FRIDAY gets at the start of each conversation instead of
+ * the whole thing, to read; or that it's being written; or a way to ask for it.
+ */
+function MatSummary({ m, onRedo }: { m: Material; onRedo: () => void }) {
+  const [open, setOpen] = useState(false);
+  if (m.picture || m.chars <= 2500 || m.summary_state === "short") return null;
+  if (m.summary_state === "working") return <span className="mat-sum working"><span className="spinner" /> Writing a summary for FRIDAY…</span>;
+  if (m.summary_state === "done") {
+    return (
+      <div className="mat-sum">
+        <button className="mat-sum-btn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+          FRIDAY's summary <Icon name="chevron-down" size={10} />
+        </button>
+        <button className="mat-sum-btn quiet" onClick={onRedo} title="Write the summary again from the document">Write again</button>
+        {open && <div className="mat-sum-text">{m.summary}</div>}
+      </div>
+    );
+  }
+  return (
+    <div className="mat-sum">
+      <span className={m.summary_state === "error" ? "mat-sum-err" : ""} title={m.summary_error ?? undefined}>
+        {m.summary_state === "error" ? "The summary didn't work." : "No summary yet: FRIDAY only sees how it starts."}
+      </span>
+      <button className="mat-sum-btn" onClick={onRedo}>{m.summary_state === "error" ? "Try again" : "Summarize"}</button>
+    </div>
+  );
+}
+
 function About(props: {
   id: string; name: string; brief: string; closing: boolean;
   materials: Material[]; setMaterials: React.Dispatch<React.SetStateAction<Material[] | null>>;
@@ -1607,6 +1636,22 @@ function About(props: {
     }
   };
 
+  // Summaries are written in the background: while one is waiting or being written, look again now and then.
+  const waiting = props.materials.some((m) => m.summary_state === "working" || (m.summary_state === "" && m.chars > 2500));
+  useEffect(() => {
+    if (!waiting) return;
+    const t = setInterval(() => projectApi.materials(id).then(setMaterials).catch(() => {}), 4000);
+    return () => clearInterval(t);
+  }, [waiting, id, setMaterials]);
+  const summarize = (m: Material) => {
+    setMaterials((list) => list?.map((x) => (x.id === m.id ? { ...x, summary_state: "working" } : x)) ?? null);
+    projectApi.summarize(id, m.id).then((done) => {
+      if (done) setMaterials((list) => list?.map((x) => (x.id === m.id ? done : x)) ?? null);
+    }).catch((e) => {
+      onError((e as Error).message);
+      projectApi.materials(id).then(setMaterials).catch(() => {});
+    });
+  };
   const remove = (m: Material) => {
     setMaterials((list) => list?.filter((x) => x.id !== m.id) ?? null);
     projectApi.removeMaterial(id, m.id).catch((e) => {
@@ -1709,6 +1754,7 @@ function About(props: {
                   <span className={`mat-meta ${!m.chars && !m.picture ? "warn" : ""}`}>
                     {[kindText(m), m.kind === "file" && sizeText(m.size), readText(m)].filter(Boolean).join(" · ")}
                   </span>
+                  <MatSummary m={m} onRedo={() => summarize(m)} />
                   <MatNote value={m.note} onCommit={(v) => setNote(m, v)} />
                 </div>
                 <button className="mat-x" onClick={() => remove(m)} aria-label={`Remove ${m.name}`} title="Remove">

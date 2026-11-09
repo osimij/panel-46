@@ -279,6 +279,17 @@
 a.mat-name:hover { text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; }
 .mat-meta { font-size: 11.5px; line-height: 16px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mat-meta.warn { color: var(--muted); }
+.mat-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 3px; font-size: 11.5px; line-height: 16px; color: var(--faint); }
+.mat-sum.working { display: inline-flex; gap: 6px; }
+.mat-sum .spinner { width: 10px; height: 10px; }
+.mat-sum-btn { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 11.5px; }
+.mat-sum-btn:hover { color: var(--text); }
+.mat-sum-btn.quiet { color: var(--faint); }
+.mat-sum-err { color: var(--muted); }
+.mat-sum-text {
+  flex-basis: 100%; margin-top: 4px; padding: 8px 10px; max-height: 260px; overflow-y: auto; white-space: pre-wrap;
+  font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--fill); border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+}
 .mat-note {
   width: 100%; height: 0; margin: 0; padding: 0; border: 0; outline: 0; background: transparent; opacity: 0;
   font-size: 12px; color: var(--muted); transition: height var(--med) var(--ease), opacity var(--med) var(--ease), margin var(--med) var(--ease);

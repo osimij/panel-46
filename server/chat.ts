@@ -10,6 +10,7 @@ import { z } from "zod";
 import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
 import { describeSelection, findProject } from "./projects.ts";
+import { materialsForSummary } from "./materials.ts";
 import { designRules } from "./rules.ts";
 import { partialHtml } from "./partial.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
@@ -39,6 +40,14 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 );
 CREATE INDEX IF NOT EXISTS chat_messages_chat ON chat_messages(chat_id, created_at);
 `);
+// Added in place, empty for older conversations.
+const chatCols = db.query<{ name: string }, []>("PRAGMA table_info(chats)").all().map((c) => c.name);
+// Which project's card this conversation was given, and which version of it (see projectCard).
+if (!chatCols.includes("card_project")) db.exec("ALTER TABLE chats ADD COLUMN card_project TEXT");
+if (!chatCols.includes("card_hash")) db.exec("ALTER TABLE chats ADD COLUMN card_hash TEXT");
+// How full the conversation is after its last answer, and where Claude Code summarizes it.
+if (!chatCols.includes("context_tokens")) db.exec("ALTER TABLE chats ADD COLUMN context_tokens INTEGER");
+if (!chatCols.includes("context_limit")) db.exec("ALTER TABLE chats ADD COLUMN context_limit INTEGER");
 // An answer that was streaming when Panel stopped won't finish now.
 db.run("UPDATE chat_messages SET status = 'stopped' WHERE status = 'streaming'");
 
@@ -91,6 +100,8 @@ export function setChatSettings(patch: Record<string, unknown>) {
 
 export type Part =
   | { type: "text"; text: string }
+  /** The conversation was summarized here to make room (Claude Code's compaction). */
+  | { type: "compact"; pre: number; post?: number; done: true; model?: string }
   /** `model`: which model did it, when two work on one answer (plan, then build). */
   | { type: "thinking"; ms?: number; done?: boolean; model?: string }
   | {
@@ -115,6 +126,9 @@ export type ChatEvent =
   // A sketch's page as written so far, while Claude is still writing it: the app shows it taking shape.
   | { t: "draft"; id: string; html: string }
   | { t: "text"; delta: string }
+  | { t: "compact"; pre: number; post?: number }
+  /** How full the conversation is now, in tokens, and where it gets summarized. */
+  | { t: "context"; used: number; limit: number }
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string };
 
@@ -198,7 +212,7 @@ export function createChat() {
 }
 
 export function getChat(id: string) {
-  const chat = db.query<{ id: string; title: string }, [string]>("SELECT id, title FROM chats WHERE id = ?").get(id);
+  const chat = db.query<{ id: string; title: string; context_tokens: number | null; context_limit: number | null }, [string]>("SELECT id, title, context_tokens, context_limit FROM chats WHERE id = ?").get(id);
   if (!chat) return null;
   const rows = db.query<Row, [string]>("SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY created_at, rowid").all(id).map(out);
   const run = runs.get(id);
@@ -210,7 +224,10 @@ export function getChat(id: string) {
     for (const p of m.parts) if (p.type === "text") for (const x of p.text.matchAll(/\[\[([0-9a-f]{16})\]\]/g)) ids.add(x[1]!);
     if (m.context?.open) ids.add(m.context.open);
   }
-  return { id: chat.id, title: chat.title, messages: rows, cards: cards([...ids]), running: !!run, seq: run?.events.length ?? 0 };
+  return {
+    id: chat.id, title: chat.title, messages: rows, cards: cards([...ids]), running: !!run, seq: run?.events.length ?? 0,
+    context: chat.context_tokens && chat.context_limit ? { used: chat.context_tokens, limit: chat.context_limit } : null,
+  };
 }
 
 export function deleteChat(id: string) {
@@ -229,6 +246,10 @@ interface Run {
   /** With the Agent SDK: the turn (or the turns, when alternates are made side by side), to interrupt. */
   sdks: Set<{ q: Query; abort: AbortController }>;
   stopped: boolean;
+  /** The project card given with this message, marked as given once the answer is done. */
+  card?: { project: string; hash: string };
+  /** The card to give again if Claude Code summarizes the conversation during this answer. */
+  keep?: string;
 }
 const runs = new Map<string, Run>();
 
@@ -248,7 +269,8 @@ How to work:
 - When the designer wants a brief or prompt to hand to Claude Code (or anyone) to build from, include their rules in full under their own heading, and tell the builder to check the result against them before showing it.
 
 On a project's canvas (the context says which project):
-- Read the project with get_project before anything else in the conversation, and again when the designer may have changed it. Its brief and materials (files and links the designer added: a spec, a brand book, the old site) say what the project is and who it's for; read the ones that matter for the question with get_project_material, and let them shape what you look for.
+- The first message of the conversation brings the project card: what the project is, in the designer's words, and what each of its materials (a spec, a brand book, the old site) says, summarized. It holds for the whole conversation, and comes again if it changes. Let it shape what you look for and make. For a detail the card doesn't give (a screen, a term, a requirement), look it up in the material with get_project_material and find, in the document's own language, rather than reading it from the start.
+- Read the canvas with get_project before anything else in the conversation, and again when the designer may have changed it: the decisions, the saves chosen and ruled out, the sketches.
 - When they ask for references, always put them on the canvas with place_on_board, under the topic they're for (it makes the topic if needed; use after_topic to connect it to the one before, e.g. Color after a locked Typography). Place 4 to 8, the strongest first, each with a short why. Build on what's locked: a color search should suit the chosen type.
 - Then answer in a few lines: what you placed and the thinking behind the set, naming a save as [[id]] only where you say something particular about it. Don't repeat them all as a row of pictures; they're on the canvas.
 - Never choose, rule out or lock on your own. Use mark_saves and lock_topic only when the designer says so ("lock it with the second one"). When they give a reason, keep it with add_note.
@@ -387,6 +409,15 @@ export async function send(chatId: string, text: string, context: SendContext = 
     const p = findProject(context.project);
     if (p) {
       said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). References you find for it go on the canvas (place_on_board).`);
+      // The project card: given once per conversation, and again only if the project or the card changed.
+      const card = projectCard(p);
+      const hash = String(Bun.hash(card));
+      const had = db.query<{ card_project: string | null; card_hash: string | null }, [string]>("SELECT card_project, card_hash FROM chats WHERE id = ?").get(chatId);
+      if (!chat.session_id || had?.card_project !== p.id || had?.card_hash !== hash) {
+        said.push(`${had?.card_project === p.id && chat.session_id ? "The project card has changed since you were given it; this one replaces it." : "Here is the project card."}\n<project-card>\n${card}\n</project-card>\n`);
+        run.card = { project: p.id, hash };
+      }
+      run.keep = card;
       const sel = picked ? describeSelection(p.id, picked.nodes) : [];
       if (sel.length) said.push(`They have selected on the canvas: ${sel.join("; ")}. “This” and “these” mean what's selected; look at the saves with get_reference before you answer about them.`);
       const pt = context.point;
@@ -401,6 +432,12 @@ export async function send(chatId: string, text: string, context: SendContext = 
         );
       }
     }
+  }
+  // Off the canvas, the card of the project this conversation was about still comes back after a compaction.
+  if (!run.keep) {
+    const was = db.query<{ card_project: string | null }, [string]>("SELECT card_project FROM chats WHERE id = ?").get(chatId)?.card_project;
+    const p = was ? findProject(was) : null;
+    if (p) run.keep = projectCard(p);
   }
   if (context.open) {
     const d = load().docs.get(context.open);
@@ -478,9 +515,31 @@ function finish(chatId: string, run: Run, status: "done" | "stopped" | "error", 
   // A thinking or tool part left open (stopped mid-way) is closed, so it doesn't spin forever.
   for (const p of run.parts) if ((p.type === "thinking" || p.type === "tool") && !p.done) p.done = true;
   persist(run, status, error ?? null);
+  // The card counts as given once an answer to it came back.
+  if (run.card && status === "done") db.run("UPDATE chats SET card_project = ?, card_hash = ? WHERE id = ?", [run.card.project, run.card.hash, chatId]);
   db.run("UPDATE chats SET updated_at = ? WHERE id = ?", [now(), chatId]);
   emit(chatId, run, { t: "done", status, error });
   runs.delete(chatId);
+}
+
+/**
+ * What the project is, for FRIDAY to hold for the whole conversation: the designer's own
+ * description, and each material whole (short ones) or as its summary (long ones, written
+ * once when the material arrived; see digest.ts).
+ */
+export function projectCard(p: { id: string; name: string; brief?: string }) {
+  const lines = [`“${p.name}” (project id ${p.id}).`, p.brief?.trim() ? `In the designer's words: ${p.brief.trim()}` : "The designer hasn't described it yet."];
+  const mats = materialsForSummary(p.id);
+  if (mats.length) lines.push("", "Its materials:");
+  for (const m of mats) {
+    const head = `\n### ${m.name} (${m.kind}, id ${m.id})${m.note ? `: ${m.note}` : ""}`;
+    if (m.text) lines.push(head, m.text);
+    else if (m.summary) lines.push(head, `${m.length}. What it says:`, m.summary);
+    else if (m.kind === "picture") lines.push(head, "A picture: look at it with get_project_material.");
+    else if (m.unreadable) lines.push(head, m.unreadable);
+    else lines.push(head, `${m.length}. Not summarized yet; it starts: ${m.starts}`);
+  }
+  return lines.join("\n");
 }
 
 /** Things done beside a conversation that its next message should know about, by chat. */
@@ -677,6 +736,18 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
   const handle = (d: any) => {
     // Stopped: whatever is still on its way out is dropped.
     if (run.stopped) return;
+    if (d.type === "system" && d.subtype === "compact_boundary" && !side) {
+      const pre = Number(d.compact_metadata?.pre_tokens) || 0, post = Number(d.compact_metadata?.post_tokens) || undefined;
+      run.parts.push({ type: "compact", pre, post, done: true, ...tag });
+      emit(chatId, run, { t: "compact", pre, post });
+      persist(run);
+      return;
+    }
+    if (d.type === "panel_context" && !side) {
+      db.run("UPDATE chats SET context_tokens = ?, context_limit = ? WHERE id = ?", [d.used, d.limit, chatId]);
+      emit(chatId, run, { t: "context", used: d.used, limit: d.limit });
+      return;
+    }
     if (d.type === "system" && d.subtype === "init" && d.session_id) {
       // A side run works in a copy of the conversation; the chat keeps its own.
       if (!side) db.run("UPDATE chats SET session_id = ? WHERE id = ?", [d.session_id, chatId]);
@@ -956,6 +1027,14 @@ interface SdkTurn {
   system?: string;
 }
 
+/**
+ * Where FRIDAY's conversations get summarized, in tokens. Claude Code's own default for a
+ * 1M-token model is near the end of the window (about 967K), so a long design chat, full
+ * of pictures, would grow slow and costly and lose focus long before. Compacting at about
+ * 290K keeps the conversation sharp; the project card comes back right after (see viaSdk).
+ */
+const COMPACT_WINDOW = 320_000;
+
 const panelOnly = (name: string): true | string => (name.startsWith("mcp__panel__") ? true : "FRIDAY only uses Panel's tools.");
 
 async function viaSdk(run: Run, t: SdkTurn) {
@@ -981,6 +1060,20 @@ async function viaSdk(run: Run, t: SdkTurn) {
         const ok = allow(name);
         return ok === true ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: ok };
       },
+      settings: { autoCompactWindow: COMPACT_WINDOW },
+      // Right after Claude Code summarizes the conversation, the project card is given again in
+      // full, so what the project is never fades into a summary of a summary.
+      ...(run.keep
+        ? {
+            hooks: {
+              SessionStart: [{
+                hooks: [async (i) => (i.hook_event_name === "SessionStart" && i.source === "compact"
+                  ? { hookSpecificOutput: { hookEventName: "SessionStart" as const, additionalContext: `The conversation was just summarized to make room. The project card, in full again:\n<project-card>\n${run.keep}\n</project-card>` } }
+                  : {})],
+              }],
+            },
+          }
+        : {}),
       ...(t.sessionId ? { resume: t.sessionId, ...(t.fork ? { forkSession: true } : {}) } : {}),
     },
   });
@@ -991,6 +1084,11 @@ async function viaSdk(run: Run, t: SdkTurn) {
     for await (const m of q) {
       t.handle(m);
       if (run.stopped) break;
+      // After each answer: how full the conversation is now (a forked side run has its own, not the chat's).
+      if (m.type === "result" && !t.fork) {
+        const u = await q.getContextUsage({ detail: "summary" }).catch(() => null);
+        if (u?.totalTokens && u.autoCompactThreshold) t.handle({ type: "panel_context", used: u.totalTokens, limit: u.autoCompactThreshold });
+      }
     }
   } catch (e) {
     stderr = (e as Error).message;

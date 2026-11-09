@@ -4,7 +4,7 @@
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
-import { api, chatApi, displayTitle, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
+import { api, chatApi, displayTitle, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
@@ -78,6 +78,9 @@ function applyEvent(m: Msg, e: ChatEvent): Msg {
     case "tool":
       parts.push({ type: "tool", id: e.id, name: e.name, model: e.model });
       return { ...m, parts };
+    case "compact":
+      parts.push({ type: "compact", pre: e.pre, post: e.post, done: true });
+      return { ...m, parts };
     case "tool_input":
     case "tool_result": {
       const i = parts.findIndex((p) => p.type === "tool" && p.id === e.id);
@@ -129,6 +132,8 @@ export function Assistant(props: {
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<{ x: number; y: number } | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  /** How full this conversation is (shown by the model chip). */
+  const [use, setUse] = useState<ContextUse | null>(null);
   // Answers that arrived while you were here play in; older ones just appear.
   const live = useRef(new Set<string>());
   const follower = useRef<AbortController | null>(null);
@@ -193,6 +198,7 @@ export function Assistant(props: {
             if (e.t === "idle") return;
             if (e.t === "draft") return putDraft(e.id, e.html);
             if (e.t === "title") return setTitle(e.title);
+            if (e.t === "context") return setUse({ used: e.used, limit: e.limit });
             if (e.t === "start") runId.current = e.message.id;
             if (e.t === "tool") toolNames.current.set(e.id, e.name);
             if (e.t === "tool_result") {
@@ -223,6 +229,7 @@ export function Assistant(props: {
         const c = await chatApi.get(id);
         setChatId(c.id);
         setTitle(c.title);
+        setUse(c.context);
         setMessages(c.messages);
         addCards(c.cards);
         const streaming = c.messages.findLast((m) => m.role === "assistant" && m.status === "streaming");
@@ -295,6 +302,7 @@ export function Assistant(props: {
     setChatId(null);
     setMessages([]);
     setTitle("");
+    setUse(null);
     setRunning(false);
     runId.current = null;
     setDraft("");
@@ -482,6 +490,7 @@ export function Assistant(props: {
       <div className="ask-foot">
         <Glow state={glow} />
         <Composer
+          use={use}
           inputRef={inputRef}
           value={draft}
           setValue={setDraft}
@@ -848,6 +857,11 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
     if (p.model) return { doing: `${p.model} is thinking`, done: s >= 1 ? `${p.model} thought for ${s}s` : `${p.model} thought it over` };
     return { doing: "Thinking", done: s >= 1 ? `Thought for ${s}s` : "Thought it over" };
   }
+  if (p.type === "compact") {
+    const k = (n: number) => `${Math.round(n / 1000)}K`;
+    const said = `Summarized the conversation so far to make room${p.post ? ` (${k(p.pre)} → ${k(p.post)} tokens)` : ""}; the project card came back in full`;
+    return { doing: said, done: said };
+  }
   if (p.type !== "tool") return { doing: "", done: "" };
   const i = p.input ?? {};
   const found = p.error ? <span className="step-fail"> · didn't work</span> : typeof p.total === "number" ? <span className="step-n"> · {p.total === 0 ? "nothing" : p.total}</span> : null;
@@ -1102,6 +1116,7 @@ function Composer(props: {
   onDropQuote: () => void;
   picked: CanvasSelection | null;
   onDropPicked: () => void;
+  use: ContextUse | null;
 }) {
   const { value, running, context } = props;
   // Saves mentioned with @, by the label written in the text ("@Swiss poster").
@@ -1318,7 +1333,7 @@ function Composer(props: {
           spellCheck={false}
           aria-label="Message"
         />
-        <ModelPicker />
+        <ModelPicker use={props.use} />
         {running ? (
           <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
             <Icon name="stop" size={14} />

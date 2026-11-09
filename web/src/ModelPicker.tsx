@@ -4,7 +4,7 @@
 // from the next message on.
 
 import { useEffect, useState } from "react";
-import { chatApi, type ChatSettings, type Effort } from "./api.ts";
+import { chatApi, type ChatSettings, type ContextUse, type Effort } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
 
@@ -18,7 +18,8 @@ const EFFORTS: { value: Effort; label: string; hint: string }[] = [
 
 type Patch = Partial<Omit<ChatSettings, "models">>;
 
-export function ModelPicker() {
+/** `use`: how full the open conversation is, shown on the chip once it's past half. */
+export function ModelPicker({ use }: { use?: ContextUse | null }) {
   const [s, setS] = useState<ChatSettings | null>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
@@ -34,6 +35,8 @@ export function ModelPicker() {
   const first = (id: string) => name(id).split(" ")[0];
   const effortOf = (e: Effort) => EFFORTS.find((x) => x.value === e)!;
   const duo = s.mode === "duo";
+  const full = use ? Math.min(100, Math.round((use.used / use.limit) * 100)) : 0;
+  const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 
   return (
     <>
@@ -51,6 +54,7 @@ export function ModelPicker() {
         aria-label="Model and effort"
       >
         {duo ? <>{first(s.plan_model)} <span className="faint">→</span> {first(s.build_model)}</> : <>{name(s.model)} <span className="faint">{effortOf(s.effort).label}</span></>}
+        {full >= 50 && <span className={`model-full ${full >= 85 ? "high" : ""}`}>{full}%</span>}
         <Icon name="chevron-down" size={10} />
       </button>
       {at && (
@@ -83,6 +87,12 @@ export function ModelPicker() {
               <EffortPick value={s.effort} onChange={(v) => change({ effort: v })} />
               <p className="mp-hint">{effortOf(s.effort).hint}</p>
             </>
+          )}
+          {use && (
+            <div className="mp-use" title="Past this, Claude Code summarizes the earlier part of the conversation to make room, and gives FRIDAY the project card again">
+              <span className="mp-use-bar"><i style={{ width: `${full}%` }} /></span>
+              <span>This conversation: {k(use.used)} of {k(use.limit)} before it's summarized</span>
+            </div>
           )}
         </Popover>
       )}
