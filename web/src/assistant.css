@@ -323,6 +323,8 @@
 .composer.working::before { opacity: 0.95; }
 @keyframes rim { to { --rim: 360deg; } }
 .composer-row { display: flex; align-items: flex-end; gap: 8px; }
+.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px -4px -2px 0; }
+.composer-foot .model-chip { margin-left: -9px; }
 .composer textarea {
   flex: 1; min-width: 0; border: 0; outline: 0; background: none; resize: none; color: var(--text);
   font-size: 13.5px; line-height: 20px; padding: 6px 0; max-height: 168px; overflow-y: auto;
@@ -340,7 +342,7 @@
 
 /* Which model answers: a quiet chip beside Send, and its menu. */
 .model-chip {
-  flex: none; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 7px 0 9px; margin-bottom: 2px;
+  flex: none; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 7px 0 9px; min-width: 0;
   font-size: 12px; color: var(--muted); white-space: nowrap; border-radius: 999px;
 }
 .model-chip:hover, .model-chip.on { background: var(--fill); color: var(--text); }

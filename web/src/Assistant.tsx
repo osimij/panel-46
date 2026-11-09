@@ -1330,7 +1330,8 @@ function Composer(props: {
           ref={props.inputRef}
           value={value}
           rows={1}
-          placeholder={props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this, or anything in your library. @ to mention a save" : "Ask anything about your library. @ to mention a save"}
+          // Short enough for one line in the narrowest panel.
+          placeholder={props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention a save" : "Ask anything · @ to mention a save"}
           onChange={(e) => {
             props.setValue(e.target.value);
             look(e.target.value, e.target.selectionStart);
@@ -1388,6 +1389,9 @@ function Composer(props: {
           spellCheck={false}
           aria-label="Message"
         />
+      </div>
+      {/* Its own row under the words, so a narrow panel never squeezes what you're writing. */}
+      <div className="composer-foot">
         <ModelPicker use={props.use} running={running} onCompact={() => props.onSend("/compact")} />
         {running ? (
           <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">

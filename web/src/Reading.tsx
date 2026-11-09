@@ -201,6 +201,29 @@ function Swatches({ palette, role, copied, copy }: {
   );
 }
 
+/*
+ * The long parts of a read (Type, Layout, Color, Motion, Imagery, Worth taking) start folded to a
+ * single faint line: most of the time the summary, colors and moods are enough. The designer opens
+ * the ones they want, and Panel remembers which, here in this browser only.
+ */
+const TAKE = "Worth taking";
+const OPEN_KEY = "panel.read.open";
+function openParts(): Set<string> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(OPEN_KEY) ?? "[]");
+    return new Set(Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
+  } catch {
+    return new Set();
+  }
+}
+function keepOpenParts(s: Set<string>) {
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify([...s]));
+  } catch {
+    // Private windows and blocked storage just don't remember.
+  }
+}
+
 function ProfileView({ p, read }: { p: Profile; read: DesignRead }) {
   const [copied, setCopied] = useState<string | null>(null);
   const copy = (hex: string) => {
@@ -217,6 +240,17 @@ function ProfileView({ p, read }: { p: Profile; read: DesignRead }) {
     ["Motion", p.motion?.present ? p.motion.summary : undefined, p.motion?.techniques],
     ["Imagery", p.imagery?.summary || undefined, p.imagery?.style],
   ];
+  const shown = rows.filter(([, text]) => text);
+
+  // Which parts are open is one choice for every save, so paging through the library keeps it.
+  const [open, setOpen] = useState(openParts);
+  const toggle = (label: string, all: boolean) => {
+    const on = !open.has(label);
+    const next = new Set(open);
+    for (const l of all ? [...shown.map(([x]) => x), TAKE] : [label]) on ? next.add(l) : next.delete(l);
+    keepOpenParts(next);
+    setOpen(next);
+  };
 
   return (
     <div className="read-body">
@@ -231,21 +265,40 @@ function ProfileView({ p, read }: { p: Profile; read: DesignRead }) {
       )}
 
       <dl className="read-rows">
-        {rows.filter(([, text]) => text).map(([label, text, bits]) => (
-          <div key={label}>
-            <dt>{label}</dt>
-            <dd>
-              {text}
-              {!!bits?.length && <span className="read-bits">{bits.join(" · ")}</span>}
-            </dd>
-          </div>
-        ))}
+        {shown.map(([label, text, bits]) => {
+          const on = open.has(label);
+          return (
+            <div key={label} className={`read-fold ${on ? "open" : ""}`}>
+              <dt>
+                <button className="read-fold-head" onClick={(e) => toggle(label, e.altKey)} aria-expanded={on} title="Option-click opens or folds them all">
+                  {label}
+                  <span className={`chev ${on ? "open" : ""}`}><Icon name="chevron-down" size={12} /></span>
+                </button>
+              </dt>
+              <dd>
+                <div className="read-peek" aria-hidden onClick={(e) => toggle(label, e.altKey)}><span>{text}</span></div>
+                <div className="read-full" inert={!on}>
+                  <div>
+                    {text}
+                    {!!bits?.length && <span className="read-bits">{bits.join(" · ")}</span>}
+                  </div>
+                </div>
+              </dd>
+            </div>
+          );
+        })}
       </dl>
 
       {!!p.worth_taking?.length && (
-        <div className="read-take">
-          <div className="read-take-label">Worth taking</div>
-          <ul>{p.worth_taking.map((t) => <li key={t}>{t}</li>)}</ul>
+        <div className={`read-take read-fold ${open.has(TAKE) ? "open" : ""}`}>
+          <button className="read-take-label read-fold-head" onClick={(e) => toggle(TAKE, e.altKey)} aria-expanded={open.has(TAKE)} title="Option-click opens or folds them all">
+            {TAKE}
+            <span className={`chev ${open.has(TAKE) ? "open" : ""}`}><Icon name="chevron-down" size={12} /></span>
+          </button>
+          <div className="read-peek" aria-hidden onClick={(e) => toggle(TAKE, e.altKey)}><span>{p.worth_taking.join(" · ")}</span></div>
+          <div className="read-full" inert={!open.has(TAKE)}>
+            <div><ul>{p.worth_taking.map((t) => <li key={t}>{t}</li>)}</ul></div>
+          </div>
         </div>
       )}
 

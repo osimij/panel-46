@@ -627,7 +627,7 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .detail-bar { display: flex; justify-content: space-between; padding: 14px 16px 6px; }
 .detail-bar-right { display: flex; gap: 6px; }
 .detail-scroll {
-  overflow-y: auto; padding: 8px 16px 20px; display: flex; flex-direction: column; gap: 18px; flex: 1;
+  overflow-y: auto; padding: 8px 16px 20px; display: flex; flex-direction: column; gap: 32px; flex: 1;
   animation: content-in 0.4s var(--ease) both; animation-delay: 60ms;
 }
 @keyframes content-in { from { opacity: 0; transform: translateY(6px); } }
@@ -1108,9 +1108,10 @@ a.cover-btn { text-decoration: none; }
 
 /* ============ Design reads ============ */
 
+.read-field { gap: 10px; }
 .read-field .field-label { align-items: baseline; }
 .read-meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
-.read-body { display: flex; flex-direction: column; gap: 12px; animation: field-in 0.28s var(--ease); }
+.read-body { display: flex; flex-direction: column; gap: 22px; animation: field-in 0.28s var(--ease); }
 .read-summary { margin: 0; line-height: 1.45; text-wrap: pretty; }
 .read-wait { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .read-error { margin: 0; color: var(--bad); font-size: 12px; }
@@ -1160,7 +1161,30 @@ a.cover-btn { text-decoration: none; }
 .read-take-label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
 .read-take ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; line-height: 1.45; }
 
-.read-actions { display: flex; flex-wrap: wrap; gap: 2px 14px; }
+/* A folding part of a read. Folded, one faint line stands in for it; open, the whole text grows in
+   under its label as that line fades out, both on the same curve as Collections. */
+.read-fold { --fold: 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
+.read-fold-head { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); text-align: left; transition: color 0.2s var(--ease); }
+.read-fold:hover .read-fold-head { color: var(--text); }
+.read-fold .read-fold-head:active { transform: none; }
+.read-rows .read-fold > dt { min-width: 0; }
+.read-rows > .read-fold { grid-template-columns: 76px 1fr; gap: 0; }
+.read-take.read-fold .read-take-label { margin-bottom: 0; font-size: 12px; }
+.read-peek {
+  display: grid; grid-template-rows: 1fr; color: var(--muted); cursor: pointer;
+  transition: grid-template-rows var(--fold), opacity 0.2s var(--ease);
+}
+.read-peek > span { min-height: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.read-full { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--fold), opacity 0.2s var(--ease); }
+.read-full > div { min-height: 0; overflow: hidden; }
+.read-fold.open .read-peek { grid-template-rows: 0fr; opacity: 0; pointer-events: none; }
+.read-fold.open .read-full { grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows var(--fold), opacity 0.28s var(--ease) 0.06s; }
+/* Worth taking's line sits under its label, so the space between them lives inside each fold. */
+.read-take .read-peek > span, .read-take .read-full > div > ul { margin-top: 4px; }
+.read-take .read-peek { font-size: 12px; }
+@media (prefers-reduced-motion: reduce) { .read-peek, .read-full, .read-fold.open .read-full, .read-fold-head { transition: none; } }
+
+.read-actions { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 12px; }
 .read-actions .text-btn { margin-left: -8px; }
 .read-cost { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
 .read-seen-btn { margin-left: auto !important; }
