@@ -376,6 +376,10 @@ export async function send(chatId: string, text: string, context: SendContext = 
   if (runs.has(chatId)) throw new Error("Still answering the last message.");
   const clean = text.trim();
   if (!clean) throw new Error("Write something first.");
+  // "/compact" (optionally with what to keep: "/compact keep the type decisions") is Claude
+  // Code's own command: it summarizes the conversation so far to make room, now.
+  const compacting = /^\/compact(\s|$)/i.test(clean);
+  if (compacting && !chat.session_id) throw new Error("There's nothing to summarize yet: this conversation has just started.");
 
   const ts = now();
   const userId = newId();
@@ -451,12 +455,15 @@ export async function send(chatId: string, text: string, context: SendContext = 
     if (list.length) said.push(`The designer mentions ${list.join(", ")}: each [[id]] in their message is that save; look at it with get_reference when it matters.`);
   }
   // What happened beside this conversation since its last message (alternates made in parallel).
-  const news = sideNews.get(chatId);
+  const news = compacting ? null : sideNews.get(chatId);
   if (news) {
     said.push(news);
     sideNews.delete(chatId);
   }
-  if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
+  // A command goes to Claude Code as typed; anything before it would make it a message. The card
+  // isn't counted as given (it would be summarized away at once), but comes back after (run.keep).
+  if (compacting) run.card = undefined;
+  else if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
   // A small, pointed job ("make this button darker") doesn't need minutes of thought, or a
   // plan: it runs at low effort whatever the setting (on the builder, when two models share
   // the work), so the studio answers in seconds.
@@ -467,7 +474,8 @@ export async function send(chatId: string, text: string, context: SendContext = 
   // Alternates: one run each, side by side, instead of one run making them one after another.
   const base = fanBase(context, nodes);
   const n = Math.min(4, Math.max(0, Math.floor(Number(context.fan) || 0)));
-  if (base && n >= 2 && getSetting("chat_engine") !== "cli") {
+  if (compacting) void drive(chatId, run, chat.session_id, clean, model, "low").catch((e) => finish(chatId, run, "error", (e as Error).message));
+  else if (base && n >= 2 && getSetting("chat_engine") !== "cli") {
     void fanOut(chatId, run, chat.session_id, { context: said.join(" "), asked: clean, base, n, part: context.point?.mode === "alternates" ? context.point.label : undefined })
       .catch((e) => finish(chatId, run, "error", (e as Error).message));
   } else if (duoOn && !pointed) void duo(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));

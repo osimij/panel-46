@@ -177,3 +177,12 @@ describe("FRIDAY's model", () => {
     expect(next.effort).toBe("high");
   });
 });
+
+describe("FRIDAY's /compact", () => {
+  test("a new conversation has nothing to summarize yet, and says so before spending anything", async () => {
+    const { id } = await (await p.send("POST", "/api/chats")).json();
+    const res = await p.send("POST", `/api/chats/${id}/messages`, { text: "/compact" });
+    expect(res.ok).toBe(false);
+    expect((await res.json()).error).toMatch(/nothing to summarize/);
+  });
+});

@@ -19,7 +19,7 @@ const EFFORTS: { value: Effort; label: string; hint: string }[] = [
 type Patch = Partial<Omit<ChatSettings, "models">>;
 
 /** `use`: how full the open conversation is, shown on the chip once it's past half. */
-export function ModelPicker({ use }: { use?: ContextUse | null }) {
+export function ModelPicker({ use, running, onCompact }: { use?: ContextUse | null; running?: boolean; onCompact?: () => void }) {
   const [s, setS] = useState<ChatSettings | null>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
@@ -92,6 +92,19 @@ export function ModelPicker({ use }: { use?: ContextUse | null }) {
             <div className="mp-use" title="Past this, Claude Code summarizes the earlier part of the conversation to make room, and gives FRIDAY the project card again">
               <span className="mp-use-bar"><i style={{ width: `${full}%` }} /></span>
               <span>This conversation: {k(use.used)} of {k(use.limit)} before it's summarized</span>
+              {onCompact && (
+                <button
+                  className="mp-compact"
+                  disabled={running}
+                  onClick={() => {
+                    setAt(null);
+                    onCompact();
+                  }}
+                  title="Summarize the conversation so far now (same as typing /compact). The project card comes back after."
+                >
+                  Summarize now
+                </button>
+              )}
             </div>
           )}
         </Popover>

@@ -953,6 +953,7 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
   // When one model plans and another builds, each run of steps says whose it is.
   const model = parts.flatMap((p) => (p.type !== "text" && p.model ? [p.model] : []))[0];
   const planned = tools.some((p) => p.type === "tool" && p.name === "hand_to_builder");
+  const compacted = parts.some((p) => p.type === "compact");
   const searches = tools.filter((p) => p.type === "tool" && p.name !== "get_reference" && p.name !== "library_overview" && p.name !== "save_to_collection" && !CANVAS.includes(p.name)).length;
   const placed = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "place_on_board" ? (p.refs?.length ?? 0) : 0), 0);
   const sketched = tools.filter((p) => p.type === "tool" && p.name === "make_sketch" && !p.error).length;
@@ -969,6 +970,7 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
       sketched ? `made ${sketched} ${sketched === 1 ? "sketch" : "sketches"}` : "",
       placed ? `placed ${placed} on the canvas` : edited && !sketched ? "updated the canvas" : "",
       planned ? "wrote the plan" : "",
+      compacted ? "summarized the conversation" : "",
     ].filter(Boolean).join(", ") || "Thought it over";
 
   return (
@@ -1239,9 +1241,24 @@ function Composer(props: {
   };
 
   const can = !!value.trim();
+  // Typing a command: "/" offers /compact (the one command FRIDAY takes), Tab or ↵ fills it in.
+  const command = /^\/[a-z]*$/i.test(value) && "/compact".startsWith(value.toLowerCase()) && value.toLowerCase() !== "/compact";
   const thumb = context ? context.media[0]?.thumb_url ?? context.preview_url ?? context.avatar_url : null;
   return (
     <div className={`composer ${running ? "working" : ""} ${can ? "has-text" : ""}`}>
+      {command && !open && (
+        <div className="mention-pick" role="listbox" aria-label="Commands">
+          <button
+            role="option"
+            aria-selected
+            className="mention-row on command-row"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => props.setValue("/compact ")}
+          >
+            <span className="mention-title"><b>/compact</b> <span className="faint">Summarize the conversation so far to make room. Add what to keep after it, or send as is.</span></span>
+          </button>
+        </div>
+      )}
       {open && (
         <div className="mention-pick" role="listbox" aria-label="Mention a save">
           <div className="mention-head">{picker!.query.trim() ? "Saves matching" : "Mention a save"}</div>
@@ -1340,6 +1357,11 @@ function Composer(props: {
                 return;
               }
             }
+            if (command && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+              e.preventDefault();
+              props.setValue("/compact ");
+              return;
+            }
             // ↑ in an empty composer brings back what you last asked, to change it.
             if (e.key === "ArrowUp" && !value && props.lastAsked) {
               e.preventDefault();
@@ -1366,7 +1388,7 @@ function Composer(props: {
           spellCheck={false}
           aria-label="Message"
         />
-        <ModelPicker use={props.use} />
+        <ModelPicker use={props.use} running={running} onCompact={() => props.onSend("/compact")} />
         {running ? (
           <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
             <Icon name="stop" size={14} />
