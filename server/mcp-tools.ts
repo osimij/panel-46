@@ -261,18 +261,19 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("get_project_material", {
     title: "Read a project's material",
-    description: "One of a project's materials in full: a file the designer added (a spec, a brand book, notes; its text) or a picture (to look at), or a web page they linked (its text). get_project lists the materials with their ids and short ones whole; read the longer ones that matter here before designing. Long texts come in pages: call again with the offset it gives.",
+    description: "One of a project's materials: a file the designer added (a spec, a brand book, notes; its text) or a picture (to look at), or a web page they linked (its text). get_project lists them with their ids, short ones whole and long ones as a summary. For a detail in a long one, use find: it returns the passages where those words appear (a screen's name, a term, a section title from the summary), each with its offset to read on from. Without find, long texts come in pages: call again with the offset it gives.",
     inputSchema: {
       project: z.string().describe("The project's id or name."),
       id: z.string().describe("The material's id (or its name) from get_project."),
+      find: z.string().optional().describe("Words to look up in it; the passages around them come back instead of a page. Use the document's own language and terms."),
       offset: z.number().int().min(0).optional().describe("Where to start in the text, for the next page of a long one."),
     },
     annotations: readOnly,
-  }, async ({ project, id, offset = 0 }) => {
+  }, async ({ project, id, offset = 0, find }) => {
     try {
       const p = findProject(project);
       if (!p) throw new Error(`No project called “${project}”. list_projects shows them.`);
-      const m = readMaterial(p.id, id, offset);
+      const m = readMaterial(p.id, id, offset, undefined, find);
       const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [
         { type: "text", text: JSON.stringify(m.head) },
       ];

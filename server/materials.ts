@@ -12,6 +12,7 @@ import { extname, join } from "node:path";
 import { db, newId, now } from "./db.ts";
 import { LIBRARY_DIR } from "./config.ts";
 import { fetchWithTimeout, run } from "./media.ts";
+import { summarizeSoon } from "./digest.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS project_materials (
@@ -34,15 +35,29 @@ CREATE TABLE IF NOT EXISTS project_materials (
 );
 CREATE INDEX IF NOT EXISTS project_materials_project ON project_materials(project_id, created_at);
 `);
+{
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(project_materials)").all().map((c) => c.name);
+  // The page Claude writes on what a long document says (digest.ts). Added in place, empty for
+  // documents from before; the app on older code ignores them.
+  if (!cols.includes("summary")) db.exec("ALTER TABLE project_materials ADD COLUMN summary TEXT NOT NULL DEFAULT ''");
+  // '' not yet · working · done · error · short (the whole text is short enough to hand over as it is)
+  if (!cols.includes("summary_state")) db.exec("ALTER TABLE project_materials ADD COLUMN summary_state TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes("summary_error")) db.exec("ALTER TABLE project_materials ADD COLUMN summary_error TEXT");
+  // Anything left being written when Panel stopped starts again.
+  db.run("UPDATE project_materials SET summary_state = '' WHERE summary_state = 'working'");
+}
 
 const PROJECTS_DIR = join(LIBRARY_DIR, "projects");
 const MAX_FILE = 80 * 1024 * 1024;
-/** Enough for a long spec; past this Claude gets the start and is told it was cut. */
-const MAX_TEXT = 400_000;
+/** Enough for a very long spec (hundreds of pages); past this Claude gets the start and is told it was cut. */
+const MAX_TEXT = 2_000_000;
+/** What the limit used to be: files cut there are read again in full (rereadCut). */
+const OLD_MAX_TEXT = 400_000;
 
 interface Row {
   id: string; project_id: string; kind: "file" | "link"; name: string; note: string; url: string | null;
   path: string | null; view_path: string | null; mime: string | null; size: number | null; text: string; created_at: string;
+  summary: string; summary_state: string; summary_error: string | null;
 }
 
 export interface Material {
@@ -60,6 +75,10 @@ export interface Material {
   file_url: string | null;
   thumb_url: string | null;
   created_at: string;
+  /** The page Claude wrote on what it says (long documents): '' not yet · working · done · error · short (read whole, no summary needed). */
+  summary_state: string;
+  summary: string;
+  summary_error: string | null;
 }
 
 const isPicture = (r: Pick<Row, "mime" | "view_path">) => !!r.view_path || !!r.mime?.startsWith("image/");
@@ -72,6 +91,7 @@ function out(r: Row): Material {
     file_url: r.path ? `${base}/file` : null,
     thumb_url: r.view_path ? `${base}/view` : null,
     created_at: r.created_at,
+    summary_state: r.summary_state, summary: r.summary, summary_error: r.summary_error,
   };
 }
 
@@ -160,6 +180,7 @@ export async function addFile(projectId: string, file: File, note = "") {
     [id, projectId, name, note.trim().slice(0, 500), rel, viewRel, mime, file.size, text, now()],
   );
   touch(projectId);
+  summarizeSoon();
   return out(row(projectId, id)!);
 }
 
@@ -194,6 +215,7 @@ export async function addLink(projectId: string, rawUrl: string, note = "") {
     [id, projectId, name, note.trim().slice(0, 500), url.href, clip(text), now()],
   );
   touch(projectId);
+  summarizeSoon();
   return out(row(projectId, id)!);
 }
 
@@ -225,6 +247,22 @@ export function removeMaterial(projectId: string, id: string) {
   touch(projectId);
 }
 
+/**
+ * Files whose text was cut at the old limit are read again in full, and summarized again
+ * from the whole. Once, in the background, soon after Panel starts.
+ */
+export async function rereadCut() {
+  const rows = db.query<Row, [number]>("SELECT * FROM project_materials WHERE kind = 'file' AND path IS NOT NULL AND length(text) = ?").all(OLD_MAX_TEXT);
+  for (const r of rows) {
+    const abs = join(LIBRARY_DIR, r.path!);
+    if (!existsSync(abs)) continue;
+    const text = clip(await textOf(abs, extname(r.path!).toLowerCase(), r.mime ?? ""));
+    if (text.length <= r.text.length) continue;
+    db.run("UPDATE project_materials SET text = ?, summary_state = '', summary = '' WHERE id = ?", [text, r.id]);
+  }
+  if (rows.length) summarizeSoon();
+}
+
 /** A deleted project's files go with it (its rows go by cascade). */
 export function removeProjectFiles(projectId: string) {
   if (!/^[0-9a-f]{16}$/.test(projectId)) return;
@@ -241,6 +279,43 @@ export function materialFile(projectId: string, id: string, which: "file" | "vie
 
 // ---------- What Claude reads ----------
 
+const FIND_MAX = 8;
+const AROUND = 1500;
+
+/**
+ * Passages of a text around the places a phrase appears, merged where they overlap. Case and
+ * spacing don't matter; a phrase of several words also matches where all its words appear
+ * close together, in any order.
+ */
+export function findIn(text: string, phrase: string) {
+  const words = phrase.toLowerCase().split(/\s+/).filter((w) => w.length > 1).slice(0, 8);
+  if (!words.length) return [];
+  const low = text.toLowerCase();
+  const at: number[] = [];
+  const exact = new RegExp(words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+"), "g");
+  for (const m of low.matchAll(exact)) if (at.length < 200) at.push(m.index!);
+  if (!at.length && words.length > 1) {
+    // All the words within a few lines of each other.
+    for (const m of low.matchAll(new RegExp(words[0]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "g"))) {
+      const near = low.slice(Math.max(0, m.index! - 600), m.index! + 600);
+      if (words.every((w) => near.includes(w))) at.push(m.index!);
+      if (at.length >= 200) break;
+    }
+  }
+  const out: { at: number; text: string }[] = [];
+  for (const i of at) {
+    const from = Math.max(0, i - AROUND / 2), to = Math.min(text.length, i + AROUND);
+    const last = out.at(-1);
+    if (last && from <= last.at + last.text.length) {
+      last.text = text.slice(last.at, Math.max(to, last.at + last.text.length));
+      continue;
+    }
+    if (out.length >= FIND_MAX) break;
+    out.push({ at: from, text: text.slice(from, to) });
+  }
+  return out;
+}
+
 /** Short enough to hand over whole with the project; longer ones are read with get_project_material. */
 const INLINE = 2500;
 
@@ -255,14 +330,15 @@ export function materialsForSummary(projectId: string) {
     url: r.url ?? undefined,
     file: r.path ? join(LIBRARY_DIR, r.path) : undefined,
     text: r.text && r.text.length <= INLINE ? r.text : undefined,
-    starts: r.text.length > INLINE ? `${r.text.slice(0, 400).replace(/\s+/g, " ")}…` : undefined,
-    length: r.text.length > INLINE ? `${r.text.length} characters; read it with get_project_material` : undefined,
+    summary: r.text.length > INLINE && r.summary_state === "done" ? r.summary : undefined,
+    starts: r.text.length > INLINE && r.summary_state !== "done" ? `${r.text.slice(0, 400).replace(/\s+/g, " ")}…` : undefined,
+    length: r.text.length > INLINE ? `${r.text.length} characters; look things up in it with get_project_material and find, or read it page by page` : undefined,
     unreadable: !r.text && !isPicture(r) ? "No text could be read from this; the file is at the path given." : undefined,
   }));
 }
 
 /** One material in full, for get_project_material: its text (a page of it), or its picture. */
-export function readMaterial(projectId: string, id: string, offset = 0, limit = 60_000) {
+export function readMaterial(projectId: string, id: string, offset = 0, limit = 60_000, find?: string) {
   const r = row(projectId, id) ?? db.query<Row, [string, string]>("SELECT * FROM project_materials WHERE project_id = ? AND name = ? COLLATE NOCASE").get(projectId, id);
   if (!r) throw new Error(`No material “${id}” in this project. get_project lists them.`);
   const head = {
@@ -270,6 +346,19 @@ export function readMaterial(projectId: string, id: string, offset = 0, limit = 
     url: r.url ?? undefined, file: r.path ? join(LIBRARY_DIR, r.path) : undefined,
   };
   const picture = r.view_path ? join(LIBRARY_DIR, r.view_path) : null;
+  // Looking something up: the passages around each place the words appear, not the whole text.
+  if (find?.trim()) {
+    const hits = findIn(r.text, find);
+    return {
+      head: {
+        ...head,
+        characters: r.text.length,
+        found: hits.length ? `${hits.length} passage${hits.length === 1 ? "" : "s"} for “${find.trim()}”${hits.length >= FIND_MAX ? " (the first ones; be more specific for others)" : ""}. Each starts at the offset shown, to read on from there.` : `Nothing found for “${find.trim()}”. Try another word, a shorter one, or the word in the document's language.`,
+      },
+      text: hits.map((h) => `[offset ${h.at}]\n${h.text}`).join("\n\n---\n\n"),
+      picture: null,
+    };
+  }
   const slice = r.text.slice(offset, offset + limit);
   const more = offset + limit < r.text.length;
   return {
