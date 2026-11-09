@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { db, newId, now, reindex, type MediaRow, type RefRow } from "./db.ts";
 import { MEDIA_DIR, PORT } from "./config.ts";
 import { toLab, type Swatch } from "./palette.ts";
+import { fontLine, parseMeasured, type Measured } from "./sitefacts.ts";
+import { measuredWords } from "./db.ts";
 
 export const FACETS = ["color", "typography", "layout", "imagery", "motion", "mood", "components"] as const;
 export type Facet = (typeof FACETS)[number];
@@ -44,6 +46,8 @@ export interface Doc {
   media: MediaRow[];
   visuals: Visual[];
   video: { duration: number; cuts: number } | null;
+  /** A site as measured in the page: its real fonts, sizes, colors, radii. */
+  measured: Measured | null;
 }
 
 // ---------- Loading, with an in-memory facet index rebuilt only when the library changes ----------
@@ -100,7 +104,8 @@ function columnsOf(d: Doc): Record<Column, string> {
     general: words(p.summary, p.format, p.worth_taking, p.search_terms, d.type),
     mood: words(p.mood, p.style_references),
     color: words(p.color, d.palette.map((s) => s.name)),
-    typography: p.typography?.present === false ? "" : words(p.typography),
+    // A site's real fonts are findable even when the read saw no type worth noting.
+    typography: [p.typography?.present === false ? "" : words(p.typography), measuredWords(d.r.measured)].filter(Boolean).join(" "),
     layout: words(p.layout),
     imagery: words(p.imagery),
     motion: p.motion?.present === false ? "" : words(p.motion),
@@ -151,7 +156,7 @@ export function load() {
       labs: palette.map((s) => toLab(hexRgb(s.hex) ?? [0, 0, 0])),
       tags: (tagsBy.get(r.id) ?? []).map((t) => t.name),
       collections: (colsBy.get(r.id) ?? []).map((c) => c.name),
-      media: own, visuals, video,
+      media: own, visuals, video, measured: parseMeasured(r.measured),
     });
   }
 
@@ -344,7 +349,7 @@ export function facetView(d: Doc, facet: Facet) {
   switch (facet) {
     case "color":
       return { ...p.color, roles: undefined, palette: d.palette.map((s) => swatchLine(d, s)) };
-    case "typography": return p.typography;
+    case "typography": return d.measured ? { ...p.typography, likely_fonts: undefined, fonts_measured: d.measured.fonts.map(fontLine), sizes_px: d.measured.sizes } : p.typography;
     case "layout": return p.layout;
     case "imagery": return p.imagery;
     case "motion": return p.motion;
@@ -367,6 +372,7 @@ export function card(d: Doc, extra: Record<string, unknown> = {}, focus?: Facet[
     palette: d.palette.map((s) => swatchLine(d, s)),
     ...(focus?.length ? Object.fromEntries(focus.map((f) => [f, facetView(d, f)])) : {
       type_summary: p?.typography?.present ? p.typography.summary : undefined,
+      fonts_measured: d.measured?.fonts.slice(0, 3).map((f) => f.family),
       motion_summary: p?.motion?.present ? p.motion.summary : undefined,
     }),
     worth_taking: p?.worth_taking,
@@ -562,6 +568,7 @@ export function overview() {
       style_references: count(ps.flatMap((p) => p.style_references ?? [])),
       type_classification: count(ps.flatMap((p) => (p.typography?.present ? p.typography.classification ?? [] : []))),
       likely_fonts: count(ps.flatMap((p) => p.typography?.likely_fonts ?? [])),
+      fonts_measured_on_sites: count(docs.flatMap((d) => d.measured?.fonts.filter((f) => !f.family.startsWith("System ")).map((f) => f.family) ?? [])),
       motion_techniques: count(ps.flatMap((p) => (p.motion?.present ? p.motion.techniques ?? [] : []))),
       imagery_style: count(ps.flatMap((p) => p.imagery?.style ?? [])),
       components: count(ps.flatMap((p) => p.components ?? [])),
@@ -607,6 +614,10 @@ export function reference(id: string) {
       palette: d.palette.map((s) => ({ ...s, role: roleOf(d, s.hex) })),
       read: d.profile ? { model: d.model, ...d.profile, color: d.profile.color ? { ...d.profile.color, roles: undefined } : undefined } : null,
       video: d.video ?? undefined,
+      // Measured in the live page, so these are facts where the read's likely_fonts are guesses.
+      measured_in_page: d.measured
+        ? { fonts: d.measured.fonts.map(fontLine), text_sizes_px: d.measured.sizes, colors: d.measured.colors, corner_radii_px: d.measured.radii, smooth_corners: d.measured.smooth_corners || undefined, font_hosts: d.measured.font_hosts.length ? d.measured.font_hosts : undefined }
+        : undefined,
       files: d.media
         .filter((m) => m.status === "archived" && m.local_path)
         .map((m) => ({ type: m.type, path: abs(m.local_path!), width: m.width ?? undefined, height: m.height ?? undefined, seconds: m.duration ?? undefined })),

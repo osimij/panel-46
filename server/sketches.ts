@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST, LIBRARY_DIR, PORT } from "./config.ts";
 import { Cdp, chromePath, devtoolsUrl, evaluate, READY_SCRIPT, trackNetwork } from "./site.ts";
-import { ruleCheckScript, type RuleFinding } from "./rulecheck.ts";
+import { checkRules, type RuleFinding } from "./rulecheck.ts";
 
 const ID = /^[0-9a-f]{16}$/;
 /** The screen a sketch is looked at on: a laptop, at 1×. Claude sees screens of this size. */
@@ -379,8 +379,7 @@ async function shoot(url: string, device: Device, fileOf: (i: number) => string,
       net.stop();
     }
     // The designer's rules, where they can be measured: corners, the wordmark, fonts' letters…
-    const check = ruleCheckScript();
-    const rules = check ? await evaluate<RuleFinding[]>(s, check, 6000).catch(() => undefined) : undefined;
+    const rules = await checkRules(s);
     const height = await evaluate<number>(s, "Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)", 3000).catch(() => screen.height);
     const count = Math.min(maxScreens, Math.max(1, Math.ceil((height - 40) / screen.height)));
     const screens: string[] = [];

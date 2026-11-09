@@ -14,6 +14,8 @@ import { apply, createProject, deleteProject, follow as followProject, getProjec
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
 import { sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
+import { parseMeasured } from "./sitefacts.ts";
+import { startMeasuring } from "./measure.ts";
 import { backupStatus, mirror, setBackupDir, snapshot, startBackups } from "./backup.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 
@@ -107,6 +109,8 @@ function hydrate(refs: RefRow[], full = false) {
       tags: (tagsBy.get(r.id) ?? []).map((t) => t.name),
       collections: (colsBy.get(r.id) ?? []).map((c) => ({ id: c.id, name: c.name })),
       read: full ? readOf(r.id) : undefined,
+      // A site's fonts and values as measured in the page: only with the whole save, never in lists.
+      measured: full ? parseMeasured(r.measured) : undefined,
     };
   });
 }
@@ -947,6 +951,7 @@ void backfillAvatars();
 void upgradeSocialLinks();
 startReading();
 startBackups();
+startMeasuring();
 
 // Small copies of videos for the grid to play, made one at a time in the background: for
 // videos saved before this existed, and for each new one once its file is in.
@@ -983,5 +988,9 @@ Bun.serve({
       return bad("Something went wrong in the companion.", 500);
     }),
 });
+
+// Stopped or restarted (launchd sends SIGTERM): leave the normal way, so the headless Chrome
+// kept warm for sketches is closed with Panel instead of being left running.
+for (const signal of ["SIGINT", "SIGTERM"] as const) process.on(signal, () => process.exit(0));
 
 console.log(`Panel companion → http://${HOST}:${PORT}  (library: ${LIBRARY_DIR}, ${basename(MEDIA_DIR)}/)`);

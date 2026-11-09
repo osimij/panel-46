@@ -8,6 +8,7 @@
 // goes quiet. Rules that take an eye (does the paper look real?) stay with whoever is looking.
 
 import { designRules } from "./rules.ts";
+import { evaluate, glyphCoverage, TAJIK_LETTERS } from "./site.ts";
 
 export interface RuleFinding {
   /** The rule's name, as unugly.md calls it. */
@@ -40,7 +41,7 @@ function wanted(rules: string) {
 }
 
 /** Runs inside the page. Kept as one function so it can be sent to Chrome as text. */
-function measure(on: ReturnType<typeof wanted>): RuleFinding[] {
+function measure(on: ReturnType<typeof wanted>): { found: RuleFinding[]; type: { family: string; letters: string }[] } {
   const out: RuleFinding[] = [];
   const all = [...document.querySelectorAll<HTMLElement>("body *")].filter((el) => !el.closest("[data-panel-kit]")).slice(0, 4000);
   const styles = new Map<HTMLElement, CSSStyleDeclaration>();
@@ -197,55 +198,61 @@ function measure(on: ReturnType<typeof wanted>): RuleFinding[] {
     if (boxes.length >= 2) out.push({ rule: "Containers with borders", level: "check", what: `${boxes.length} boxes have a clearly visible border. Fine only when the border is low-contrast and feels light.`, where: some(boxes) });
   }
 
-  // ---- Cyrillic and Tajik: does each font really have the letters? ----
+  // ---- Cyrillic and Tajik: which fonts set Cyrillic text, and with which letters ----
+  // Whether each font really has those letters is asked of Chrome afterwards (checkRules).
+  const type: { family: string; letters: string }[] = [];
   if (on.cyrillic || on.tajik) {
-    const TAJIK = "ҒғӢӣҚқӮӯҲҳҶҷ";
     const byFamily = new Map<string, Set<string>>();
     for (const { el, text } of texts) {
-      const cyr = text.match(/[Ѐ-ԯ]/g);
+      const cyr = text.match(/[\u0400-\u052F]/g);
       if (!cyr) continue;
       const f = family(el);
       const set = byFamily.get(f) ?? byFamily.set(f, new Set()).get(f)!;
-      for (const ch of cyr) if (set.size < 400) set.add(ch);
+      for (const ch of cyr) if (set.size < 60) set.add(ch);
     }
-    if (byFamily.size) {
-      const ctx = document.createElement("canvas").getContext("2d")!;
-      const width = (ch: string, fam: string, fallback: string) => {
-        ctx.font = `400 48px "${fam}", ${fallback}`;
-        return ctx.measureText(ch).width;
-      };
-      /** A letter the font doesn't have is drawn by the fallback, and two different fallbacks give two widths. */
-      const lacks = (ch: string, fam: string) => Math.abs(width(ch, fam, "monospace") - width(ch, fam, "serif")) > 0.01;
-      const generic = /^(system-ui|-apple-system|blinkmacsystemfont|sans-serif|serif|monospace|ui-sans-serif|ui-serif|ui-monospace|ui-rounded|cursive|fantasy|inherit|)$/i;
-      for (const [fam, used] of byFamily) {
-        if (generic.test(fam)) continue;
-        // Not loaded at all (every letter falls back): that's a page error, reported with the others.
-        if (lacks("a", fam) && lacks("n", fam)) {
-          out.push({ rule: "Cyrillic type", level: "breaks", what: `The font “${fam}” didn't load, so its text is shown in a fallback font.` });
-          continue;
-        }
-        const missing = [...used].filter((ch) => lacks(ch, fam));
-        const missingTajik = missing.filter((ch) => TAJIK.includes(ch));
-        const missingOther = missing.filter((ch) => !TAJIK.includes(ch));
-        if (on.cyrillic && missingOther.length) out.push({ rule: "Cyrillic type", level: "breaks", what: `“${fam}” has no ${missingOther.slice(0, 12).join(" ")}: those letters are drawn by another font. Use a font with real Cyrillic.` });
-        if (on.tajik && missingTajik.length) out.push({ rule: "Cyrillic type", level: "breaks", what: `“${fam}” has no Tajik ${missingTajik.join(" ")}: they are drawn by another font and won't match. Use a font that has them.` });
-        if (on.tajik && !missingTajik.length) {
-          const none = [...TAJIK].filter((ch) => !used.has(ch) && lacks(ch, fam));
-          if (none.length) out.push({ rule: "Cyrillic type", level: "check", what: `“${fam}” has no Tajik ${none.join(" ")}. This page doesn't use them, but Tajik text in this font would break.` });
-        }
-      }
-    }
+    const generic = /^(system-ui|-apple-system|blinkmacsystemfont|sans-serif|serif|monospace|ui-sans-serif|ui-serif|ui-monospace|ui-rounded|cursive|fantasy|inherit|)$/i;
+    for (const [fam, used] of byFamily) if (!generic.test(fam)) type.push({ family: fam, letters: [...used].join("") });
   }
-  return out;
+  return { found: out, type };
 }
 
-/** The checks as text to run in a page, for the rules as they are right now. Null when there's nothing to check. */
-export function ruleCheckScript(): string | null {
+/**
+ * Check the page that's open against the rules as they are right now. Never throws: a
+ * check that can't run just finds nothing.
+ */
+export async function checkRules(s: <T = unknown>(m: string, p?: object) => Promise<T>): Promise<RuleFinding[] | undefined> {
   const rules = designRules();
-  if (!rules) return null;
+  if (!rules) return undefined;
   const on = wanted(rules);
-  if (!Object.values(on).some(Boolean)) return null;
-  return `(${measure.toString()})(${JSON.stringify(on)})`;
+  if (!Object.values(on).some(Boolean)) return undefined;
+  try {
+    const { found, type } = await evaluate<ReturnType<typeof measure>>(s, `(${measure.toString()})(${JSON.stringify(on)})`, 6000);
+    if (!type.length) return found;
+    // Ask Chrome which font really draws each letter: the ones on the page, the Tajik ones, and a Latin pair.
+    const lacks = await glyphCoverage(s, type.map((t) => t.family), `an${type.map((t) => t.letters).join("")}${TAJIK_LETTERS}`).catch(() => null);
+    if (!lacks) return found;
+    for (const { family: fam, letters } of type) {
+      const missing = lacks.get(fam);
+      if (!missing) continue;
+      if (missing.includes("a") && missing.includes("n")) {
+        found.push({ rule: "Cyrillic type", level: "breaks", what: `The font “${fam}” didn't load, so its text is shown in a fallback font.` });
+        continue;
+      }
+      const used = [...letters];
+      const tajik = (ch: string) => TAJIK_LETTERS.includes(ch);
+      const gone = used.filter((ch) => missing.includes(ch));
+      const goneOther = gone.filter((ch) => !tajik(ch)), goneTajik = gone.filter(tajik);
+      if (on.cyrillic && goneOther.length) found.push({ rule: "Cyrillic type", level: "breaks", what: `“${fam}” has no ${goneOther.slice(0, 12).join(" ")}: those letters are drawn by another font. Use a font with real Cyrillic.` });
+      if (on.tajik && goneTajik.length) found.push({ rule: "Cyrillic type", level: "breaks", what: `“${fam}” has no Tajik ${goneTajik.join(" ")}: they are drawn by another font and won't match. Use a font that has them.` });
+      if (on.tajik && !goneTajik.length) {
+        const none = [...TAJIK_LETTERS].filter((ch) => !used.includes(ch) && missing.includes(ch));
+        if (none.length) found.push({ rule: "Cyrillic type", level: "check", what: `“${fam}” has no Tajik ${none.join(" ")}. This page doesn't use them, but Tajik text in this font would break.` });
+      }
+    }
+    return found;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Findings as Claude reads them: what breaks a rule first. */

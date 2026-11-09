@@ -27,6 +27,8 @@ export interface RefRow {
   links: string | null;
   /** What each of those links showed when read: JSON { [url]: LinkCard }. */
   link_profiles: string | null;
+  /** A site as measured in the page: its fonts, sizes, colors, radii (sitefacts.ts), as JSON. '{}' when there was nothing to measure. */
+  measured: string | null;
   status: RefStatus;
   status_detail: string | null;
   preview_path: string | null;
@@ -138,6 +140,7 @@ if (!refCols.includes("site")) db.exec("ALTER TABLE refs ADD COLUMN site INTEGER
 if (!refCols.includes("person")) db.exec("ALTER TABLE refs ADD COLUMN person INTEGER NOT NULL DEFAULT 0");
 if (!refCols.includes("links")) db.exec("ALTER TABLE refs ADD COLUMN links TEXT");
 if (!refCols.includes("link_profiles")) db.exec("ALTER TABLE refs ADD COLUMN link_profiles TEXT");
+if (!refCols.includes("measured")) db.exec("ALTER TABLE refs ADD COLUMN measured TEXT");
 const mediaCols = db.query<{ name: string }, []>("PRAGMA table_info(media)").all().map((c) => c.name);
 if (!mediaCols.includes("position")) db.exec("ALTER TABLE media ADD COLUMN position INTEGER");
 if (!mediaCols.includes("loop_path")) db.exec("ALTER TABLE media ADD COLUMN loop_path TEXT");
@@ -276,11 +279,27 @@ if (rebuildingSearch) {
   )`);
 }
 
-/** The words a design read adds to search: mood, type, colors by name, what's worth taking. */
+/**
+ * The words measuring a site adds to search: its fonts' names, and "cyrillic" / "tajik"
+ * when one of its own fonts (not the system's) has those letters.
+ */
+export function measuredWords(json: string | null | undefined): string {
+  if (!json) return "";
+  try {
+    const fonts = ((JSON.parse(json) as { fonts?: { family: string; cyrillic?: boolean; tajik?: boolean }[] }).fonts ?? []).filter((f) => f && typeof f.family === "string");
+    const own = fonts.filter((f) => !f.family.startsWith("System "));
+    return [...fonts.map((f) => f.family), own.some((f) => f.cyrillic) ? "cyrillic" : "", own.some((f) => f.tajik) ? "tajik" : ""].filter(Boolean).join(" ");
+  } catch {
+    return "";
+  }
+}
+
+/** The words a design read adds to search: mood, type, colors by name, what's worth taking. Plus a site's measured fonts. */
 export function designText(refId: string): string {
+  const measured = measuredWords(db.query<{ measured: string | null }, [string]>("SELECT measured FROM refs WHERE id = ?").get(refId)?.measured);
   const row = db.query<{ profile: string | null; palette: string | null }, [string]>("SELECT profile, palette FROM reads WHERE ref_id = ?").get(refId);
-  if (!row?.profile) return "";
-  const words: string[] = [];
+  if (!row?.profile) return measured;
+  const words: string[] = measured ? [measured] : [];
   const walk = (v: unknown) => {
     if (typeof v === "string") words.push(v);
     else if (Array.isArray(v)) v.forEach(walk);

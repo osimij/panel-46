@@ -54,6 +54,8 @@ export interface Ref {
   collections: { id: string; name: string }[];
   /** The AI's design read. Only on a single reference (api.ref), not in lists. */
   read?: DesignRead | null;
+  /** A site's fonts and values, measured in the page. Only with the whole save. */
+  measured?: Measured | null;
 }
 
 export interface Swatch {
@@ -204,6 +206,16 @@ export interface BackupStatus {
   mirror_last: string | null;
   mirror_error: string | null;
   mirroring: boolean;
+}
+
+/** A website as measured in the page: the fonts it really uses, its sizes, colors and corner radii. */
+export interface Measured {
+  fonts: { family: string; role: "headings" | "text" | "both"; weights: number[]; share: number; cyrillic: boolean; tajik: boolean }[];
+  sizes: number[];
+  colors: { backgrounds: string[]; text: string[]; accents: string[] };
+  radii: number[];
+  smooth_corners: boolean;
+  font_hosts: string[];
 }
 
 function filterParams(f: Filters) {
@@ -582,6 +594,8 @@ export type ChatEvent =
   | { t: "tool"; id: string; name: string }
   | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
   | { t: "tool_result"; id: string; refs: string[]; cards: RefCard[]; total?: number; error?: string }
+  // A sketch's page as written so far, while FRIDAY is still writing it.
+  | { t: "draft"; id: string; html: string }
   | { t: "text"; delta: string }
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string }

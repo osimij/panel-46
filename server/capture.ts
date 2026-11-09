@@ -4,6 +4,7 @@ import {
   abs, describeLocal, downloadTo, fetchWithTimeout, makeThumb, mediaTypeFor, probe, run, ytDlp, type YtInfo,
 } from "./media.ts";
 import { shootSite, type Viewport } from "./site.ts";
+import { saveMeasured } from "./sitefacts.ts";
 import { expandShortLink, fetchPost, forgetPin, parsePinterestBoard, parseSocial, readBoard, SITE_NAME, type Post, type PostItem, type SocialKind } from "./social.ts";
 
 // ---------- URL parsing ----------
@@ -832,7 +833,9 @@ async function captureSite(refId: string, url: string): Promise<boolean> {
   }
   db.run("UPDATE refs SET site = 1 WHERE id = ?", [refId]);
   retag(refId); // now a site: any tags it got while saving belong to Sites
-  const { shots, info, errors } = result;
+  const { shots, info, facts, errors } = result;
+  // Its fonts, sizes, colors and radii, as measured in the page (sitefacts.ts).
+  saveMeasured(refId, facts);
   if (info) {
     // The page as Chrome saw it fills anything the plain fetch couldn't read.
     db.run(

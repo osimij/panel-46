@@ -8,6 +8,7 @@
 //   sites       first screen, the whole page folded into columns, second screen, phone
 // Colors are measured from those pictures (palette.ts), not guessed.
 
+import { fontLine, parseMeasured } from "./sitefacts.ts";
 import Anthropic from "@anthropic-ai/sdk";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -538,6 +539,7 @@ function context(r: RefRow, signals: Signals, palette: Swatch[]) {
     .query<{ name: string }, [string]>("SELECT t.name FROM tags t JOIN ref_tags rt ON rt.tag_id = t.id WHERE rt.ref_id = ?")
     .all(r.id)
     .map((t) => t.name);
+  const measured = parseMeasured(r.measured);
   const source = r.site ? "a website (full-page screenshots)" : { x: "an X post", instagram: "an Instagram post", pinterest: "a Pinterest pin", youtube: "a YouTube video", web: "a web page", upload: "a file they added" }[r.kind as string] ?? r.kind;
   const lines = [
     `Saved from: ${source}${r.source_url ? ` (${r.source_url})` : ""}`,
@@ -550,6 +552,8 @@ function context(r: RefRow, signals: Signals, palette: Swatch[]) {
     signals.video
       ? `Video: ${signals.video.duration}s long; ${signals.video.cuts} hard cuts in ${signals.video.seconds_checked}s (${(signals.video.cuts / Math.max(1, signals.video.seconds_checked / 60)).toFixed(1)} per minute)`
       : "",
+    measured ? `Fonts the page really uses (measured in the browser, so name these in likely_fonts rather than guessing): ${measured.fonts.map(fontLine).join("; ")}` : "",
+    measured?.radii.length ? `Corner radii in its CSS: ${measured.radii.map((x) => `${x}px`).join(", ")}${measured.smooth_corners ? " (with corner smoothing)" : ""}` : "",
     `Pictures: ${signals.visuals.map((v, i) => `${i + 1}. ${v.label}`).join("; ")}`,
     tagContext(r),
   ];

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type DesignRead, type Profile, type ReadingStatus, type Ref, type Swatch } from "./api.ts";
+import { api, type DesignRead, type Measured, type Profile, type ReadingStatus, type Ref, type Swatch } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
 const cents = (usd: number) => (usd < 0.01 ? "<1¢" : usd < 1 ? `${Math.round(usd * 100)}¢` : `$${usd.toFixed(2)}`);
@@ -73,6 +73,7 @@ export function DesignReadField({ r, reload }: { r: Ref; reload: () => Promise<v
       )}
 
       {p && <ProfileView p={p} read={read!} />}
+      {r.measured && <MeasuredView m={r.measured} />}
 
       {canRead(status) && !waiting && (
         <div className="read-actions">
@@ -111,6 +112,45 @@ export function DesignReadField({ r, reload }: { r: Ref; reload: () => Promise<v
         </div>
       )}
     </section>
+  );
+}
+
+/** A site as measured in the page: facts, where the read's fonts are guesses from pictures. */
+function MeasuredView({ m }: { m: Measured }) {
+  const letters = (f: Measured["fonts"][number]) => (f.tajik ? "Cyrillic and Tajik" : f.cyrillic ? "Cyrillic, no Tajik letters" : "Latin only");
+  const weights = (w: number[]) => (w.length > 1 ? `${w[0]}–${w.at(-1)}` : String(w[0] ?? ""));
+  return (
+    <div className="read-measured">
+      <div className="read-take-label">Measured in the page</div>
+      <dl className="read-rows">
+        <div>
+          <dt>Fonts</dt>
+          <dd>
+            {m.fonts.map((f) => (
+              <span key={f.family} className="measured-font">
+                {f.family}
+                <span className="read-bits">{[f.role === "both" ? "headings and text" : f.role, weights(f.weights), letters(f)].filter(Boolean).join(" · ")}</span>
+              </span>
+            ))}
+          </dd>
+        </div>
+        {m.sizes.length > 0 && (
+          <div>
+            <dt>Sizes</dt>
+            <dd>{[...m.sizes].sort((a, b) => b - a).join(", ")} px</dd>
+          </div>
+        )}
+        {m.radii.length > 0 && (
+          <div>
+            <dt>Corners</dt>
+            <dd>
+              {m.radii.join(", ")} px
+              {m.smooth_corners && <span className="read-bits">with corner smoothing</span>}
+            </dd>
+          </div>
+        )}
+      </dl>
+    </div>
   );
 }
 

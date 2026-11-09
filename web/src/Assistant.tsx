@@ -3,7 +3,7 @@
 // you browse, knows what you have open, and keeps every conversation.
 
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
 import { api, chatApi, displayTitle, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
@@ -36,6 +36,21 @@ const store = {
 };
 
 const REF_IN_TEXT = /\[\[([0-9a-f]{16})\]\]/g;
+
+// Sketch pages while FRIDAY is still writing them, by tool call. Kept outside React's
+// state: a draft arrives a few times a second, and only the small preview under that step
+// should redraw, not the conversation.
+const drafts = new Map<string, string>();
+const draftWatchers = new Set<() => void>();
+function putDraft(id: string, html: string | null) {
+  if (html) drafts.set(id, html);
+  else if (!drafts.delete(id)) return;
+  draftWatchers.forEach((f) => f());
+}
+const watchDrafts = (f: () => void) => {
+  draftWatchers.add(f);
+  return () => void draftWatchers.delete(f);
+};
 
 /** A message plus the key it was drawn with, so it isn't redrawn when its real id arrives. */
 type Msg = ChatMessage & { key?: string };
@@ -176,10 +191,12 @@ export function Assistant(props: {
           after,
           (e) => {
             if (e.t === "idle") return;
+            if (e.t === "draft") return putDraft(e.id, e.html);
             if (e.t === "title") return setTitle(e.title);
             if (e.t === "start") runId.current = e.message.id;
             if (e.t === "tool") toolNames.current.set(e.id, e.name);
             if (e.t === "tool_result") {
+              putDraft(e.id, null);
               addCards(e.cards);
               if (toolNames.current.get(e.id) === "save_to_collection") changed.current();
             }
@@ -995,7 +1012,61 @@ function Step({ part, ctx, label }: { part: ChatPart; ctx: Ctx; label?: string }
         {ids.length > 0 && (part.type === "tool" && (part.done || part.name === "get_reference")) && (
           <Gallery ids={ids.slice(0, 12)} ctx={ctx} small />
         )}
+        {part.type === "tool" && !done && (part.name === "make_sketch" || part.name === "edit_sketch") && <LiveDraft id={part.id} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * A sketch taking shape while FRIDAY writes it: the page so far, small, under its step.
+ * Two frames take turns, so each new draft is swapped in once it has loaded and the
+ * picture never blinks. Scripts don't run here; the finished sketch on the canvas is the real one.
+ */
+function LiveDraft({ id }: { id: string }) {
+  const html = useSyncExternalStore(watchDrafts, () => drafts.get(id));
+  const wrap = useRef<HTMLDivElement>(null);
+  const turn = useRef({ front: 0, busy: false, next: null as string | null });
+  const show = useCallback((doc: string) => {
+    const t = turn.current;
+    const frames = wrap.current?.querySelectorAll("iframe");
+    if (!frames || frames.length < 2) return;
+    if (t.busy) {
+      t.next = doc;
+      return;
+    }
+    t.busy = true;
+    const back = frames[1 - t.front]!;
+    back.onload = () => {
+      back.onload = null;
+      frames[t.front]!.classList.remove("front");
+      back.classList.add("front");
+      t.front = 1 - t.front;
+      t.busy = false;
+      const next = t.next;
+      t.next = null;
+      if (next) show(next);
+    };
+    back.srcdoc = doc;
+  }, []);
+  useEffect(() => {
+    if (html) show(html);
+  }, [html, show]);
+  // The page is laid out at laptop width and scaled down to fit the panel.
+  useLayoutEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const fit = () => el.style.setProperty("--s", String(el.clientWidth / 1440));
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [!!html]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!html) return null;
+  return (
+    <div className="draft" ref={wrap} aria-hidden>
+      <iframe sandbox="" tabIndex={-1} title="" />
+      <iframe sandbox="" tabIndex={-1} title="" />
     </div>
   );
 }

@@ -10,6 +10,7 @@ import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
 import { describeSelection, findProject } from "./projects.ts";
 import { designRules } from "./rules.ts";
+import { partialHtml } from "./partial.ts";
 import { claudeBinary, claudeToken, settings as readSettings, type Effort } from "./read.ts";
 
 db.exec(`
@@ -71,6 +72,8 @@ export type ChatEvent =
   | { t: "tool"; id: string; name: string }
   | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
   | { t: "tool_result"; id: string; refs: string[]; cards: Card[]; total?: number; error?: string }
+  // A sketch's page as written so far, while Claude is still writing it: the app shows it taking shape.
+  | { t: "draft"; id: string; html: string }
   | { t: "text"; delta: string }
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string };
@@ -359,7 +362,11 @@ export async function send(chatId: string, text: string, context: SendContext = 
     if (list.length) said.push(`The designer mentions ${list.join(", ")}: each [[id]] in their message is that save; look at it with get_reference when it matters.`);
   }
   if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
-  void drive(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  // A small, pointed job ("make this button darker") doesn't need minutes of thought: it
+  // runs at low effort whatever the setting, so the studio answers in seconds.
+  const pointed = !!context.point && context.point.mode !== "alternates";
+  const effort: Effort = pointed ? "low" : chatSettings.effort();
+  void drive(chatId, run, chat.session_id, prompt, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
   // A short name for a new conversation, made alongside the answer.
   if (!chat.title) void nameChat(chatId, readable(clean), run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
@@ -408,7 +415,7 @@ function finish(chatId: string, run: Run, status: "done" | "stopped" | "error", 
   runs.delete(chatId);
 }
 
-async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string) {
+async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string, effort: Effort = chatSettings.effort()) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
@@ -417,7 +424,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
   const args = [
     bin, "-p", prompt,
-    "--model", chatSettings.model(), "--effort", chatSettings.effort(),
+    "--model", chatSettings.model(), "--effort", effort,
     "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--system-prompt", systemPrompt(),
     "--tools", "", "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__panel",
@@ -426,7 +433,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   ];
 
   // Per content block: what kind it is, and a tool's input as it's written.
-  const blocks = new Map<number, { kind: string; toolId?: string; json?: string; started?: number }>();
+  const blocks = new Map<number, { kind: string; toolId?: string; json?: string; started?: number; sketch?: boolean; drafted?: number; draft?: Extract<ChatEvent, { t: "draft" }> }>();
   const lastPart = () => run.parts.at(-1);
   let resultError: string | null = null;
   let gotResult = false;
@@ -449,7 +456,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
           if (!(last?.type === "thinking" && !last.done)) run.parts.push({ type: "thinking" });
           emit(chatId, run, { t: "thinking", on: true });
         } else if (b.type === "tool_use") {
-          blocks.set(e.index, { kind: "tool", toolId: b.id, json: "" });
+          blocks.set(e.index, { kind: "tool", toolId: b.id, json: "", sketch: /(make|edit)_sketch$/.test(String(b.name)) });
           run.parts.push({ type: "tool", id: b.id, name: String(b.name).replace(/^mcp__panel__/, "") });
           emit(chatId, run, { t: "tool", id: b.id, name: String(b.name).replace(/^mcp__panel__/, "") });
         } else blocks.set(e.index, { kind: b.type });
@@ -466,6 +473,17 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
           }
         } else if (e.delta.type === "input_json_delta" && b?.kind === "tool") {
           b.json += e.delta.partial_json ?? "";
+          // A sketch being written: show the page as far as it has come, a few times a second.
+          if (b.sketch && Date.now() - (b.drafted ?? 0) > 400) {
+            b.drafted = Date.now();
+            const html = partialHtml(b.json!);
+            if (html) {
+              // Only the newest draft is worth keeping for a window that joins late.
+              if (b.draft) b.draft.html = "";
+              b.draft = { t: "draft", id: b.toolId!, html };
+              emit(chatId, run, b.draft);
+            }
+          }
           const input = partialInput(b.json!);
           if (Object.keys(input).length) {
             const part = run.parts.find((p) => p.type === "tool" && p.id === b.toolId);
@@ -534,7 +552,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   // line stays as the fallback (chat_engine = "cli", or when the SDK can't start).
   let cli = getSetting("chat_engine") === "cli";
   if (!cli) {
-    ({ code, stderr } = await viaSdk(run, bin, token, prompt, sessionId, mcpUrl, handle));
+    ({ code, stderr } = await viaSdk(run, bin, token, prompt, sessionId, mcpUrl, handle, effort));
     if (stderr && !gotResult && !run.parts.length && !run.stopped) {
       console.error("Chat: the Agent SDK couldn't answer, using the command line:", stderr);
       cli = true;
@@ -575,7 +593,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   const lost = (m: string) => /session|conversation/i.test(m) && /not found|no conversation|invalid|does not exist/i.test(m);
   if (sessionId && run.parts.length === 0 && (lost(stderr) || lost(resultError ?? ""))) {
     db.run("UPDATE chats SET session_id = NULL WHERE id = ?", [chatId]);
-    return drive(chatId, run, null, prompt);
+    return drive(chatId, run, null, prompt, effort);
   }
   if (resultError) return finish(chatId, run, "error", friendly(resultError));
   if (!gotResult) return finish(chatId, run, "error", friendly(stderr.split("\n").pop() || `Claude Code stopped (code ${code}).`));
@@ -658,7 +676,7 @@ export function setChatSettings(patch: { model?: string; effort?: string }) {
  * and every tool call checked here before it runs. Messages come out in the same shapes as
  * stream-json, so they go to the same handler.
  */
-async function viaSdk(run: Run, bin: string, token: string | null, prompt: string, sessionId: string | null, mcpUrl: string, handle: (d: unknown) => void) {
+async function viaSdk(run: Run, bin: string, token: string | null, prompt: string, sessionId: string | null, mcpUrl: string, handle: (d: unknown) => void, effort: Effort) {
   const abort = new AbortController();
   const q = query({
     prompt,
@@ -667,7 +685,7 @@ async function viaSdk(run: Run, bin: string, token: string | null, prompt: strin
       cwd: CHAT_DIR,
       env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
       model: chatSettings.model(),
-      effort: chatSettings.effort(),
+      effort,
       systemPrompt: systemPrompt(),
       tools: [],
       mcpServers: { panel: { type: "http", url: mcpUrl } },

@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { abs, run } from "./media.ts";
+import { FACTS_SCRIPT, type Measured } from "./sitefacts.ts";
 
 /**
  * Full-page screenshots of a website, taken by the Chrome already on this Mac
@@ -65,7 +66,7 @@ export function shootSite(url: string, dirRel: string) {
   return job;
 }
 
-async function shootAll(url: string, dirRel: string): Promise<{ shots: Shot[]; info: SiteInfo | null; errors: string[] }> {
+async function shootAll(url: string, dirRel: string): Promise<{ shots: Shot[]; info: SiteInfo | null; facts: Omit<Measured, "at"> | null; errors: string[] }> {
   const exe = chromePath();
   if (!exe) throw new Error("Taking screenshots needs Google Chrome (or Chromium, Brave, Edge) in Applications.");
   mkdirSync(abs(dirRel), { recursive: true });
@@ -85,16 +86,18 @@ async function shootAll(url: string, dirRel: string): Promise<{ shots: Shot[]; i
     const shots: Shot[] = [];
     const errors: string[] = [];
     let info: SiteInfo | null = null;
+    let facts: Omit<Measured, "at"> | null = null;
     for (const vp of VIEWPORTS) {
       try {
         const r = await shootOne(cdp, url, vp, `${dirRel}/${vp.name}.jpg`);
         shots.push(r.shot);
         info ??= r.info;
+        facts ??= r.facts;
       } catch (e) {
         errors.push(`${vp.name}: ${(e as Error).message}`);
       }
     }
-    return { shots, info, errors };
+    return { shots, info, facts, errors };
   } finally {
     cdp.close();
     proc.kill();
@@ -141,6 +144,8 @@ async function shootOne(cdp: Cdp, url: string, vp: Viewport, rel: string) {
     // Walk down the page so lazy images and scroll animations show, then go back up.
     await evaluate(s, SETTLE_SCRIPT, 45_000).catch(() => {});
     const info = await evaluate<SiteInfo>(s, INFO_SCRIPT, 5000).catch(() => null);
+    // While the page is open at desktop size: the fonts, sizes, colors and radii it really uses.
+    const facts = vp.mobile ? null : await measureFacts(s).catch(() => null);
 
     const m = await s<{ cssContentSize: { width: number; height: number } }>("Page.getLayoutMetrics");
     const full = Math.ceil(m.cssContentSize.height);
@@ -174,6 +179,7 @@ async function shootOne(cdp: Cdp, url: string, vp: Viewport, rel: string) {
     return {
       shot: { viewport: vp, rel, width: vp.width * vp.scale, height: height * vp.scale, cut: full > vp.maxHeight },
       info: info ? { ...info, finalUrl: info.finalUrl || url } : null,
+      facts,
     };
   } finally {
     await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
@@ -189,6 +195,90 @@ export async function evaluate<T>(s: (m: string, p?: object) => Promise<unknown>
   ])) as { result?: { value?: T }; exceptionDetails?: unknown };
   if (r.exceptionDetails) throw new Error("Page script failed");
   return r.result?.value as T;
+}
+
+/** The letters Tajik adds to Russian's alphabet: where most fonts' Cyrillic falls short. */
+export const TAJIK_LETTERS = "ҒғӢӣҚқӮӯҲҳҶҷ";
+
+/**
+ * Which of these letters each font really has, asked of Chrome itself: every letter is
+ * set in the font alone, and Chrome says which font it ended up drawing it with. A letter
+ * drawn by any other font is one the font doesn't have. (Measuring widths can't tell: for
+ * rare letters every fallback ends at the same system font.) Returns, per font, the
+ * letters it's missing. `families` are CSS names, as the page uses them.
+ */
+export async function glyphCoverage(s: <T = unknown>(m: string, p?: object) => Promise<T>, families: string[], letters: string): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  const fams = [...new Set(families)].filter(Boolean).slice(0, 8);
+  const chars = [...new Set(letters)].slice(0, 80);
+  if (!fams.length || !chars.length) return out;
+  await evaluate(
+    s,
+    `(async () => {
+      document.getElementById("__panel_glyphs")?.remove();
+      const box = document.createElement("div");
+      box.id = "__panel_glyphs";
+      box.setAttribute("aria-hidden", "true");
+      box.style.cssText = "position:absolute;left:-99999px;top:0;font-size:32px;line-height:1;white-space:nowrap;visibility:hidden";
+      for (const fam of ${JSON.stringify(fams)}) for (const ch of ${JSON.stringify(chars)}) {
+        const span = document.createElement("span");
+        span.style.fontFamily = '"' + fam.replace(/"/g, "") + '"';
+        span.textContent = ch;
+        box.append(span);
+      }
+      document.body.append(box);
+      void box.offsetWidth;
+      // Setting the letters may fetch a font's Cyrillic part, which only loads when asked for.
+      await Promise.race([document.fonts.ready, new Promise((r) => setTimeout(r, 4000))]);
+      void box.offsetWidth;
+      return true;
+    })()`,
+    8000,
+  );
+  try {
+    await s("DOM.enable");
+    await s("CSS.enable");
+    const { root } = await s<{ root: { nodeId: number } }>("DOM.getDocument", { depth: 0 });
+    const { nodeIds } = await s<{ nodeIds: number[] }>("DOM.querySelectorAll", { nodeId: root.nodeId, selector: "#__panel_glyphs span" });
+    const norm = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "");
+    let i = 0;
+    for (const fam of fams) {
+      const missing: string[] = [];
+      for (const ch of chars) {
+        const nodeId = nodeIds[i++];
+        if (!nodeId) continue;
+        const { fonts } = await s<{ fonts: { familyName: string; isCustomFont: boolean; glyphCount: number }[] }>("CSS.getPlatformFontsForNode", { nodeId }).catch(() => ({ fonts: [] }));
+        const used = fonts.filter((f) => f.glyphCount > 0);
+        // Drawn by a font the page loaded (it asked only for this one), or by the system font of that name.
+        // (The names must match exactly: "Times" drawing a letter for "Times Now" is a fallback.)
+        const own = used.length > 0 && used.every((f) => f.isCustomFont || norm(f.familyName) === norm(fam));
+        if (!own) missing.push(ch);
+      }
+      out.set(fam, missing);
+    }
+  } finally {
+    await evaluate(s, `document.getElementById("__panel_glyphs")?.remove()`, 2000).catch(() => {});
+  }
+  return out;
+}
+
+/** A site's fonts, sizes, colors and radii, measured in the open page (see sitefacts.ts). Null when there's nothing to measure. */
+export async function measureFacts(s: <T = unknown>(m: string, p?: object) => Promise<T>): Promise<Omit<Measured, "at"> | null> {
+  const facts = await evaluate<Omit<Measured, "at">>(s, FACTS_SCRIPT, 10_000).catch(() => null);
+  if (!facts?.fonts?.length) return null;
+  const own = facts.fonts.filter((f) => f.css && !f.family.startsWith("System "));
+  const lacks = await glyphCoverage(s, own.map((f) => f.css!), `Жя${TAJIK_LETTERS}`).catch(() => new Map<string, string[]>());
+  for (const f of facts.fonts) {
+    const missing = f.css ? lacks.get(f.css) : undefined;
+    // A system font is taken to have everything; one we couldn't ask about is taken to have nothing.
+    if (f.family.startsWith("System ")) f.cyrillic = f.tajik = true;
+    else {
+      f.cyrillic = !!missing && !missing.includes("Ж") && !missing.includes("я");
+      f.tajik = !!missing && ![...TAJIK_LETTERS].some((ch) => missing.includes(ch));
+    }
+    delete f.css;
+  }
+  return facts;
 }
 
 /**

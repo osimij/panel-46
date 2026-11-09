@@ -1152,6 +1152,9 @@ a.cover-btn { text-decoration: none; }
 .read-rows dt { color: var(--muted); }
 .read-rows dd { margin: 0; line-height: 1.45; min-width: 0; }
 .read-bits { display: block; margin-top: 3px; color: var(--muted); font-size: 12px; }
+.read-measured { display: flex; flex-direction: column; gap: 2px; padding-top: 10px; border-top: 1px solid var(--line); }
+.measured-font { display: block; }
+.measured-font + .measured-font { margin-top: 8px; }
 
 .read-take { border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); padding: 10px 12px; }
 .read-take-label { color: var(--muted); font-size: 12px; margin-bottom: 4px; }

@@ -9,6 +9,7 @@ A designer's private, local-first library of design references, with project can
   `PANEL_PORT=4747 PANEL_LIBRARY_DIR=.copy/lib PANEL_DIST=.copy/dist bun server/index.ts`
 - After changing `web/`, rebuild only the copy's UI: `scripts/copy.sh --build`. **Never run `bun run build` or `bun run start` to test**: they overwrite `dist/`, which the real app serves, so the real app would get new UI against old server code.
 - Reading the real database is fine with `sqlite3 -readonly`. Never write to it.
+- Claude Code's own `panel` MCP server (`bun server/mcp.ts`) runs **this folder's code on the real library**. So a change to the database must only ever add (a new table, a new column that may be empty): the real app, still on the old code, has to keep working beside it. Never rename, drop or rewrite in place.
 - Restart the real app (`scripts/autostart.sh restart`) only after the designer says so. Before restarting, check that no FRIDAY answer or build is running.
 - Commit only when asked.
 

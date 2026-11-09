@@ -247,6 +247,10 @@
 .step.doing .step-node { background: var(--text); animation: node 1.6s var(--ease) infinite; }
 @keyframes node { 0% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--text) 30%, transparent); } 70%, 100% { box-shadow: 0 0 0 5px transparent; } }
 .step-main { min-width: 0; }
+/* A sketch while it's being written: the page so far, laid out at 1440px and scaled to fit. */
+.draft { position: relative; margin: 7px 0 4px; aspect-ratio: 1440 / 900; overflow: hidden; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); animation: step-in 0.45s var(--ease) both; }
+.draft iframe { position: absolute; left: 0; top: 0; width: 1440px; height: 900px; border: 0; transform-origin: 0 0; transform: scale(var(--s, 0.2)); pointer-events: none; opacity: 0; background: #fff; }
+.draft iframe.front { opacity: 1; }
 .step-label { line-height: 1.45; }
 .step-q { color: var(--text); }
 .step-n, .step-secs { color: var(--faint); font-variant-numeric: tabular-nums; }
