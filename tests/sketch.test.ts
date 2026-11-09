@@ -53,3 +53,17 @@ withChrome("a sketch that follows them comes back clean", async () => {
   });
   expect(made.first.rule_checks?.filter((r: any) => r.level === "breaks") ?? []).toEqual([]);
 }, 60_000);
+
+withChrome("words edited in the studio are kept as a new version", async () => {
+  const made = await tool("make_sketch", { project, title: "Words", html: PAGE("", `<main><h1>Документы без очередей</h1><p>Подпись</p></main>`) });
+  const id = made.first.sketch ?? made.first.id;
+  const res = await p.send("POST", `/api/projects/${project}/sketches/${id}/text`, {
+    path: "body > main:nth-child(1) > h1:nth-child(1)", before: "Документы без очередей", after: "Справки за минуту",
+    before_text: "Документы без очередей", after_text: "Справки за минуту", from_version: 1,
+  });
+  expect(res.status).toBe(200);
+  expect((await res.json()).version).toBe(2);
+  const page = await (await fetch(`${p.url}/sketches/${project}/${id}/v2.html`)).text();
+  expect(page).toContain("<h1>Справки за минуту</h1>");
+  expect(page).toContain("<p>Подпись</p>");
+}, 60_000);

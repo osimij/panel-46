@@ -12,7 +12,7 @@ import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
-import { setSketchVars, sketchInfo } from "./board.ts";
+import { setSketchText, setSketchVars, sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
 import { startMeasuring } from "./measure.ts";
@@ -393,10 +393,10 @@ async function handle(req: Request): Promise<Response> {
   if ((path.startsWith("/api/chat") || path === "/api/cards") && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/chats" && m === "GET") return json(listChats());
   if (path === "/api/chats" && m === "POST") return json(createChat());
-  if (path === "/api/chat/settings" && m === "GET") return json({ model: chatSettings.model(), effort: chatSettings.effort() });
+  if (path === "/api/chat/settings" && m === "GET") return json(chatSettings.all());
   if (path === "/api/chat/settings" && m === "PATCH") {
-    setChatSettings((await req.json().catch(() => ({}))) as { model?: string; effort?: string });
-    return json({ model: chatSettings.model(), effort: chatSettings.effort() });
+    setChatSettings((await req.json().catch(() => ({}))) as Record<string, unknown>);
+    return json(chatSettings.all());
   }
   if (path === "/api/cards" && m === "GET") {
     const ids = (url.searchParams.get("ids") ?? "").split(",").filter((x) => /^[0-9a-f]{16}$/.test(x)).slice(0, 200);
@@ -508,6 +508,20 @@ async function handle(req: Request): Promise<Response> {
     const b = (await req.json().catch(() => ({}))) as { vars?: Record<string, string>; from_version?: number };
     try {
       return json(await setSketchVars(varsRoute[1]!, varsRoute[2]!, b.vars && typeof b.vars === "object" ? b.vars : {}, Number.isInteger(b.from_version) ? b.from_version : undefined));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+
+  // The studio's text edits: words the designer changed in place, as a new version, no AI involved.
+  const textRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/text$/);
+  if (textRoute && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as Partial<Record<"path" | "before" | "after" | "before_text" | "after_text", unknown>> & { from_version?: number };
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    try {
+      return json(await setSketchText(textRoute[1]!, textRoute[2]!, {
+        path: str(b.path), before: str(b.before), after: str(b.after), beforeText: str(b.before_text), afterText: str(b.after_text),
+      }, Number.isInteger(b.from_version) ? b.from_version : undefined));
     } catch (e) {
       return bad((e as Error).message);
     }

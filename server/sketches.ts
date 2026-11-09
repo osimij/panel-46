@@ -117,10 +117,41 @@ const KIT = `<script data-panel-kit>(() => {
     Object.assign(tag.style, { display: "block", left: Math.max(4, r.left) + "px", top: (r.top > 26 ? r.top - 22 : r.bottom + 4) + "px" });
   };
   const target = (e) => { const el = e.target; return el && el !== document.documentElement && el !== document.body && el !== box ? el : null; };
-  const move = (e) => { if (!picking || hold) return; const el = target(e); if (el && el !== over) { over = el; place(el); } };
+  // Editing words in place: a heading, a button's label, a paragraph. Only parts made of words
+  // (and inline tags like em or a) can be edited, so an edit never takes a layout apart.
+  const INLINE = /^(A|ABBR|B|BR|CITE|CODE|DEL|EM|I|INS|KBD|MARK|Q|S|SAMP|SMALL|SPAN|STRONG|SUB|SUP|TIME|U|WBR)$/;
+  const canEdit = (el) => !/^(INPUT|TEXTAREA|SELECT|IMG|SVG|VIDEO|CANVAS|IFRAME|SCRIPT|STYLE)$/i.test(el.tagName) && (el.textContent || "").trim().length > 0 && (el.textContent || "").length < 4000 && [...el.querySelectorAll("*")].every((c) => INLINE.test(c.tagName));
+  // Where it sits, counted the way the file is read back on the server: body > main:nth-child(2) > h1:nth-child(1).
+  const strict = (el) => { const parts = []; while (el && el.parentElement && el !== document.body) { parts.unshift(el.tagName.toLowerCase() + ":nth-child(" + ([...el.parentElement.children].indexOf(el) + 1) + ")"); el = el.parentElement; } return el === document.body ? ["body", ...parts].join(" > ") : ""; };
+  let editing = null, orig = "", origText = "", origStyle = null;
+  const startEdit = (el) => {
+    if (editing || !el || !canEdit(el)) return;
+    editing = el; orig = el.innerHTML; origText = el.textContent; origStyle = el.getAttribute("style");
+    if (box) { box.style.display = "none"; tag.style.display = "none"; }
+    el.contentEditable = "plaintext-only";
+    el.style.outline = "1.5px solid #3b82f6"; el.style.outlineOffset = "3px"; el.style.cursor = "text";
+    el.focus();
+    const r = document.createRange(); r.selectNodeContents(el); const sel = getSelection(); sel.removeAllRanges(); sel.addRange(r);
+    post({ t: "editing", on: true });
+  };
+  const endEdit = (keep) => {
+    const el = editing; if (!el) return;
+    editing = null;
+    if (!keep) el.innerHTML = orig;
+    el.removeAttribute("contenteditable");
+    if (origStyle == null) el.removeAttribute("style"); else el.setAttribute("style", origStyle);
+    getSelection().removeAllRanges();
+    if (keep && el.innerHTML !== orig) post({ t: "edited", path: strict(el), before: orig, after: el.innerHTML, beforeText: origText, afterText: el.textContent });
+    else post({ t: "editing", on: false });
+    if (hold === el && picking) place(el);
+  };
+  const move = (e) => { if (!picking || hold || editing) return; const el = target(e); if (el && el !== over) { over = el; place(el); } };
   const click = (e) => {
     if (!picking) return;
+    if (editing && editing.contains(e.target)) return;
     e.preventDefault(); e.stopPropagation();
+    // A click outside the words being edited keeps them, like leaving a text box.
+    if (editing) return endEdit(true);
     const el = target(e); if (!el) return;
     hold = el; place(el);
     const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
@@ -128,17 +159,37 @@ const KIT = `<script data-panel-kit>(() => {
     post({ t: "picked", label: name(el), selector: path(el), text: (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 300),
       html: html.length > 1600 ? html.slice(0, 1600) + "…" : html,
       style: { font: cs.fontFamily.split(",")[0].replace(/["']/g, "") + " " + cs.fontWeight + " " + cs.fontSize, color: cs.color, background: cs.backgroundColor, radius: cs.borderRadius, padding: cs.padding, size: Math.round(r.width) + "×" + Math.round(r.height) },
-      rect: { x: r.left, y: r.top, w: r.width, h: r.height }, viewport: { w: innerWidth, h: innerHeight }, state: state() });
+      rect: { x: r.left, y: r.top, w: r.width, h: r.height }, viewport: { w: innerWidth, h: innerHeight }, state: state(), editable: canEdit(el) });
   };
-  const stopEvent = (e) => { if (picking) { e.preventDefault(); e.stopPropagation(); } };
+  const stopEvent = (e) => { if (picking && !(editing && editing.contains(e.target))) { e.preventDefault(); e.stopPropagation(); } };
   addEventListener("mousemove", move, true);
   addEventListener("click", click, true);
-  ["mousedown", "mouseup", "pointerdown", "pointerup", "submit", "dblclick"].forEach((t) => addEventListener(t, stopEvent, true));
-  addEventListener("keydown", (e) => { if (picking && e.key === "Escape") post({ t: "cancel" }); }, true);
-  addEventListener("scroll", () => { if (hold) place(hold); else if (over && picking) place(over); }, true);
+  ["mousedown", "mouseup", "pointerdown", "pointerup", "submit"].forEach((t) => addEventListener(t, stopEvent, true));
+  // Double-click words while pointing: edit them right there.
+  addEventListener("dblclick", (e) => {
+    if (!picking || (editing && editing.contains(e.target))) return;
+    e.preventDefault(); e.stopPropagation();
+    const el = target(e);
+    if (editing || !el || !canEdit(el)) return;
+    hold = el; startEdit(el);
+  }, true);
+  addEventListener("keydown", (e) => {
+    if (editing) {
+      // The page's own shortcuts stay out of the way while typing.
+      e.stopPropagation();
+      if (e.key === "Escape") { e.preventDefault(); endEdit(false); }
+      else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); endEdit(true); }
+      return;
+    }
+    if (picking && e.key === "Escape") post({ t: "cancel" });
+  }, true);
+  addEventListener("scroll", () => { if (editing) return; if (hold) place(hold); else if (over && picking) place(over); }, true);
   addEventListener("message", (e) => {
     if (e.source !== parent || !e.data || !e.data.panel) return;
     const m = e.data;
+    if ((m.t === "pick" || m.t === "release") && editing) endEdit(false);
+    if (m.t === "edit") startEdit(hold);
+    if (m.t === "edit-end") endEdit(!!m.keep);
     if (m.t === "pick") { picking = !!m.on; hold = null; over = null; ui(); if (!picking) { box.style.display = "none"; tag.style.display = "none"; } document.documentElement.style.cursor = picking ? "crosshair" : ""; }
     if (m.t === "release") { hold = null; over = null; if (box) { box.style.display = "none"; tag.style.display = "none"; } }
     if (m.t === "state") { const h = m.slug ? "#" + m.slug : ""; if (location.hash !== h) { if (h) location.hash = h; else { history.replaceState(null, "", location.pathname + location.search); dispatchEvent(new HashChangeEvent("hashchange")); } } }

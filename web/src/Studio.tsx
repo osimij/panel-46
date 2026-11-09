@@ -32,9 +32,9 @@ const DEVICES: Record<Device, { w: number; h: number; label: string; icon: IconN
   phone: { w: 390, h: 844, label: "Phone", icon: "phone" },
 };
 
-// "?studio=3": the studio's own address for a page, so a copy a browser kept from before the
+// "?studio=4": the studio's own address for a page, so a copy a browser kept from before the
 // kit was added (pages used to be cached forever) is never used. Bump it when the kit changes.
-const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=3`;
+const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=4`;
 const pictureOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.jpg`;
 
 interface Picked {
@@ -45,6 +45,8 @@ interface Picked {
   style: Record<string, string>;
   rect: { x: number; y: number; w: number; h: number };
   state: string;
+  /** Made of words (and inline tags): the designer can edit them in place. */
+  editable: boolean;
 }
 
 export function Studio(props: {
@@ -78,7 +80,12 @@ export function Studio(props: {
   const [verdict, setVerdict] = useState<null | "chosen" | "ruled_out">(null);
   const [building, setBuilding] = useState(false);
   const [closing, setClosing] = useState(false);
-  const [fresh, setFresh] = useState<number | null>(null);
+  const [fresh, setFresh] = useState<{ v: number; mine: boolean } | null>(null);
+  // Words being edited in the page, and being kept as a new version.
+  const [editing, setEditing] = useState(false);
+  const [keepingText, setKeepingText] = useState(false);
+  /** When the designer last kept something themselves (knobs, words), so its new version isn't credited to FRIDAY. */
+  const keptAt = useRef(0);
   // Knobs: the page's own variables, what's been moved and not yet kept.
   const [knobs, setKnobs] = useState(false);
   const [vars, setVars] = useState<PageVar[] | null>(null);
@@ -106,8 +113,9 @@ export function Studio(props: {
   const seen = useRef({ id: sketch.id, v: sketch.version });
   useEffect(() => {
     if (seen.current.id === sketch.id && sketch.version > seen.current.v) {
-      setFresh(sketch.version);
+      setFresh({ v: sketch.version, mine: Date.now() - keptAt.current < 20_000 });
       setPicked(null);
+      setEditing(false);
       const t = setTimeout(() => setFresh(null), 2600);
       seen.current = { id: sketch.id, v: sketch.version };
       return () => clearTimeout(t);
@@ -155,7 +163,12 @@ export function Studio(props: {
         setState(String(m.state ?? ""));
         setPicked(null);
       } else if (m.t === "picked") {
-        setPicked({ label: m.label, selector: m.selector, text: m.text, html: m.html, style: m.style ?? {}, rect: m.rect, state: m.state ?? "" });
+        setPicked({ label: m.label, selector: m.selector, text: m.text, html: m.html, style: m.style ?? {}, rect: m.rect, state: m.state ?? "", editable: !!m.editable });
+      } else if (m.t === "editing") {
+        setEditing(!!m.on);
+      } else if (m.t === "edited") {
+        setEditing(false);
+        void keepText({ path: String(m.path ?? ""), before: String(m.before ?? ""), after: String(m.after ?? ""), before_text: String(m.beforeText ?? ""), after_text: String(m.afterText ?? "") });
       } else if (m.t === "cancel") {
         if (picked) {
           setPicked(null);
@@ -165,7 +178,7 @@ export function Studio(props: {
     };
     addEventListener("message", onMessage);
     return () => removeEventListener("message", onMessage);
-  }, [post, picked]);
+  }, [post, picked]); // eslint-disable-line react-hooks/exhaustive-deps
   const pointingRef = useRef(pointing);
   pointingRef.current = pointing;
   useEffect(() => {
@@ -182,6 +195,7 @@ export function Studio(props: {
     setStates([]);
     setState("");
     setPicked(null);
+    setEditing(false);
   }, [src, reload]);
   // Another sketch or version: its own knobs, and nothing carried over.
   useEffect(() => {
@@ -204,12 +218,31 @@ export function Studio(props: {
     const good = Object.fromEntries(Object.entries(edits).filter(([, v]) => v.trim() && !/[;{}<>]/.test(v)));
     if (!Object.keys(good).length || keeping) return;
     setKeeping(true);
+    keptAt.current = Date.now();
     try {
       await studioApi.setVars(project, sketch.id, good, sketch.version);
     } catch (e) {
       props.onError((e as Error).message);
     } finally {
       setKeeping(false);
+    }
+  };
+
+  /** Words the designer edited in the page, kept as a new version (no AI). */
+  const keepText = async (edit: { path: string; before: string; after: string; before_text: string; after_text: string }) => {
+    if (edit.after === edit.before) return;
+    setKeepingText(true);
+    keptAt.current = Date.now();
+    try {
+      const res = await studioApi.setText(project, sketch.id, edit, sketch.version);
+      // Nothing changed in the file after all: put the page back as it is.
+      if (res.version === sketch.version) setReload((n) => n + 1);
+    } catch (e) {
+      props.onError((e as Error).message);
+      // The page still shows the words that weren't kept: load it again as it really is.
+      setReload((n) => n + 1);
+    } finally {
+      setKeepingText(false);
     }
   };
 
@@ -419,20 +452,29 @@ export function Studio(props: {
                 style={{ width: fit.w, height: fit.h, transform: `scale(${fit.scale})` }}
               />
             </div>
-            {pointing && !picked && <div className="st-hint">Click a part of the page to change it · Esc to stop</div>}
+            {pointing && !picked && <div className="st-hint">Click a part to change it · double-click words to edit them · Esc to stop</div>}
             {picked && bubble && (
               <PointBubble
                 key={picked.selector}
                 picked={picked}
                 style={bubble}
+                editing={editing}
+                keeping={keepingText}
+                nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
                 onSend={ask}
+                onEdit={() => {
+                  // The page takes the keyboard, so typing goes into the words.
+                  frame.current?.focus();
+                  post({ t: "edit" });
+                }}
+                onEditEnd={(keep) => post({ t: "edit-end", keep })}
                 onCancel={() => {
                   setPicked(null);
                   post({ t: "release" });
                 }}
               />
             )}
-            {fresh && <div className="st-fresh" key={fresh}>Version {fresh} from FRIDAY</div>}
+            {fresh && <div className="st-fresh" key={fresh.v}>{fresh.mine ? `Kept as version ${fresh.v}` : `Version ${fresh.v} from FRIDAY`}</div>}
           </div>
           <AskBar running={props.running} onSend={(t) => ask(t)} onAlternates={() => props.ask("Try 3 alternates of this sketch, each a different direction for the whole page.", undefined, 3)} />
         </div>
@@ -478,11 +520,43 @@ export function Studio(props: {
   );
 }
 
-/** Under the part pointed at: say what to change, or ask for alternates of it. */
-function PointBubble({ picked, style, onSend, onCancel }: { picked: Picked; style: { left: number; top: number }; onSend: (t: string, mode?: "change" | "alternates") => void; onCancel: () => void }) {
+/**
+ * Under the part pointed at: say what to change, ask for alternates of it, or, for words,
+ * edit them right there in the page (also by double-clicking them).
+ */
+function PointBubble(props: {
+  picked: Picked;
+  style: { left: number; top: number };
+  editing: boolean;
+  keeping: boolean;
+  nextVersion: number;
+  onSend: (t: string, mode?: "change" | "alternates") => void;
+  onEdit: () => void;
+  onEditEnd: (keep: boolean) => void;
+  onCancel: () => void;
+}) {
+  const { picked, style, onSend, onCancel } = props;
   const [text, setText] = useState("");
   const input = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => input.current?.focus(), []);
+  // Not while the words are being edited: the page has the keyboard then.
+  useEffect(() => {
+    if (!props.editing && !props.keeping) input.current?.focus();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  if (props.editing || props.keeping) {
+    return (
+      <div className="st-bubble" style={style} onPointerDown={(e) => e.stopPropagation()}>
+        <div className="st-bubble-head">
+          <span className="st-bubble-dot" />
+          <span className="st-bubble-label">{props.keeping ? "Keeping your words…" : "Editing the words in the page"}</span>
+        </div>
+        <p className="st-bubble-note">Type over them. ↵ keeps them as version {props.nextVersion}, Esc puts them back. ⇧↵ for a new line.</p>
+        <div className="st-bubble-actions">
+          <button className="st-quiet" disabled={props.keeping} onClick={() => props.onEditEnd(false)}>Put back</button>
+          <button className="st-send" disabled={props.keeping} onClick={() => props.onEditEnd(true)}>Keep as v{props.nextVersion}</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="st-bubble" style={style} onPointerDown={(e) => e.stopPropagation()}>
       <div className="st-bubble-head">
@@ -508,8 +582,13 @@ function PointBubble({ picked, style, onSend, onCancel }: { picked: Picked; styl
         }}
       />
       <div className="st-bubble-actions">
+        {picked.editable && (
+          <button className="st-quiet" onClick={props.onEdit} title="Change the words yourself, right in the page (or double-click them)">
+            <Icon name="pencil" size={13} /> Edit text
+          </button>
+        )}
         <button className="st-quiet" onClick={() => onSend(text, "alternates")} title="Three new sketches at once, each doing this part differently">
-          <Icon name="branch" size={13} /> Try 3 alternates
+          <Icon name="branch" size={13} /> {picked.editable ? "Alternates" : "Try 3 alternates"}
         </button>
         <button className="st-send" disabled={!text.trim()} onClick={() => onSend(text)}>Change <span className="faint">↵</span></button>
       </div>

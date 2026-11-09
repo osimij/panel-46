@@ -10,6 +10,7 @@ import { apply, findProject, getProject, TOPIC_FACETS, type BoardNode, type Op, 
 import { PORT } from "./config.ts";
 import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionsOf, writeVersion, type Device, type Render } from "./sketches.ts";
 import { withVars } from "./pagevars.ts";
+import { withText, type TextEdit } from "./pagetext.ts";
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components", other: "Other" };
 const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 }, sketch: { w: 360, h: 300 }, build: { w: 380, h: 330 } };
@@ -353,6 +354,23 @@ export async function setSketchVars(projectId: string, sketchId: string, vars: R
   const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
   const n = Object.keys(vars).length;
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed ${n} ${n === 1 ? "value" : "values"} in ${sketchName(node)} (version ${version})` });
+  return { version, rules: render.rules ?? [], errors: render.errors.length };
+}
+
+/** The studio's own text edit: the designer changed some words in place; a new version with them, no AI involved. */
+export async function setSketchText(projectId: string, sketchId: string, edit: TextEdit, fromVersion?: number) {
+  const b = board(projectId);
+  const node = findSketch(b, sketchId);
+  if (!node) throw new Error("That sketch is gone.");
+  const base = fromVersion ?? (Number(node.data.version) || 1);
+  if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
+  const before = readSketch(b.p.id, node.id, base);
+  const html = withText(before, edit);
+  if (html === before) return { version: base, rules: [], errors: 0 };
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
+  const words = edit.afterText.replace(/\s+/g, " ").trim();
+  const said = words.length > 40 ? `${words.slice(0, 39)}…` : words;
+  apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed the words to “${said}” in ${sketchName(node)} (version ${version})` });
   return { version, rules: render.rules ?? [], errors: render.errors.length };
 }
 

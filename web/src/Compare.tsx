@@ -10,7 +10,7 @@ import { Icon } from "./Icon.tsx";
 type Member = SketchInfo["family"][number];
 const SIZES: Record<Device, { w: number; h: number }> = { desktop: { w: 1440, h: 900 }, tablet: { w: 834, h: 1112 }, phone: { w: 390, h: 844 } };
 const LETTERS = ["A", "B", "C"];
-const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=3`;
+const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=4`;
 
 export function Compare(props: {
   project: string;
