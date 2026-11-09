@@ -96,6 +96,41 @@ export function Masonry({
   // Set when the width changed because Ask is sliding, rather than the window being dragged.
   const sliding = useRef(false);
 
+  // Only the cards on or near the screen are mounted: a long library is thousands of cards,
+  // and the ones far away cost memory and time for nothing. `view` is the band of the grid
+  // (in px from its top) worth keeping: the screen and two screens either side, moved in
+  // steps so scrolling re-renders the grid a few times a second at most, not every frame.
+  const [view, setView] = useState<{ top: number; bottom: number } | null>(null);
+  const lookAgain = useRef(() => {});
+  useLayoutEffect(() => {
+    const el = ref.current!;
+    const STEP = 500;
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const above = -el.getBoundingClientRect().top;
+      const margin = Math.max(1600, innerHeight * 2);
+      const top = Math.floor((above - margin) / STEP) * STEP;
+      const bottom = Math.ceil((above + innerHeight + margin) / STEP) * STEP;
+      setView((v) => (v && v.top === top && v.bottom === bottom ? v : { top, bottom }));
+    };
+    const soon = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+    lookAgain.current = soon;
+    measure();
+    addEventListener("scroll", soon, { passive: true });
+    addEventListener("resize", soon);
+    return () => {
+      cancelAnimationFrame(frame);
+      removeEventListener("scroll", soon);
+      removeEventListener("resize", soon);
+    };
+  }, []);
+  // Cards that have been on screen once: when one comes back after scrolling away, it's
+  // simply there, without playing its entrance again.
+  const seen = useRef(new Set<string>());
+
   useLayoutEffect(() => {
     const el = ref.current!;
     const measure = () => {
@@ -110,7 +145,10 @@ export function Masonry({
     };
     measure();
     // Re-lay out before the browser paints the resized grid, never a frame later.
-    const ro = new ResizeObserver(() => flushSync(measure));
+    const ro = new ResizeObserver(() => {
+      flushSync(measure);
+      lookAgain.current();
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -142,6 +180,7 @@ export function Masonry({
       card.style.left = `${s.x}px`;
       card.style.top = `${s.y}px`;
       card.style.width = `${s.w}px`;
+      seen.current.add(card.dataset.ref!);
     }
     const prev = last.current;
     last.current = { spots, cols, w: box.w };
@@ -190,16 +229,22 @@ export function Masonry({
 
   return (
     <div className={`masonry ${selection.active ? "selecting" : ""}`} ref={ref} style={{ height }}>
-      {items.map((r, i) => (
-        <Card
-          key={r.id}
-          r={r}
-          index={i}
-          selecting={selection.active}
-          picked={selection.ids.has(r.id)}
-          handlers={handlers}
-        />
-      ))}
+      {items.map((r, i) => {
+        const s = spots.get(r.id)!;
+        // Before the first look at the screen: just the first few, never the whole library.
+        if (view ? s.y + s.h < view.top || s.y > view.bottom : i >= 40) return null;
+        return (
+          <Card
+            key={r.id}
+            r={r}
+            index={i}
+            seen={seen.current}
+            selecting={selection.active}
+            picked={selection.ids.has(r.id)}
+            handlers={handlers}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -226,12 +271,15 @@ interface CardHandlers {
 const Card = memo(function Card({
   r,
   index,
+  seen,
   selecting,
   picked,
   handlers: { onOpen, onFavorite, onHide, onDelete, onToggle },
 }: {
   r: Ref;
   index: number;
+  /** The cards the grid has shown before (the same set every time, so it never re-renders a card). */
+  seen: Set<string>;
   selecting: boolean;
   picked: boolean;
   handlers: CardHandlers;
@@ -240,6 +288,8 @@ const Card = memo(function Card({
   // Its entrance is staggered by where it first appeared; a later move mustn't change
   // the delay of an entrance that already played (that could replay it).
   const [stagger] = useState(() => Math.min(index, 14));
+  // Back on screen after being scrolled away: no entrance this time.
+  const [back] = useState(() => seen.has(r.id));
   const thumbRef = useRef<HTMLDivElement>(null);
   const poster = m?.thumb_url ?? r.preview_url;
   const moving = m && m.type !== "image" && m.url;
@@ -254,7 +304,7 @@ const Card = memo(function Card({
 
   return (
     <article
-      className={`card ${r.status} ${picked ? "picked" : ""}`}
+      className={`card ${r.status} ${picked ? "picked" : ""} ${back ? "back" : ""}`}
       data-ref={r.id}
       // Its place (left, top, width) is set by the grid, straight on the element.
       style={{ "--i": stagger } as React.CSSProperties}
@@ -274,7 +324,7 @@ const Card = memo(function Card({
         ) : (
           <Placeholder r={r} />
         )}
-        {moving && <AutoVideo src={m.url!} />}
+        {moving && <AutoVideo src={m.loop_url ?? m.url!} />}
 
         {r.status !== "archived" && (
           <span className={`chip ${r.status}`}>

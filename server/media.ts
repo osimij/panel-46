@@ -155,6 +155,27 @@ export async function makeThumb(rel: string, type: MediaType): Promise<string | 
   return code === 0 && existsSync(out) ? thumbRel : null;
 }
 
+/**
+ * A small, silent copy of a video for the grid to play: at most 640px wide and the first
+ * 30 seconds. A card is about 320px wide, and several play at once, so playing the
+ * originals (often 20 MB and 1600px wide each) makes the grid heavy for no visible gain.
+ * The original stays what the detail view plays.
+ */
+export async function makeLoop(rel: string): Promise<string | null> {
+  const loopRel = rel.replace(/\.[^.]+$/, ".loop.mp4");
+  const out = abs(loopRel);
+  const { code } = await run(
+    [
+      "ffmpeg", "-y", "-v", "error", "-i", abs(rel), "-t", "30", "-an",
+      "-vf", "scale='min(640,iw)':-2", "-fpsmax", "30",
+      "-c:v", "libx264", "-preset", "veryfast", "-crf", "29", "-pix_fmt", "yuv420p",
+      "-movflags", "+faststart", "-threads", "2", out,
+    ],
+    5 * 60_000,
+  );
+  return code === 0 && existsSync(out) && statSync(out).size > 0 ? loopRel : null;
+}
+
 /** The line from yt-dlp's stderr worth showing a person. */
 export function ytDlpError(err: string) {
   const line = err.split("\n").find((l) => l.startsWith("ERROR")) ?? err.trim().split("\n").pop() ?? "";
@@ -190,7 +211,7 @@ export async function ytDlp(
   );
   const all = [...new Bun.Glob(`${name}{.,-}*`).scanSync({ cwd: dir })].sort();
   const files = all
-    .filter((f) => !/\.(part|ytdl|json)$/.test(f) && !f.includes(".part-") && !f.includes(".thumb."))
+    .filter((f) => !/\.(part|ytdl|json)$/.test(f) && !f.includes(".part-") && !f.includes(".thumb.") && !f.includes(".loop."))
     .map((f) => `${dirRel}/${f}`);
   let info: YtInfo | undefined;
   for (const f of all.filter((f) => f.endsWith(".info.json"))) {

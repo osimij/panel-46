@@ -325,8 +325,18 @@ export function App() {
   const anyPending = (stats?.byStatus.pending ?? 0) > 0;
   useEffect(() => {
     if (!anyPending) return;
-    const t = setInterval(() => refresh().catch(() => {}), 1500);
+    // Only what a download changes: the saves and the counts. Tags, collections and projects stay as they are.
+    const t = setInterval(() => {
+      loadRefs().catch(() => {});
+      api.stats().then(setStats).catch(() => {});
+    }, 1500);
     return () => clearInterval(t);
+  }, [anyPending, loadRefs]);
+  // When the last download finishes, bring everything up to date once.
+  const wasPending = useRef(false);
+  useEffect(() => {
+    if (wasPending.current && !anyPending) refresh().catch(() => {});
+    wasPending.current = anyPending;
   }, [anyPending, refresh]);
 
   useEffect(() => {

@@ -46,6 +46,8 @@ export interface MediaRow {
   remote_url: string | null;
   local_path: string | null;
   thumb_path: string | null;
+  /** A small silent copy for the grid to play (media.ts makeLoop). '' when the original is small enough to play as it is. */
+  loop_path: string | null;
   mime: string | null;
   bytes: number | null;
   width: number | null;
@@ -138,6 +140,7 @@ if (!refCols.includes("links")) db.exec("ALTER TABLE refs ADD COLUMN links TEXT"
 if (!refCols.includes("link_profiles")) db.exec("ALTER TABLE refs ADD COLUMN link_profiles TEXT");
 const mediaCols = db.query<{ name: string }, []>("PRAGMA table_info(media)").all().map((c) => c.name);
 if (!mediaCols.includes("position")) db.exec("ALTER TABLE media ADD COLUMN position INTEGER");
+if (!mediaCols.includes("loop_path")) db.exec("ALTER TABLE media ADD COLUMN loop_path TEXT");
 
 // Tag groups: each tag sits in at most one group, purely for tidy browsing.
 db.exec(`CREATE TABLE IF NOT EXISTS tag_groups (

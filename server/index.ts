@@ -5,7 +5,7 @@ import { HOST, LIBRARY_DIR, MEDIA_DIR, PORT } from "./config.ts";
 import { cleanLinks, db, newId, now, parseLinks, refreshStatus, reindex, retag, SECTIONS, setSetting, setTags, type MediaRow, type RefRow, type Section } from "./db.ts";
 import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, enrichLinks, registerLocalFile, retry, saveSkillText, upgradeSocialLinks, type LinkCard } from "./capture.ts";
 import { parseSocial, rememberPin } from "./social.ts";
-import { abs } from "./media.ts";
+import { abs, makeLoop } from "./media.ts";
 import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
@@ -93,6 +93,7 @@ function hydrate(refs: RefRow[], full = false) {
         error: m.error,
         url: m.status === "archived" && m.local_path ? `/media/${m.local_path}` : null,
         thumb_url: m.thumb_path ? `/media/${m.thumb_path}` : null,
+        loop_url: m.loop_path ? `/media/${m.loop_path}` : null,
         remote_url: m.remote_url,
         width: m.width,
         height: m.height,
@@ -946,6 +947,30 @@ void backfillAvatars();
 void upgradeSocialLinks();
 startReading();
 startBackups();
+
+// Small copies of videos for the grid to play, made one at a time in the background: for
+// videos saved before this existed, and for each new one once its file is in.
+let makingLoops = false;
+async function makeLoops() {
+  if (makingLoops) return;
+  makingLoops = true;
+  try {
+    for (;;) {
+      const m = db
+        .query<MediaRow, []>("SELECT * FROM media WHERE type IN ('video', 'gif') AND status = 'archived' AND local_path IS NOT NULL AND loop_path IS NULL LIMIT 1")
+        .get();
+      if (!m) break;
+      // A small file plays as it is. '' means "looked at, nothing to make", so it isn't tried again.
+      const small = (m.bytes ?? 0) < 1_500_000 && (m.width ?? 0) <= 720;
+      const loop = small || !existsSync(abs(m.local_path!)) ? null : await makeLoop(m.local_path!).catch(() => null);
+      db.run("UPDATE media SET loop_path = ? WHERE id = ?", [loop ?? "", m.id]);
+    }
+  } finally {
+    makingLoops = false;
+  }
+}
+setTimeout(() => void makeLoops(), 5_000);
+setInterval(() => void makeLoops(), 30_000);
 
 Bun.serve({
   hostname: HOST,

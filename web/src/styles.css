@@ -403,6 +403,7 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
   cursor: pointer; outline: none; border-radius: calc(var(--radius) * var(--smooth)); corner-shape: var(--corner);
   animation: card-in 0.55s var(--ease) both; animation-delay: calc(var(--i) * 28ms);
 }
+.card.back { animation: none; }
 @keyframes card-in { from { opacity: 0; transform: translateY(10px) scale(0.985); } }
 .thumb {
   position: relative; overflow: hidden; border-radius: calc(var(--radius) * var(--smooth)); corner-shape: var(--corner); background: var(--card);

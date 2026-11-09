@@ -8,6 +8,8 @@ export interface Media {
   error: string | null;
   url: string | null;
   thumb_url: string | null;
+  /** A small silent copy of a video, for the grid. Missing when the original is small or it isn't made yet. */
+  loop_url?: string | null;
   remote_url: string | null;
   width: number | null;
   height: number | null;
