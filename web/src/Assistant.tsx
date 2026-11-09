@@ -1017,6 +1017,16 @@ function Step({ part, ctx, label }: { part: ChatPart; ctx: Ctx; label?: string }
 }
 
 /**
+ * The draft as a still picture: every animation and transition jumped to its end. Each new
+ * draft is a fresh page, so a sketch whose words fade or slide in would otherwise play its
+ * entrance again a few times a second, and the preview would flicker.
+ */
+const STILL = "<style data-panel-still>*,*::before,*::after{animation-delay:-1ms!important;animation-duration:1ms!important;animation-iteration-count:1!important;animation-fill-mode:both!important;transition:none!important;scroll-behavior:auto!important}</style>";
+function still(doc: string) {
+  return /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, (h) => h + STILL) : STILL + doc;
+}
+
+/**
  * A sketch taking shape while FRIDAY writes it: the page so far, small, under its step.
  * Two frames take turns, so each new draft is swapped in once it has loaded and the
  * picture never blinks. Scripts don't run here; the finished sketch on the canvas is the real one.
@@ -1035,17 +1045,32 @@ function LiveDraft({ id }: { id: string }) {
     }
     t.busy = true;
     const back = frames[1 - t.front]!;
-    back.onload = () => {
-      back.onload = null;
+    const started = Date.now();
+    let swapped = false;
+    const swap = () => {
+      if (swapped) return;
+      swapped = true;
       frames[t.front]!.classList.remove("front");
       back.classList.add("front");
       t.front = 1 - t.front;
-      t.busy = false;
-      const next = t.next;
-      t.next = null;
-      if (next) show(next);
+      // At most about one new picture a second: each one is a whole page laid out again.
+      setTimeout(() => {
+        t.busy = false;
+        const next = t.next;
+        t.next = null;
+        if (next) show(next);
+      }, Math.max(0, 900 - (Date.now() - started)));
     };
-    back.srcdoc = doc;
+    back.onload = () => {
+      back.onload = null;
+      // Swapped in only once its fonts are there, so the words don't jump from one font to
+      // another each time (capped, for a font that never comes).
+      const fonts = back.contentDocument?.fonts;
+      if (!fonts) return swap();
+      void fonts.ready.then(swap);
+      setTimeout(swap, 1200);
+    };
+    back.srcdoc = still(doc);
   }, []);
   useEffect(() => {
     if (html) show(html);
@@ -1063,8 +1088,9 @@ function LiveDraft({ id }: { id: string }) {
   if (!html) return null;
   return (
     <div className="draft" ref={wrap} aria-hidden>
-      <iframe sandbox="" tabIndex={-1} title="" />
-      <iframe sandbox="" tabIndex={-1} title="" />
+      {/* No scripts run here at all (no allow-scripts), so the page can't reach Panel; same origin only lets Panel see when its fonts have loaded. */}
+      <iframe sandbox="allow-same-origin" tabIndex={-1} title="" />
+      <iframe sandbox="allow-same-origin" tabIndex={-1} title="" />
     </div>
   );
 }
