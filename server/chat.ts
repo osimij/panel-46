@@ -5,13 +5,14 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { db, getSetting, newId, now, setSetting } from "./db.ts";
-import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, tool, type McpServerConfig, type Query } from "@anthropic-ai/claude-agent-sdk";
+import { z } from "zod";
 import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
 import { describeSelection, findProject } from "./projects.ts";
 import { designRules } from "./rules.ts";
 import { partialHtml } from "./partial.ts";
-import { claudeBinary, claudeToken, settings as readSettings, type Effort } from "./read.ts";
+import { claudeBinary, claudeToken, type Effort } from "./read.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS chats (
@@ -44,18 +45,57 @@ db.run("UPDATE chat_messages SET status = 'stopped' WHERE status = 'streaming'")
 const CHAT_DIR = join(LIBRARY_DIR, "chat");
 mkdirSync(CHAT_DIR, { recursive: true });
 
+// ---------- Which model answers, and how hard it thinks ----------
+
+/** The models the designer can pick for FRIDAY, best taste first. */
+export const CHAT_MODELS = [
+  { id: "claude-fable-5-2", name: "Fable 5.2", note: "The best eye and judgment. Slower, and uses more of your plan." },
+  { id: "claude-opus-5-5", name: "Opus 5.5", note: "Strong all round and quicker. Good at making things." },
+  { id: "claude-sonnet-5-5", name: "Sonnet 5.5", note: "Fast, for everyday asks." },
+  { id: "claude-haiku-5-5", name: "Haiku 5.5", note: "Fastest, for small things." },
+] as const;
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+const isModel = (v: string | null | undefined): v is string => !!v && CHAT_MODELS.some((m) => m.id === v);
+const isEffort = (v: string | null | undefined): v is Effort => !!v && (EFFORTS as string[]).includes(v);
+export const modelName = (id: string) => CHAT_MODELS.find((m) => m.id === id)?.name ?? id;
+
+/**
+ * How FRIDAY works. "solo": one model does everything. "duo": one model (Fable by default)
+ * reads, looks and decides, and writes a plan; a second (Opus) carries the plan out.
+ */
 export const chatSettings = {
-  model: () => getSetting("chat_model") ?? readSettings.model(),
-  effort: () => (getSetting("chat_effort") ?? "high") as Effort,
+  mode: () => (getSetting("chat_mode") === "duo" ? "duo" : "solo") as "solo" | "duo",
+  model: () => { const v = getSetting("chat_model"); return isModel(v) ? v : "claude-opus-5-5"; },
+  effort: () => { const v = getSetting("chat_effort"); return isEffort(v) ? v : "high"; },
+  planModel: () => { const v = getSetting("chat_plan_model"); return isModel(v) ? v : "claude-fable-5-2"; },
+  planEffort: () => { const v = getSetting("chat_plan_effort"); return isEffort(v) ? v : "high"; },
+  buildModel: () => { const v = getSetting("chat_build_model"); return isModel(v) ? v : "claude-opus-5-5"; },
+  buildEffort: () => { const v = getSetting("chat_build_effort"); return isEffort(v) ? v : "high"; },
+  all: () => ({
+    mode: chatSettings.mode(),
+    model: chatSettings.model(), effort: chatSettings.effort(),
+    plan_model: chatSettings.planModel(), plan_effort: chatSettings.planEffort(),
+    build_model: chatSettings.buildModel(), build_effort: chatSettings.buildEffort(),
+    models: CHAT_MODELS,
+  }),
 };
+
+export function setChatSettings(patch: Record<string, unknown>) {
+  const str = (k: string) => (typeof patch[k] === "string" ? (patch[k] as string) : null);
+  if (str("mode") === "solo" || str("mode") === "duo") setSetting("chat_mode", str("mode")!);
+  for (const [k, key] of [["model", "chat_model"], ["plan_model", "chat_plan_model"], ["build_model", "chat_build_model"]] as const) if (isModel(str(k))) setSetting(key, str(k)!);
+  for (const [k, key] of [["effort", "chat_effort"], ["plan_effort", "chat_plan_effort"], ["build_effort", "chat_build_effort"]] as const) if (isEffort(str(k))) setSetting(key, str(k)!);
+}
 
 // ---------- What a message is ----------
 
 export type Part =
   | { type: "text"; text: string }
-  | { type: "thinking"; ms?: number; done?: boolean }
+  /** `model`: which model did it, when two work on one answer (plan, then build). */
+  | { type: "thinking"; ms?: number; done?: boolean; model?: string }
   | {
       type: "tool";
+      model?: string;
       id: string;
       name: string;
       input?: Record<string, unknown>;
@@ -68,8 +108,8 @@ export type Part =
 
 export type ChatEvent =
   | { t: "start"; message: MessageOut }
-  | { t: "thinking"; on: boolean; ms?: number }
-  | { t: "tool"; id: string; name: string }
+  | { t: "thinking"; on: boolean; ms?: number; model?: string }
+  | { t: "tool"; id: string; name: string; model?: string }
   | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
   | { t: "tool_result"; id: string; refs: string[]; cards: Card[]; total?: number; error?: string }
   // A sketch's page as written so far, while Claude is still writing it: the app shows it taking shape.
@@ -222,7 +262,7 @@ Sketches (on a project's canvas):
 - Reply in a few lines: what it tries and what you'd look at. Don't paste its HTML or describe it at length; it's on the canvas. Say plainly what it doesn't do yet.
 - Changes to a sketch go through edit_sketch with small edits (exact find and replace). To keep a version and try something else, make a new sketch from it instead.
 - When the designer has a sketch selected, "this" means it: read it with get_sketch if you haven't seen it in this conversation.
-- Give every sketch knobs: declare its colors, fonts, type sizes, corner radius and spacing as CSS variables on :root and use them everywhere in place of fixed values (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space, and whatever else the page needs). The designer changes them live in the studio (Knobs) and tries palettes from their saves on them, without asking you. When they kept a change that way, the next version you read has their values: build on them, don't put yours back.
+- Give every sketch knobs: declare its colors, fonts, type sizes, corner radius and spacing as CSS variables on :root and use them everywhere in place of fixed values (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space, and whatever else the page needs). The designer changes them live in the studio (Knobs) and tries palettes from their saves on them, without asking you. They also edit words in place, right in the page. When they kept a change that way, the next version you read has their values and their words: build on them, don't put yours back. Keep words in the HTML itself (not built by a script) where you can, so they can edit them.
 - Pass uses: the ids of the saves it takes from (type from one, color from another), so lines on the canvas show where it came from.
 - Make it something they can click through, not a picture: buttons, tabs, menus and forms that work. A flow of screens or its states (empty, loading, error, success) go in one sketch: list them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; buttons between screens set location.hash. The studio shows these as a map they can jump around. Check the other states with get_sketch state.
 - A mobile app screen is made for a phone: device "phone" (390×844). To check a desktop sketch on a phone, get_sketch with device.
@@ -265,9 +305,15 @@ function idsIn(text: string) {
 /** The words a tool is working with, read out of its input while it's still being written. */
 function partialInput(json: string): Record<string, unknown> {
   const found: Record<string, unknown> = {};
-  for (const key of ["query", "brief", "name", "id", "title", "sketch"]) {
+  for (const key of ["query", "brief", "name", "id", "title", "sketch", "plan"]) {
     const m = json.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`));
-    if (m) found[key] = m[1]!.replace(/\\"/g, '"');
+    if (!m) continue;
+    // Read as JSON so \n and \" come out right; a string cut mid-escape falls back to the raw text.
+    try {
+      found[key] = JSON.parse(`"${m[1]!.replace(/\\(u[0-9a-fA-F]{0,3})?$/, "")}"`);
+    } catch {
+      found[key] = m[1]!.replace(/\\"/g, '"');
+    }
   }
   return found;
 }
@@ -374,9 +420,12 @@ export async function send(chatId: string, text: string, context: SendContext = 
     sideNews.delete(chatId);
   }
   if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
-  // A small, pointed job ("make this button darker") doesn't need minutes of thought: it
-  // runs at low effort whatever the setting, so the studio answers in seconds.
+  // A small, pointed job ("make this button darker") doesn't need minutes of thought, or a
+  // plan: it runs at low effort whatever the setting (on the builder, when two models share
+  // the work), so the studio answers in seconds.
   const pointed = !!context.point && context.point.mode !== "alternates";
+  const duoOn = chatSettings.mode() === "duo" && getSetting("chat_engine") !== "cli";
+  const model = duoOn ? chatSettings.buildModel() : chatSettings.model();
   const effort: Effort = pointed ? "low" : chatSettings.effort();
   // Alternates: one run each, side by side, instead of one run making them one after another.
   const base = fanBase(context, nodes);
@@ -384,7 +433,8 @@ export async function send(chatId: string, text: string, context: SendContext = 
   if (base && n >= 2 && getSetting("chat_engine") !== "cli") {
     void fanOut(chatId, run, chat.session_id, { context: said.join(" "), asked: clean, base, n, part: context.point?.mode === "alternates" ? context.point.label : undefined })
       .catch((e) => finish(chatId, run, "error", (e as Error).message));
-  } else void drive(chatId, run, chat.session_id, prompt, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  } else if (duoOn && !pointed) void duo(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  else void drive(chatId, run, chat.session_id, prompt, model, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
   // A short name for a new conversation, made alongside the answer.
   if (!chat.title) void nameChat(chatId, readable(clean), run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
@@ -482,7 +532,10 @@ async function fanOut(chatId: string, run: Run, sessionId: string | null, o: { c
   const token = await claudeToken();
   const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
   const angles = (o.part ? ANGLES.part : ANGLES.page).slice(0, o.n);
-  const effort = chatSettings.effort();
+  // Making is the builder's job when two models share the work.
+  const duo = chatSettings.mode() === "duo";
+  const model = duo ? chatSettings.buildModel() : chatSettings.model();
+  const effort = duo ? chatSettings.buildEffort() : chatSettings.effort();
   const jobs = angles.map(([name, how], i) => {
     const others = angles.filter((_, j) => j !== i).map(([x]) => x).join(", ");
     const prompt = `<panel-context>${o.context} You are one of ${o.n} copies of yourself working at the same time, each making one alternate of the sketch “${o.base.title}” (${o.base.id}).</panel-context>
@@ -490,8 +543,8 @@ async function fanOut(chatId: string, run: Run, sessionId: string | null, o: { c
 ${o.asked}
 
 Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), ${o.part ? `the same page with only the ${o.part} done differently` : "a different direction for the whole page"}. Your angle is ${name}. ${how} The other copies are taking: ${others}. Commit to yours; don't hedge towards theirs. Read the sketch with get_sketch first if you haven't seen this version. Give yours a short title and a tries line that says how it differs. Look at the pictures that come back, fix what breaks the rules with edit_sketch, then answer in one line: its title, and what it tries. Don't make any other sketch and don't change the original.`;
-    const r = reader(chatId, run, true);
-    return viaSdk(run, bin, token, prompt, sessionId, mcpUrl, r.handle, effort, true).then((res) => ({ ...res, ...r.state, name }));
+    const r = reader(chatId, run, { side: true, model });
+    return viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle: r.handle, model, effort, fork: true }).then((res) => ({ ...res, ...r.state, name }));
   });
   const done = await Promise.all(jobs);
   if (run.stopped) return;
@@ -511,13 +564,110 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
   finish(chatId, run, "done");
 }
 
+// ---------- Two models on one answer: one plans, one builds ----------
+
+/** What the planner may use: Panel's tools that only read. Making and changing things is the builder's. */
+const READ_TOOLS = new Set(
+  ["get_design_rules", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
+    .map((n) => `mcp__panel__${n}`),
+);
+
+/** The planner's way to hand over: a tool of its own, living in Panel for the length of one turn. */
+function handOver(got: (plan: string) => void) {
+  return createSdkMcpServer({
+    name: "friday",
+    version: "1.0.0",
+    tools: [
+      tool(
+        "hand_to_builder",
+        "Hand your plan to the builder, the model that makes things (sketches, edits, placing saves on the canvas, collections). Call it once, as your very last step, after your note to the designer.",
+        { plan: z.string().min(40).describe("The whole plan, as numbered steps with concrete values: everything the builder needs, since it won't search or judge taste on its own.") },
+        async ({ plan }) => {
+          got(plan);
+          return { content: [{ type: "text", text: "The builder has the plan and is starting on it now. Your turn is over: write nothing more." }] };
+        },
+      ),
+    ],
+  });
+}
+
+const plannerNote = (planner: string, builder: string) => `
+
+How you work right now: you are the planner, ${planner}, paired with a builder, ${builder}. You do the understanding and the taste: read the project and the rules, search, look at the saves, and decide. The builder does the making. You can only read; the tools that change things (make_sketch, edit_sketch, place_on_board, topics, notes, collections, builds) are the builder's.
+- When the message only needs an answer (a question, an opinion, a search, a comparison), answer it yourself as usual and don't hand anything over.
+- When it needs something made or changed, think it through first: read what you need, search and look at the saves, decide. Then tell the designer in two or three lines what you're having made and why, and call hand_to_builder as your last step.
+- The plan is everything the builder needs, since it won't search or judge taste on its own. Say what to make and where it hangs (from:, the project and topic), and each save to use with what to take from it ([[id]] and the exact thing: the hex, the font, the layout move). Give the structure part by part with the real content in the project's language, the type (families, sizes, weights, line heights), the color (hex and where each goes), spacing and corners, the states, and the knobs. Name the rules that matter most here, what to check in the pictures before finishing, and what not to do. Concrete values, not adjectives. Number the steps.`;
+
+const builderPrompt = (plan: string, planner: string, builder: string) => `<panel-context>You are the builder, ${builder}. ${planner}, the planner, has just read the project, looked at the references and written the plan below; the designer has seen its note. Carry the plan out with the tools: make or change what it says, from the saves it names, then look at the pictures that come back and fix what breaks the plan or the designer's rules. Follow the plan's choices; where it's silent, or something in it doesn't work, use your judgment and say so. Don't look for other references. Then reply to the designer in a few lines: what you made, and anything you did differently from the plan.</panel-context>
+
+<plan>
+${plan}
+</plan>`;
+
+/**
+ * One answer by two models. The planner (Fable, by default, at high effort) reads, looks and
+ * decides; a question it simply answers. When something is to be made, it writes a plan and
+ * hands it over, and the builder (Opus, by default) continues the same conversation and
+ * carries the plan out. Both show in the one answer, each step marked with its model.
+ */
+async function duo(chatId: string, run: Run, sessionId: string | null, prompt: string) {
+  const bin = await claudeBinary();
+  if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
+  const token = await claudeToken();
+  const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
+  const planner = chatSettings.planModel(), builder = chatSettings.buildModel();
+  const plannerName = modelName(planner), builderName = modelName(builder);
+
+  let plan: string | null = null;
+  const p = reader(chatId, run, { model: planner, tag: plannerName });
+  const first = await viaSdk(run, {
+    bin, token, prompt, sessionId, mcpUrl, handle: p.handle, model: planner, effort: chatSettings.planEffort(),
+    servers: { friday: handOver((x) => (plan = x)) },
+    allow: (n) => (READ_TOOLS.has(n) || n === "mcp__friday__hand_to_builder" ? true : `You plan and ${builderName} builds: put this in the plan for hand_to_builder instead.`),
+    system: systemPrompt() + plannerNote(plannerName, builderName),
+  });
+  if (run.stopped) return;
+  if (sessionId && run.parts.length === 0 && (lost(first.stderr) || lost(p.state.resultError ?? ""))) {
+    db.run("UPDATE chats SET session_id = NULL WHERE id = ?", [chatId]);
+    return duo(chatId, run, null, prompt);
+  }
+  if (p.state.resultError) return finish(chatId, run, "error", friendly(p.state.resultError));
+  if (!p.state.gotResult) return finish(chatId, run, "error", friendly(first.stderr.split("\n").pop() || "Claude Code stopped."));
+  if (!plan) return finish(chatId, run, "done");
+
+  // The hand-over step says who builds it.
+  const step = [...run.parts].reverse().find((x) => x.type === "tool" && x.name === "hand_to_builder");
+  if (step && step.type === "tool") {
+    step.input = { ...step.input, plan, to: builderName };
+    emit(chatId, run, { t: "tool_input", id: step.id, input: step.input });
+  }
+  persist(run);
+
+  // The builder continues the same conversation, so the planner's reading and plan are in it, and next time the planner sees what was built.
+  const session = db.query<{ session_id: string | null }, [string]>("SELECT session_id FROM chats WHERE id = ?").get(chatId)?.session_id ?? null;
+  const b = reader(chatId, run, { model: builder, tag: builderName });
+  const second = await viaSdk(run, {
+    bin, token, prompt: builderPrompt(plan, plannerName, builderName), sessionId: session, mcpUrl, handle: b.handle, model: builder, effort: chatSettings.buildEffort(),
+    // The planner's tool is there (the conversation has a call to it) but isn't the builder's to use.
+    servers: { friday: handOver(() => {}) },
+    allow: panelOnly,
+  });
+  if (run.stopped) return;
+  if (b.state.resultError) return finish(chatId, run, "error", friendly(b.state.resultError));
+  if (!b.state.gotResult) return finish(chatId, run, "error", friendly(second.stderr.split("\n").pop() || "Claude Code stopped."));
+  finish(chatId, run, "done");
+}
+
 /**
  * Reads what Claude Code sends back for one run and turns it into the answer's parts and
  * the events the app follows. `side` is for a run working beside others on the same answer
  * (one alternate each): its tool steps show like any other, but its words are kept back
  * until the end and it doesn't change which conversation the chat continues.
  */
-function reader(chatId: string, run: Run, side = false) {
+function reader(chatId: string, run: Run, o: { side?: boolean; model: string; tag?: string }) {
+  const side = !!o.side;
+  // Which model it is, on its steps, when two models work on one answer.
+  const tag = o.tag ? { model: o.tag } : {};
   // Per content block: what kind it is, and a tool's input as it's written.
   const blocks = new Map<number, { kind: string; toolId?: string; json?: string; started?: number; sketch?: boolean; drafted?: number; draft?: Extract<ChatEvent, { t: "draft" }> }>();
   const lastPart = () => run.parts.at(-1);
@@ -540,12 +690,13 @@ function reader(chatId: string, run: Run, side = false) {
           blocks.set(e.index, { kind: "thinking", started: Date.now() });
           if (side) return;
           const last = lastPart();
-          if (!(last?.type === "thinking" && !last.done)) run.parts.push({ type: "thinking" });
-          emit(chatId, run, { t: "thinking", on: true });
+          if (!(last?.type === "thinking" && !last.done)) run.parts.push({ type: "thinking", ...tag });
+          emit(chatId, run, { t: "thinking", on: true, ...tag });
         } else if (b.type === "tool_use") {
           blocks.set(e.index, { kind: "tool", toolId: b.id, json: "", sketch: /(make|edit)_sketch$/.test(String(b.name)) });
-          run.parts.push({ type: "tool", id: b.id, name: String(b.name).replace(/^mcp__panel__/, "") });
-          emit(chatId, run, { t: "tool", id: b.id, name: String(b.name).replace(/^mcp__panel__/, "") });
+          const name = String(b.name).replace(/^mcp__(panel|friday)__/, "");
+          run.parts.push({ type: "tool", id: b.id, name, ...tag });
+          emit(chatId, run, { t: "tool", id: b.id, name, ...tag });
         } else blocks.set(e.index, { kind: b.type });
       } else if (e.type === "content_block_delta") {
         const b = blocks.get(e.index);
@@ -631,7 +782,7 @@ function reader(chatId: string, run: Run, side = false) {
       if (u) {
         db.run(
           "INSERT INTO ai_usage (at, ref_id, model, mode, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost) VALUES (?, NULL, ?, 'chat', ?, ?, ?, ?, 0)",
-          [now(), chatSettings.model(), u.input_tokens ?? 0, u.output_tokens ?? 0, u.cache_read_input_tokens ?? 0, u.cache_creation_input_tokens ?? 0],
+          [now(), o.model, u.input_tokens ?? 0, u.output_tokens ?? 0, u.cache_read_input_tokens ?? 0, u.cache_creation_input_tokens ?? 0],
         );
       }
     }
@@ -639,7 +790,7 @@ function reader(chatId: string, run: Run, side = false) {
   return { handle, state };
 }
 
-async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string, effort: Effort = chatSettings.effort()) {
+async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string, model: string, effort: Effort) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
@@ -648,7 +799,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
   const args = [
     bin, "-p", prompt,
-    "--model", chatSettings.model(), "--effort", effort,
+    "--model", model, "--effort", effort,
     "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--system-prompt", systemPrompt(),
     "--tools", "", "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__panel",
@@ -656,7 +807,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
     ...(sessionId ? ["--resume", sessionId] : []),
   ];
 
-  const { handle, state } = reader(chatId, run);
+  const { handle, state } = reader(chatId, run, { model });
 
   let code: number | null = 0;
   let stderr = "";
@@ -665,7 +816,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   // line stays as the fallback (chat_engine = "cli", or when the SDK can't start).
   let cli = getSetting("chat_engine") === "cli";
   if (!cli) {
-    ({ code, stderr } = await viaSdk(run, bin, token, prompt, sessionId, mcpUrl, handle, effort));
+    ({ code, stderr } = await viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle, model, effort }));
     if (stderr && !state.gotResult && !run.parts.length && !run.stopped) {
       console.error("Chat: the Agent SDK couldn't answer, using the command line:", stderr);
       cli = true;
@@ -703,15 +854,17 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
 
   if (run.stopped) return;
   // A conversation whose saved session is gone (cleared by Claude Code) starts over quietly.
-  const lost = (m: string) => /session|conversation/i.test(m) && /not found|no conversation|invalid|does not exist/i.test(m);
   if (sessionId && run.parts.length === 0 && (lost(stderr) || lost(state.resultError ?? ""))) {
     db.run("UPDATE chats SET session_id = NULL WHERE id = ?", [chatId]);
-    return drive(chatId, run, null, prompt, effort);
+    return drive(chatId, run, null, prompt, model, effort);
   }
   if (state.resultError) return finish(chatId, run, "error", friendly(state.resultError));
   if (!state.gotResult) return finish(chatId, run, "error", friendly(stderr.split("\n").pop() || `Claude Code stopped (code ${code}).`));
   finish(chatId, run, "done");
 }
+
+/** Claude Code saying the conversation it was asked to continue isn't there any more. */
+const lost = (m: string) => /session|conversation/i.test(m) && /not found|no conversation|invalid|does not exist/i.test(m);
 
 function friendly(m: string) {
   if (/rate.?limit|usage limit|429|529|overloaded/i.test(m)) return "Claude's usage limit was reached for now. Try again in a little while.";
@@ -778,39 +931,57 @@ export function follow(chatId: string, after: number, signal: AbortSignal) {
   });
 }
 
-export function setChatSettings(patch: { model?: string; effort?: string }) {
-  if (patch.model) setSetting("chat_model", patch.model);
-  if (patch.effort && ["low", "medium", "high", "xhigh", "max"].includes(patch.effort)) setSetting("chat_effort", patch.effort);
-}
-
 /**
  * One turn through the Agent SDK (@anthropic-ai/claude-agent-sdk), on the designer's own
  * claude binary and login. Only Panel's tools: no built-in ones, no settings from ~/.claude,
  * and every tool call checked here before it runs. Messages come out in the same shapes as
  * stream-json, so they go to the same handler.
  */
-async function viaSdk(run: Run, bin: string, token: string | null, prompt: string, sessionId: string | null, mcpUrl: string, handle: (d: unknown) => void, effort: Effort, fork = false) {
+interface SdkTurn {
+  bin: string;
+  token: string | null;
+  prompt: string;
+  sessionId: string | null;
+  mcpUrl: string;
+  handle: (d: unknown) => void;
+  model: string;
+  effort: Effort;
+  /** Start from the conversation so far and go its own way, leaving the chat's session as it is. */
+  fork?: boolean;
+  /** Tools of this turn's own, beside Panel's (the planner's hand-over). */
+  servers?: Record<string, McpServerConfig>;
+  /** Whether a tool may run: true, or why not. Panel's tools only, by default. */
+  allow?: (name: string) => true | string;
+  /** Instructions for this turn, when they aren't Panel's usual ones. */
+  system?: string;
+}
+
+const panelOnly = (name: string): true | string => (name.startsWith("mcp__panel__") ? true : "FRIDAY only uses Panel's tools.");
+
+async function viaSdk(run: Run, t: SdkTurn) {
   const abort = new AbortController();
+  const allow = t.allow ?? panelOnly;
   const q = query({
-    prompt,
+    prompt: t.prompt,
     options: {
-      pathToClaudeCodeExecutable: bin,
+      pathToClaudeCodeExecutable: t.bin,
       cwd: CHAT_DIR,
-      env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
-      model: chatSettings.model(),
-      effort,
-      systemPrompt: systemPrompt(),
+      env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(t.token ? { CLAUDE_CODE_OAUTH_TOKEN: t.token } : {}) },
+      model: t.model,
+      effort: t.effort,
+      systemPrompt: t.system ?? systemPrompt(),
       tools: [],
-      mcpServers: { panel: { type: "http", url: mcpUrl } },
+      mcpServers: { panel: { type: "http", url: t.mcpUrl }, ...t.servers },
       strictMcpConfig: true,
-      // No blanket allow: every tool call comes to canUseTool below, which lets only Panel's through.
+      // No blanket allow: every tool call comes to canUseTool below, which decides.
       settingSources: [],
       includePartialMessages: true,
       abortController: abort,
-      canUseTool: async (name, input) =>
-        name.startsWith("mcp__panel__") ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "FRIDAY only uses Panel's tools." },
-      // A fork starts from the conversation so far and goes its own way, leaving the chat's session as it is.
-      ...(sessionId ? { resume: sessionId, ...(fork ? { forkSession: true } : {}) } : {}),
+      canUseTool: async (name, input) => {
+        const ok = allow(name);
+        return ok === true ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: ok };
+      },
+      ...(t.sessionId ? { resume: t.sessionId, ...(t.fork ? { forkSession: true } : {}) } : {}),
     },
   });
   const sdk = { q, abort };
@@ -818,7 +989,7 @@ async function viaSdk(run: Run, bin: string, token: string | null, prompt: strin
   let stderr = "";
   try {
     for await (const m of q) {
-      handle(m);
+      t.handle(m);
       if (run.stopped) break;
     }
   } catch (e) {

@@ -584,8 +584,9 @@ export interface RefCard {
 
 export type ChatPart =
   | { type: "text"; text: string }
-  | { type: "thinking"; ms?: number; done?: boolean }
-  | { type: "tool"; id: string; name: string; input?: Record<string, unknown>; refs?: string[]; total?: number; error?: string; done?: boolean };
+  // `model`: which model did it, when one plans and another builds.
+  | { type: "thinking"; ms?: number; done?: boolean; model?: string }
+  | { type: "tool"; id: string; name: string; model?: string; input?: Record<string, unknown>; refs?: string[]; total?: number; error?: string; done?: boolean };
 
 export interface ChatMessage {
   id: string;
@@ -603,8 +604,8 @@ export interface ChatFull { id: string; title: string; messages: ChatMessage[]; 
 
 export type ChatEvent =
   | { t: "start"; message: ChatMessage }
-  | { t: "thinking"; on: boolean; ms?: number }
-  | { t: "tool"; id: string; name: string }
+  | { t: "thinking"; on: boolean; ms?: number; model?: string }
+  | { t: "tool"; id: string; name: string; model?: string }
   | { t: "tool_input"; id: string; input: Record<string, unknown>; partial?: boolean }
   | { t: "tool_result"; id: string; refs: string[]; cards: RefCard[]; total?: number; error?: string }
   // A sketch's page as written so far, while FRIDAY is still writing it.
@@ -613,6 +614,19 @@ export type ChatEvent =
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string }
   | { t: "idle" };
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+/** Which model answers and how hard it thinks; or, in "duo", which plans and which builds. */
+export interface ChatSettings {
+  mode: "solo" | "duo";
+  model: string;
+  effort: Effort;
+  plan_model: string;
+  plan_effort: Effort;
+  build_model: string;
+  build_effort: Effort;
+  models: { id: string; name: string; note: string }[];
+}
 
 export const chatApi = {
   list: () => call<ChatSummary[]>("/api/chats"),
@@ -623,9 +637,9 @@ export const chatApi = {
     call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
   stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
   cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
-  settings: () => call<{ model: string; effort: string }>("/api/chat/settings"),
-  setSettings: (patch: { model?: string; effort?: string }) =>
-    call<{ model: string; effort: string }>("/api/chat/settings", { method: "PATCH", body: body(patch) }),
+  settings: () => call<ChatSettings>("/api/chat/settings"),
+  setSettings: (patch: Partial<Omit<ChatSettings, "models">>) =>
+    call<ChatSettings>("/api/chat/settings", { method: "PATCH", body: body(patch) }),
   /**
    * Follow a running answer from event `after` on. Calls `on` for each event with its
    * number; resolves when the answer ends (or there's nothing running).
@@ -791,6 +805,9 @@ export const studioApi = {
   /** Keep the knobs as they are now: a new version with these :root variables changed. */
   setVars: (project: string, sketch: string, vars: Record<string, string>, from_version: number) =>
     call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/vars`, { method: "POST", body: body({ vars, from_version }) }),
+  /** Words the designer edited in place in the studio, kept as a new version. */
+  setText: (project: string, sketch: string, edit: { path: string; before: string; after: string; before_text: string; after_text: string }, from_version: number) =>
+    call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/text`, { method: "POST", body: body({ ...edit, from_version }) }),
   folders: () => call<{ recent: string[]; found: string[]; home: string }>("/api/builds/folders"),
   build: (o: { project: string; sketch: string; folder: string; note?: string }) => call<Build>("/api/builds", { method: "POST", body: body(o) }),
   getBuild: (id: string) => call<Build>(`/api/builds/${id}`),

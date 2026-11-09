@@ -161,3 +161,19 @@ describe("backups", () => {
     expect((await p.send("PATCH", "/api/backup", { dir: join(p.dir, "media") })).status).toBe(400);
   });
 });
+
+describe("FRIDAY's model", () => {
+  test("one model by default; plan-then-build can be picked, and only known models and efforts are kept", async () => {
+    const s = await p.get("/api/chat/settings");
+    expect(s.mode).toBe("solo");
+    expect(s.model).toBe("claude-opus-5-5");
+    expect(s.plan_model).toBe("claude-fable-5-2");
+    expect(s.models.length).toBe(4);
+    const next = await (await p.send("PATCH", "/api/chat/settings", { mode: "duo", plan_effort: "max", build_model: "claude-sonnet-5-5", model: "gpt-9", effort: "huge" })).json();
+    expect(next.mode).toBe("duo");
+    expect(next.plan_effort).toBe("max");
+    expect(next.build_model).toBe("claude-sonnet-5-5");
+    expect(next.model).toBe("claude-opus-5-5");
+    expect(next.effort).toBe("high");
+  });
+});

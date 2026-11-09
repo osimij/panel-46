@@ -470,7 +470,7 @@ function NewGroupButton({ onCreate }: { onCreate: (name: string) => void }) {
 
 // ---------- Menus ----------
 
-export function Popover({ x, y, onClose, children }: { x: number; y: number; onClose: () => void; children: React.ReactNode }) {
+export function Popover({ x, y, onClose, children, className }: { x: number; y: number; onClose: () => void; children: React.ReactNode; className?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ x, y });
   useLayoutEffect(() => {
@@ -492,7 +492,7 @@ export function Popover({ x, y, onClose, children }: { x: number; y: number; onC
   // Portal to <body>: the header's backdrop blur would otherwise become the
   // containing block for this fixed-position menu and shift it sideways.
   return createPortal(
-    <div ref={ref} className="popover" style={{ left: pos.x, top: pos.y }} role="menu">
+    <div ref={ref} className={`popover ${className ?? ""}`} style={{ left: pos.x, top: pos.y }} role="menu">
       {children}
     </div>,
     document.body,

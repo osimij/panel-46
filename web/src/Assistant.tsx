@@ -9,6 +9,7 @@ import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
 import { Popover } from "./TagRow.tsx";
+import { ModelPicker } from "./ModelPicker.tsx";
 
 export interface AssistantHandle {
   /** Ask, about what's given instead of what's open or selected (the studio's sketch, or a part of it). */
@@ -65,7 +66,7 @@ function applyEvent(m: Msg, e: ChatEvent): Msg {
       return { ...e.message, key: m.key, parts: m.parts.length ? m.parts : e.message.parts };
     case "thinking":
       if (e.on) {
-        if (!(last?.type === "thinking" && !last.done)) parts.push({ type: "thinking" });
+        if (!(last?.type === "thinking" && !last.done)) parts.push({ type: "thinking", model: e.model });
       } else {
         const i = parts.findLastIndex((p) => p.type === "thinking");
         if (i >= 0) {
@@ -75,7 +76,7 @@ function applyEvent(m: Msg, e: ChatEvent): Msg {
       }
       return { ...m, parts };
     case "tool":
-      parts.push({ type: "tool", id: e.id, name: e.name });
+      parts.push({ type: "tool", id: e.id, name: e.name, model: e.model });
       return { ...m, parts };
     case "tool_input":
     case "tool_result": {
@@ -128,7 +129,6 @@ export function Assistant(props: {
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<{ x: number; y: number } | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [effort, setEffort] = useState<string | null>(null);
   // Answers that arrived while you were here play in; older ones just appear.
   const live = useRef(new Set<string>());
   const follower = useRef<AbortController | null>(null);
@@ -401,11 +401,6 @@ export function Assistant(props: {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setHistory({ x: r.left - 180, y: r.bottom + 6 });
     chatApi.list().then(setChats).catch(() => {});
-    chatApi.settings().then((s) => setEffort(s.effort)).catch(() => {});
-  };
-  const pickEffort = (value: string) => {
-    setEffort(value);
-    void chatApi.setSettings({ effort: value }).catch(() => {});
   };
 
   return (
@@ -555,22 +550,6 @@ export function Assistant(props: {
               </div>
             ))}
           </div>
-          <div className="menu-label ask-depth-label">How hard it thinks</div>
-          <div className="ask-depth" role="radiogroup" aria-label="How hard it thinks">
-            {DEPTHS.map((d) => (
-              <button
-                key={d.value}
-                role="radio"
-                aria-checked={effort === d.value}
-                className={effort === d.value ? "on" : ""}
-                onClick={() => pickEffort(d.value)}
-                title={d.hint}
-              >
-                {d.label}
-              </button>
-            ))}
-          </div>
-          <div className="ask-depth-hint">{DEPTHS.find((d) => d.value === effort)?.hint ?? ""}</div>
         </Popover>
       )}
     </aside>
@@ -582,12 +561,6 @@ function refTitle(r: Ref) {
   const summary = r.read?.profile?.summary;
   return r.title || (typeof summary === "string" ? summary.split(/(?<=\.)\s/)[0]!.replace(/\.$/, "") : "") || displayTitle(r);
 }
-
-const DEPTHS = [
-  { value: "medium", label: "Quick", hint: "Answers sooner, looks at less." },
-  { value: "high", label: "Thorough", hint: "Searches a few ways and looks before it answers." },
-  { value: "xhigh", label: "Deep", hint: "Takes its time: more searches, more looking." },
-];
 
 /**
  * Ask's width, kept in a rule of its own that sets --chat on just the elements that use
@@ -871,6 +844,8 @@ const q = (s: unknown) => (typeof s === "string" && s ? <q className="step-q">{s
 function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.ReactNode } {
   if (p.type === "thinking") {
     const s = Math.round((p.ms ?? 0) / 1000);
+    // With two models on one answer, say which one is thinking.
+    if (p.model) return { doing: `${p.model} is thinking`, done: s >= 1 ? `${p.model} thought for ${s}s` : `${p.model} thought it over` };
     return { doing: "Thinking", done: s >= 1 ? `Thought for ${s}s` : "Thought it over" };
   }
   if (p.type !== "tool") return { doing: "", done: "" };
@@ -943,6 +918,8 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
     }
     case "get_sketch":
       return { doing: "Looking at the sketch", done: "Looked at the sketch" };
+    case "hand_to_builder":
+      return { doing: "Writing the plan", done: <>Handed the plan to {typeof i.to === "string" ? i.to : "the builder"}</> };
     default:
       return { doing: p.name.replace(/_/g, " "), done: p.name.replace(/_/g, " ") };
   }
@@ -958,7 +935,10 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
   }, [parts]);
   const tools = parts.filter((p) => p.type === "tool");
   const EDITS = ["place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic", "make_sketch", "edit_sketch"];
-  const CANVAS = ["list_projects", "get_project", "get_project_material", "get_sketch", ...EDITS];
+  const CANVAS = ["list_projects", "get_project", "get_project_material", "get_sketch", "hand_to_builder", ...EDITS];
+  // When one model plans and another builds, each run of steps says whose it is.
+  const model = parts.flatMap((p) => (p.type !== "text" && p.model ? [p.model] : []))[0];
+  const planned = tools.some((p) => p.type === "tool" && p.name === "hand_to_builder");
   const searches = tools.filter((p) => p.type === "tool" && p.name !== "get_reference" && p.name !== "library_overview" && p.name !== "save_to_collection" && !CANVAS.includes(p.name)).length;
   const placed = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "place_on_board" ? (p.refs?.length ?? 0) : 0), 0);
   const sketched = tools.filter((p) => p.type === "tool" && p.name === "make_sketch" && !p.error).length;
@@ -974,6 +954,7 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
       saved && saved.type === "tool" ? `saved to “${String(saved.input?.name ?? "a collection")}”` : "",
       sketched ? `made ${sketched} ${sketched === 1 ? "sketch" : "sketches"}` : "",
       placed ? `placed ${placed} on the canvas` : edited && !sketched ? "updated the canvas" : "",
+      planned ? "wrote the plan" : "",
     ].filter(Boolean).join(", ") || "Thought it over";
 
   return (
@@ -983,6 +964,7 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
           <button className="steps-summary" onClick={() => setUserOpen(!expanded)} aria-expanded={expanded}>
             {refs.length > 0 && <Thumbs ids={refs.slice(0, 5)} ctx={ctx} />}
             <span>{summary.charAt(0).toUpperCase() + summary.slice(1)}{refs.length ? ` · ${refs.length} saves` : ""}</span>
+            {model && <span className="steps-model">{model}</span>}
             <span className="steps-chevron"><Icon name="chevron-down" size={12} /></span>
           </button>
         </div>
@@ -1014,6 +996,7 @@ function Step({ part, ctx, label }: { part: ChatPart; ctx: Ctx; label?: string }
           <Gallery ids={ids.slice(0, 12)} ctx={ctx} small />
         )}
         {part.type === "tool" && !done && (part.name === "make_sketch" || part.name === "edit_sketch") && <LiveDraft id={part.id} />}
+        {part.type === "tool" && part.name === "hand_to_builder" && typeof part.input?.plan === "string" && <div className="step-plan">{part.input.plan}</div>}
       </div>
     </div>
   );
@@ -1335,6 +1318,7 @@ function Composer(props: {
           spellCheck={false}
           aria-label="Message"
         />
+        <ModelPicker />
         {running ? (
           <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
             <Icon name="stop" size={14} />

@@ -226,6 +226,13 @@
 }
 .steps-summary:hover { background: var(--fill); color: var(--text); }
 .steps-summary > span:nth-child(2), .steps-summary > span:first-child:not(.thumbs) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steps-model { flex: none; font-size: 11px; color: var(--faint); padding: 1px 6px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); }
+/* The plan one model wrote for the other, as written. */
+.step-plan {
+  margin: 6px 0 2px; padding: 9px 11px; max-height: 240px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 12px; line-height: 1.5; color: var(--muted); background: var(--fill);
+  border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner);
+}
 .steps-chevron { display: grid; place-items: center; transition: transform 0.35s var(--ease); opacity: 0.6; }
 .steps.expanded .steps-chevron { transform: rotate(180deg); }
 .steps:not(.live) .steps-body > div { padding: 4px 0 2px; }
@@ -330,6 +337,31 @@
 .composer.has-text .composer-btn.send { animation: btn-swap 0.35s var(--spring) both, send-ready 0.4s var(--spring); }
 @keyframes send-ready { 50% { transform: scale(1.1); } }
 .composer-btn.stop { background: var(--fill); color: var(--text); }
+
+/* Which model answers: a quiet chip beside Send, and its menu. */
+.model-chip {
+  flex: none; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 7px 0 9px; margin-bottom: 2px;
+  font-size: 12px; color: var(--muted); white-space: nowrap; border-radius: 999px;
+}
+.model-chip:hover, .model-chip.on { background: var(--fill); color: var(--text); }
+.model-chip .faint { color: var(--faint); }
+.popover.mp { width: 300px; max-width: calc(100vw - 24px); padding: 8px 5px 6px; }
+.mp .ask-depth { margin: 2px 4px 0; }
+.mp .ask-depth button { font-size: 11.5px; }
+.mp-mode { margin-bottom: 4px !important; }
+.mp-label { padding-top: 8px; }
+.mp-hint { margin: 0; padding: 7px 9px 3px; font-size: 11.5px; line-height: 1.4; color: var(--faint); }
+.mp-effort { margin-top: 6px !important; }
+.mp-model {
+  display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 9px; text-align: left; color: var(--text);
+  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+}
+.mp-model:hover { background: var(--fill); }
+.mp-model-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mp-name { font-size: 13px; }
+.mp-model.on .mp-name { font-weight: 500; }
+.mp-note { font-size: 11.5px; color: var(--faint); line-height: 1.35; }
+.mp-role + .mp-role { margin-top: 4px; }
 .composer-btn.stop:hover { background: var(--fill-hover); }
 .composer-context {
   display: flex; align-items: center; gap: 7px; height: 28px; margin: 0 0 2px -8px; padding: 0 2px 0 3px;
