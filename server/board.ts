@@ -398,7 +398,7 @@ export function sketchFamily(projectId: string, sketchId: string) {
 export function sketchInfo(projectId: string, sketchId: string) {
   const versions = versionsOf(projectId, sketchId).map((v) => {
     const r = renderOf(projectId, sketchId, v);
-    return { v, errors: r.errors.length, height: r.height };
+    return { v, errors: r.errors.length, height: r.height, rules: r.rules ?? [] };
   });
   const last = versions.at(-1)?.v;
   const states = last ? statesOf(readSketch(projectId, sketchId, last)) : [];

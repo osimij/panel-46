@@ -8,6 +8,7 @@ import { designRules } from "./rules.ts";
 import { chosenRefs, findProject, listProjects, projectsOf, summary, REF_STATES, TOPIC_FACETS } from "./projects.ts";
 import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, type SketchResult } from "./board.ts";
 import { DEVICES, fullUrl, SCREEN, sketchPath, type Device, type Render } from "./sketches.ts";
+import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, saveToCollection, search, similar } from "./library.ts";
 
@@ -60,6 +61,8 @@ async function sketchContent(head: Record<string, unknown>, render: Render, pict
       ...head,
       page_height: render.height || undefined,
       page_errors: render.errors.length ? render.errors : undefined,
+      // Measured in the page, not judged: "breaks" must be fixed, "check" needs a real reason to stay.
+      rule_checks: describeFindings(render.rules),
       not_rendered: render.failed,
     }),
   }];
@@ -74,7 +77,7 @@ async function sketchContent(head: Record<string, unknown>, render: Render, pict
   return content;
 }
 
-const LOOK = "Look at the screens before you answer: check them against the brief, the locked decisions and the designer's rules, and fix what's off with edit_sketch first. page_errors come from the page itself (scripts, fonts, images that failed).";
+const LOOK = "Look at the screens before you answer: check them against the brief, the locked decisions and the designer's rules, and fix what's off with edit_sketch first. page_errors come from the page itself (scripts, fonts, images that failed). rule_checks are what Panel measured in the page against the designer's rules: fix every one marked breaks before you reply; for each marked check, remove it or be ready to say why it earns its place. The checks can't see everything (whether something physical looks real, whether a font's Cyrillic is well drawn), so still look.";
 
 const made = async (r: SketchResult, device: Device = "desktop") =>
   sketchContent({

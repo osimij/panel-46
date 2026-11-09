@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST, LIBRARY_DIR, PORT } from "./config.ts";
 import { Cdp, chromePath, devtoolsUrl, evaluate, READY_SCRIPT, trackNetwork } from "./site.ts";
+import { ruleCheckScript, type RuleFinding } from "./rulecheck.ts";
 
 const ID = /^[0-9a-f]{16}$/;
 /** The screen a sketch is looked at on: a laptop, at 1×. Claude sees screens of this size. */
@@ -159,6 +160,8 @@ export interface Render {
   height: number;
   /** What went wrong in the page: script errors, failed fonts and images. */
   errors: string[];
+  /** Where the page breaks or brushes against the designer's rules, as measured in Chrome (rulecheck.ts). */
+  rules?: RuleFinding[];
   /** Set when there's no picture at all (no Chrome, Panel not running). */
   failed?: string;
 }
@@ -172,21 +175,21 @@ export async function writeVersion(projectId: string, sketchId: string, html: st
   const version = (versionsOf(projectId, sketchId).at(-1) ?? 0) + 1;
   writeFileSync(join(dir, `v${version}.html`), html);
   const render = await renderSketch(projectId, sketchId, version, device);
-  writeFileSync(join(dir, `v${version}.json`), JSON.stringify({ height: render.height, errors: render.errors, screens: render.screens.length, failed: render.failed }));
+  writeFileSync(join(dir, `v${version}.json`), JSON.stringify({ height: render.height, errors: render.errors, rules: render.rules, screens: render.screens.length, failed: render.failed }));
   return { version, render };
 }
 
 /** What the last render of a version saw, from disk. */
 export function renderOf(projectId: string, sketchId: string, v: number): Render {
   const dir = sketchDir(projectId, sketchId);
-  let meta: { height?: number; errors?: string[]; screens?: number; failed?: string } = {};
+  let meta: { height?: number; errors?: string[]; rules?: RuleFinding[]; screens?: number; failed?: string } = {};
   try {
     meta = JSON.parse(readFileSync(join(dir, `v${v}.json`), "utf8"));
   } catch {
     /* rendered before it was written down, or never */
   }
   const screens = Array.from({ length: MAX_SCREENS }, (_, i) => join(dir, `v${v}${i ? `-${i + 1}` : ""}.jpg`)).filter((f) => existsSync(f));
-  return { screens, height: meta.height ?? 0, errors: meta.errors ?? [], failed: meta.failed };
+  return { screens, height: meta.height ?? 0, errors: meta.errors ?? [], rules: meta.rules, failed: meta.failed };
 }
 
 // ---------- Rendering, in a Chrome kept warm between sketches ----------
@@ -288,14 +291,14 @@ export async function renderView(projectId: string, sketchId: string, v: number,
     try {
       const m = JSON.parse(readFileSync(meta, "utf8"));
       const screens = Array.from({ length: m.screens ?? 0 }, (_, i) => join(dir, `${base}${i ? `-${i + 1}` : ""}.jpg`)).filter((f) => existsSync(f));
-      if (screens.length) return { screens, height: m.height ?? 0, errors: m.errors ?? [] };
+      if (screens.length) return { screens, height: m.height ?? 0, errors: m.errors ?? [], rules: m.rules };
     } catch {
       /* render it again */
     }
   }
   const url = fullUrl(sketchPath(projectId, sketchId, v)) + (slug ? `#${slug}` : "");
   const r = await queue(() => shoot(url, device, (i) => join(dir, `${base}${i ? `-${i + 1}` : ""}.jpg`)));
-  if (!r.failed) writeFileSync(meta, JSON.stringify({ height: r.height, errors: r.errors, screens: r.screens.length }));
+  if (!r.failed) writeFileSync(meta, JSON.stringify({ height: r.height, errors: r.errors, rules: r.rules, screens: r.screens.length }));
   return r;
 }
 
@@ -375,6 +378,9 @@ async function shoot(url: string, device: Device, fileOf: (i: number) => string,
     } finally {
       net.stop();
     }
+    // The designer's rules, where they can be measured: corners, the wordmark, fonts' letters…
+    const check = ruleCheckScript();
+    const rules = check ? await evaluate<RuleFinding[]>(s, check, 6000).catch(() => undefined) : undefined;
     const height = await evaluate<number>(s, "Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)", 3000).catch(() => screen.height);
     const count = Math.min(maxScreens, Math.max(1, Math.ceil((height - 40) / screen.height)));
     const screens: string[] = [];
@@ -386,7 +392,7 @@ async function shoot(url: string, device: Device, fileOf: (i: number) => string,
       writeFileSync(file, Buffer.from(shot.data, "base64"));
       screens.push(file);
     }
-    return { screens, height: Math.round(height), errors };
+    return { screens, height: Math.round(height), errors, rules };
   } finally {
     offs.forEach((off) => off());
     await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
