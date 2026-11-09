@@ -8,9 +8,10 @@ import { newId } from "./db.ts";
 import { load } from "./library.ts";
 import { apply, findProject, getProject, TOPIC_FACETS, type BoardNode, type Op, type RefState, type TopicFacet } from "./projects.ts";
 import { PORT } from "./config.ts";
+import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionsOf, writeVersion, type Device, type Render } from "./sketches.ts";
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components", other: "Other" };
-const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 } };
+const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 }, sketch: { w: 360, h: 300 }, build: { w: 380, h: 330 } };
 /** Columns of saves under a topic, and the room each takes (a tall save with its why fits). */
 const COL = 236, ROW = 400, PER_ROW = 3;
 /** How far right the next topic goes: past three columns of saves. */
@@ -223,3 +224,183 @@ export const projectLink = (project: string) => {
   return p ? `http://127.0.0.1:${PORT}/?project=${p.id}` : undefined;
 };
 
+
+// ---------- Sketches ----------
+
+const sketchName = (n: BoardNode) => String(n.data.title || "").trim() || "Untitled sketch";
+
+/** A sketch by its id or its title. */
+function findSketch(b: Board, sketch: string) {
+  const all = b.full.nodes.filter((n) => n.kind === "sketch");
+  const want = words(sketch);
+  return all.find((n) => n.id === sketch.trim()) ?? all.find((n) => words(sketchName(n)) === want) ?? all.find((n) => words(sketchName(n)).includes(want));
+}
+
+/** What a new sketch hangs from: a sketch (by id or title), a save on the canvas (by its id), or a topic. */
+function findSource(b: Board, from: string) {
+  const v = from.trim();
+  return (
+    b.full.nodes.find((n) => n.id === v) ??
+    b.full.nodes.find((n) => n.kind === "ref" && n.ref_id === v) ??
+    findSketch(b, v) ??
+    findTopic(b, v)
+  );
+}
+
+/**
+ * Where a new sketch goes. From another sketch: in a column to its right, so branches of
+ * one sketch stack together. From a topic or a save: in a row above it, clear of the saves
+ * beneath topics. On its own: right of everything.
+ */
+function sketchSpot(b: Board, from?: BoardNode) {
+  const { w: W, h: H } = SIZE.sketch;
+  if (from) {
+    const s = SIZE[from.kind];
+    for (let i = 0; i < 24; i++) {
+      const spot = from.kind === "sketch" ? { x: from.x + s.w + 110, y: from.y + i * (H + 56) } : { x: from.x + i * (W + 40), y: from.y - H - 90 };
+      if (!overlaps(b, spot.x, spot.y, W, H)) return spot;
+    }
+  }
+  if (!b.full.nodes.length) return { x: 0, y: 0 };
+  return { x: Math.max(...b.full.nodes.map((n) => n.x + SIZE[n.kind].w)) + 160, y: Math.min(...b.full.nodes.map((n) => n.y)) };
+}
+
+export interface SketchResult {
+  project: string;
+  id: string;
+  title: string;
+  version: number;
+  render: Render;
+  /** The states it says it has (meta panel:states). */
+  states?: string[];
+  linked_saves?: string[];
+}
+
+export async function makeSketch(o: { project: string; title: string; tries?: string; html: string; from?: string; uses?: string[]; device?: Device }): Promise<SketchResult> {
+  const first = board(o.project);
+  if (o.from && !findSource(first, o.from)) throw new Error(`Nothing called “${o.from}” on this canvas: give a sketch's id or title, a save's id or a topic's name.`);
+  const id = newId();
+  const title = o.title.trim().slice(0, 120) || "Untitled sketch";
+  const device = o.device && o.device !== "desktop" ? o.device : undefined;
+  const { version, render } = await writeVersion(first.p.id, id, o.html, device);
+  // Rendering takes a few seconds; place it on the canvas as it is now.
+  const b = board(o.project);
+  const from = o.from ? findSource(b, o.from) : undefined;
+  const ops: Op[] = [{ op: "add_node", node: { id, kind: "sketch", data: { title, tries: o.tries?.trim().slice(0, 300), state: "proposed", version, ...(device ? { device } : {}) }, ...sketchSpot(b, from) } }];
+  if (from) ops.push({ op: "add_edge", edge: { source: from.id, target: id } });
+  // The saves it took from, when they're on the canvas: a line from each, so the designer sees where it came from.
+  const used: string[] = [];
+  for (const ref of new Set(o.uses ?? [])) {
+    const n = b.full.nodes.find((x) => x.kind === "ref" && x.ref_id === ref);
+    if (n && n.id !== from?.id) {
+      ops.push({ op: "add_edge", edge: { source: n.id, target: id, label: "uses" } });
+      used.push(ref);
+    }
+  }
+  apply(b.p.id, ops, "assistant", { label: `Sketched ${title}` });
+  return { project: b.p.id, id, title, version, render, states: statesOf(o.html).map((x) => `${x.name} (#${x.slug})`), linked_saves: used.length ? used : undefined };
+}
+
+export interface Edit { find: string; replace: string; all?: boolean }
+
+export async function editSketch(o: { project: string; sketch: string; html?: string; edits?: Edit[]; from_version?: number; title?: string; tries?: string }): Promise<SketchResult> {
+  const b = board(o.project);
+  const node = findSketch(b, o.sketch);
+  if (!node) throw new Error(`No sketch “${o.sketch}” on this canvas. get_project lists the sketches.`);
+  const base = o.from_version ?? (Number(node.data.version) || 1);
+  if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
+  const meta: Record<string, unknown> = {};
+  if (o.title?.trim()) meta.title = o.title.trim().slice(0, 120);
+  if (o.tries !== undefined) meta.tries = o.tries.trim().slice(0, 300);
+  const title = String(meta.title ?? sketchName(node));
+
+  let html: string | undefined;
+  if (o.html) html = o.html;
+  else if (o.edits?.length) {
+    html = readSketch(b.p.id, node.id, base);
+    for (const e of o.edits) {
+      const n = e.find ? html.split(e.find).length - 1 : 0;
+      if (!n) throw new Error(`Couldn't find this in version ${base} of the sketch, so nothing was changed: “${e.find.slice(0, 120)}”. get_sketch shows its page as it is.`);
+      if (n > 1 && !e.all) throw new Error(`This is in the sketch ${n} times, so nothing was changed: “${e.find.slice(0, 120)}”. Include more around it, or set all: true.`);
+      html = e.all ? html.split(e.find).join(e.replace) : html.replace(e.find, () => e.replace);
+    }
+  } else if (o.from_version) html = readSketch(b.p.id, node.id, base);
+
+  if (html === undefined) {
+    if (!Object.keys(meta).length) throw new Error("Nothing to change: give html, edits, or a new title or tries.");
+    apply(b.p.id, [{ op: "update_node", id: node.id, data: meta }], "assistant", { label: `Renamed a sketch to ${title}` });
+    const v = Number(node.data.version) || 1;
+    return { project: b.p.id, id: node.id, title, version: v, render: renderOf(b.p.id, node.id, v) };
+  }
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
+  apply(b.p.id, [{ op: "update_node", id: node.id, data: { ...meta, version } }], "assistant", { label: `Changed ${title} (version ${version})` });
+  return { project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`) };
+}
+
+export async function getSketch(o: { project: string; sketch: string; version?: number; device?: Device; state?: string }) {
+  const b = board(o.project);
+  const node = findSketch(b, o.sketch);
+  if (!node) throw new Error(`No sketch “${o.sketch}” on this canvas. get_project lists the sketches.`);
+  const version = o.version ?? (Number(node.data.version) || 1);
+  const html = readSketch(b.p.id, node.id, version);
+  const states = statesOf(html);
+  const own = (node.data.device as Device | undefined) ?? "desktop";
+  const device = o.device ?? own;
+  let state: { name: string; slug: string } | undefined;
+  if (o.state?.trim()) {
+    const want = o.state.trim().toLowerCase().replace(/^#/, "");
+    const found = states.find((x) => x.name.toLowerCase() === want || x.slug === want);
+    if (!found) throw new Error(states.length ? `This sketch has no state “${o.state}”. Its states: ${states.map((x) => `${x.name} (#${x.slug})`).join(", ")}.` : "This sketch doesn't list any states (meta panel:states).");
+    if (found !== states[0]) state = found;
+  }
+  const render = device === own && !state ? renderOf(b.p.id, node.id, version) : await renderView(b.p.id, node.id, version, device, state?.slug);
+  return {
+    // "sketch", not "id": Ask reads "id" in a tool's answer as a save to show.
+    sketch: node.id,
+    title: sketchName(node),
+    tries: (node.data.tries as string) || undefined,
+    state: String(node.data.state ?? "kept"),
+    designer_reason: (node.data.reason as string) || undefined,
+    version,
+    showing: Number(node.data.version) || 1,
+    versions: versionsOf(b.p.id, node.id),
+    made_for: own,
+    seen_on: device,
+    states: states.length ? states.map((x) => `${x.name} (#${x.slug})`) : undefined,
+    seen_state: state ? `${state.name} (#${state.slug})` : undefined,
+    page: fullUrl(sketchPath(b.p.id, node.id, version)),
+    html,
+    render,
+  };
+}
+
+/** The sketches that branch from this one, and the ones it branches from: its family, for the studio. */
+export function sketchFamily(projectId: string, sketchId: string) {
+  const full = getProject(projectId);
+  if (!full) return [];
+  const sk = new Map(full.nodes.filter((n) => n.kind === "sketch").map((n) => [n.id, n]));
+  const parentOf = new Map<string, string>();
+  for (const e of full.edges) if (sk.has(e.source) && sk.has(e.target) && !parentOf.has(e.target)) parentOf.set(e.target, e.source);
+  let root = sketchId;
+  for (let i = 0; i < 50 && parentOf.has(root); i++) root = parentOf.get(root)!;
+  const out: { id: string; parent: string | null; depth: number; title: string; tries?: string; state: string; version: number; reason?: string }[] = [];
+  const walk = (id: string, depth: number) => {
+    const n = sk.get(id);
+    if (!n || out.some((x) => x.id === id) || out.length > 60) return;
+    out.push({ id, parent: parentOf.get(id) ?? null, depth, title: sketchName(n), tries: (n.data.tries as string) || undefined, state: String(n.data.state ?? "kept"), version: Number(n.data.version) || 1, reason: (n.data.reason as string) || undefined });
+    for (const [child, p] of parentOf) if (p === id) walk(child, depth + 1);
+  };
+  walk(root, 0);
+  return out;
+}
+
+/** What the studio needs about one sketch: its versions, with what each render saw, and its states. */
+export function sketchInfo(projectId: string, sketchId: string) {
+  const versions = versionsOf(projectId, sketchId).map((v) => {
+    const r = renderOf(projectId, sketchId, v);
+    return { v, errors: r.errors.length, height: r.height };
+  });
+  const last = versions.at(-1)?.v;
+  const states = last ? statesOf(readSketch(projectId, sketchId, last)) : [];
+  return { versions, states, family: sketchFamily(projectId, sketchId) };
+}

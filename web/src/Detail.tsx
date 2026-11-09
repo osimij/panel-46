@@ -142,7 +142,7 @@ export function Detail(props: {
           </button>
           <div className="detail-bar-right">
             {props.onAsk && (
-              <button className="round-btn ask-here" onClick={props.onAsk} aria-label="Ask about this" title="Ask about this (⌘J)">
+              <button className="round-btn ask-here" onClick={props.onAsk} aria-label="Ask FRIDAY about this" title="Ask FRIDAY about this (⌘J)">
                 <Mark size={14} />
               </button>
             )}

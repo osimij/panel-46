@@ -16,8 +16,10 @@ import "@xyflow/react/dist/base.css";
 import "./canvas.css";
 import {
   api, chatApi, displayTitle, localId, prefersReducedMotion, projectApi,
-  type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type CanvasSelection, type Material, type Ref, type RefCard, type RefState, type TopicFacet,
+  studioApi,
+  type Build, type BoardEdge, type BoardEvent, type BoardNode, type BoardOp, type CanvasSelection, type Device, type Material, type Ref, type RefCard, type RefState, type SketchPoint, type TopicFacet,
 } from "./api.ts";
+import { Studio } from "./Studio.tsx";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
 
@@ -27,10 +29,16 @@ type Enter = { enter?: number; leaving?: boolean; focus?: boolean };
 type TopicData = Enter & { title: string; facet?: TopicFacet; status?: "exploring" | "locked"; summary?: string };
 type RefData = Enter & { refId: string; state?: RefState; taking?: string };
 type NoteData = Enter & { text: string };
+/** A quick page Claude made to try a direction; its files live at the companion, by version. */
+type SketchData = Enter & { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: Device };
+/** Claude Code building a chosen sketch for real; its progress comes from the companion. */
+type BuildData = Enter & { build: string; title: string };
 type TopicNode = Node<TopicData, "topic">;
 type RefNode = Node<RefData, "ref">;
 type NoteNode = Node<NoteData, "note">;
-type AnyNode = TopicNode | RefNode | NoteNode;
+type SketchNode = Node<SketchData, "sketch">;
+type BuildNode = Node<BuildData, "build">;
+type AnyNode = TopicNode | RefNode | NoteNode | SketchNode | BuildNode;
 
 export const FACETS: { value: TopicFacet; label: string }[] = [
   { value: "typography", label: "Typography" },
@@ -51,6 +59,10 @@ function toFlow(b: BoardNode, enter?: number): AnyNode {
     return { id: b.id, type: "topic", position, data: { title: String(d.title ?? ""), facet: d.facet as TopicFacet, status: d.status as TopicData["status"], summary: d.summary as string | undefined, enter } };
   }
   if (b.kind === "ref") return { id: b.id, type: "ref", position, data: { refId: b.ref_id!, state: d.state as RefState, taking: d.taking as string | undefined, enter } };
+  if (b.kind === "sketch") {
+    return { id: b.id, type: "sketch", position, data: { title: String(d.title ?? ""), tries: d.tries as string | undefined, state: d.state as RefState, version: Number(d.version) || 1, reason: d.reason as string | undefined, device: d.device as Device | undefined, enter } };
+  }
+  if (b.kind === "build") return { id: b.id, type: "build", position, data: { build: String(d.build ?? ""), title: String(d.title ?? ""), enter } };
   return { id: b.id, type: "note", position, data: { text: String(d.text ?? ""), enter } };
 }
 const toEdge = (e: BoardEdge): Edge => ({ id: e.id, source: e.source, target: e.target, type: "float", label: e.label || undefined });
@@ -59,20 +71,30 @@ const toEdge = (e: BoardEdge): Edge => ({ id: e.id, source: e.source, target: e.
 function stored(n: AnyNode): Record<string, unknown> {
   if (n.type === "topic") return { title: n.data.title, facet: n.data.facet, status: n.data.status, summary: n.data.summary };
   if (n.type === "ref") return { state: n.data.state, taking: n.data.taking };
+  if (n.type === "sketch") return { title: n.data.title, tries: n.data.tries, state: n.data.state, version: n.data.version, reason: n.data.reason, device: n.data.device };
+  if (n.type === "build") return { build: n.data.build, title: n.data.title };
   return { text: n.data.text };
 }
 
 // ---------- Shared with the nodes ----------
 
 interface Actions {
+  /** The project's id: sketches' files are found by it. */
+  project: string;
   cards: Map<string, RefCard>;
   patch: (id: string, data: Record<string, unknown>) => void;
   remove: (ids: string[]) => void;
   note: (forId: string) => void;
   open: (refId: string) => void;
+  /** Look at a sketch, live, in the large view. */
+  openSketch: (nodeId: string) => void;
   clearFocus: (id: string) => void;
   /** Ask about what's selected. */
   ask: () => void;
+  /** Something went wrong, in words for the designer. */
+  error: (text: string) => void;
+  /** Ask FRIDAY to sketch a direction from these nodes (a save, several, a decision). */
+  sketchFrom: (ids: string[]) => void;
   /** Saves under a locked topic that weren't chosen: how many, and whether they're showing. */
   considered: Map<string, { n: number; open: boolean }>;
   toggleConsidered: (topicId: string) => void;
@@ -242,7 +264,8 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
           <Tool icon={locked ? "refresh" : "check"} label={locked ? "Reopen" : "Lock"} on={locked} onClick={() => act.patch(id, { status: locked ? "exploring" : "locked" })} />
-          <Tool icon="ask" label="Ask" onClick={act.ask} />
+          <Tool icon="build" label="Sketch" onClick={() => act.sketchFrom([id])} />
+          <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="compose" label="Rename" onClick={() => setRenaming(true)} />
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
@@ -281,7 +304,8 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
           <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
           {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
           <Tool icon="x" label="Rule out" on={state === "ruled_out"} onClick={() => act.patch(id, { state: state === "ruled_out" ? "kept" : "ruled_out" })} />
-          <Tool icon="ask" label="Ask" onClick={act.ask} />
+          <Tool icon="build" label="Sketch" onClick={() => act.sketchFrom([id])} />
+          <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="arrow-up-right" label="Open" onClick={() => act.open(data.refId)} />
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
@@ -312,6 +336,178 @@ const NoteView = memo(function NoteView({ id, data }: NodeProps<NoteNode>) {
   );
 });
 
+/** Where a sketch's files are: its page and its first screen, for one version. */
+const sketchSrc = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html`;
+const sketchPicture = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.jpg`;
+
+const SketchView = memo(function SketchView({ id, data, selected }: NodeProps<SketchNode>) {
+  const act = useActions();
+  const alone = useStore(selectAlone);
+  const state = data.state ?? "kept";
+  const pic = sketchPicture(act.project, id, data.version);
+  const [broken, setBroken] = useState(false);
+  useEffect(() => setBroken(false), [pic]);
+  return (
+    <div className={`bn sketch s-${state} ${data.enter !== undefined ? "enter" : ""} ${data.leaving ? "leaving" : ""}`} style={stagger(data.enter)}>
+      <Handles />
+      <div className="sketch-shot" onDoubleClick={() => act.openSketch(id)}>
+        {broken ? (
+          <div className="sketch-empty">No picture of this one</div>
+        ) : (
+          <img key={pic} src={pic} alt="" draggable={false} decoding="async" onError={() => setBroken(true)} />
+        )}
+        {state === "chosen" && <span className="ref-badge"><Icon name="check" size={11} /> Chosen</span>}
+        {state === "ruled_out" && <span className="ref-badge out">Ruled out</span>}
+        {state === "proposed" && <span className="ref-badge soft">Suggested</span>}
+        {data.version > 1 && <span className="sketch-version">v{data.version}</span>}
+      </div>
+      <div className="sketch-meta">
+        <span className="sketch-title">{data.title || "Untitled sketch"}</span>
+        {data.tries && <p className="sketch-tries">{data.tries}</p>}
+      </div>
+      <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
+        <div className="bn-tools">
+          <Tool icon="eye" label="Open" onClick={() => act.openSketch(id)} />
+          <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
+          {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
+          <Tool icon="x" label="Rule out" on={state === "ruled_out"} onClick={() => act.patch(id, { state: state === "ruled_out" ? "kept" : "ruled_out" })} />
+          <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
+          <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
+          <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
+        </div>
+      </NodeToolbar>
+    </div>
+  );
+});
+
+/**
+ * Claude Code building a chosen sketch, in the designer's code. The card follows it as it
+ * works (its plan, the step it's on), then shows the result running; you can ask for
+ * changes from here, or carry on in the terminal.
+ */
+const BuildView = memo(function BuildView({ id, data, selected }: NodeProps<BuildNode>) {
+  const act = useActions();
+  const alone = useStore(selectAlone);
+  const [b, setB] = useState<Build | null>(null);
+  const [gone, setGone] = useState(false);
+  const [ask, setAsk] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const load = useCallback(() => studioApi.getBuild(data.build).then(setB, (e: Error) => /gone/.test(e.message) && setGone(true)), [data.build]);
+  useEffect(() => {
+    void load();
+  }, [load]);
+  // While it works, keep up with it.
+  useEffect(() => {
+    if (b?.status !== "working" && !busy) return;
+    const t = setInterval(() => void load(), 1500);
+    return () => clearInterval(t);
+  }, [b?.status, busy, load]);
+  const run = async (f: () => Promise<Build | unknown>) => {
+    setBusy(true);
+    try {
+      const r = await f();
+      if (r && typeof r === "object" && "id" in r) setB(r as Build);
+      else await load();
+    } catch (e) {
+      act.error((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const status = b?.status ?? "working";
+  const label = { working: "Building", done: "Built", failed: "Stopped with a problem", stopped: "Stopped" }[status];
+  const plan = b?.plan?.length ? b.plan : null;
+  const steps = b?.steps.filter((s) => s.kind !== "say").slice(-5) ?? [];
+  const say = [...(b?.steps ?? [])].reverse().find((s) => s.kind === "say")?.text;
+  const short = (p: string) => p.replace(/^\/Users\/[^/]+/, "~");
+  return (
+    <div className={`bn build ${data.enter !== undefined ? "enter" : ""} ${data.leaving ? "leaving" : ""}`} style={stagger(data.enter)}>
+      <Handles />
+      <div className="bd-head">
+        <span className="bd-mark"><Icon name="build" size={12} /></span>
+        <span className="bd-title">{data.title || "Build"}</span>
+        <span className={`bd-status ${status}`}>{busy && status !== "working" ? "Starting…" : label}</span>
+      </div>
+      {gone ? (
+        <p className="bd-error">This build's record is gone.</p>
+      ) : b?.shot && status !== "working" ? (
+        <a className="bd-shot nodrag" href={b.preview?.url ?? b.shot} target="_blank" rel="noopener noreferrer" title={b.serving ? "Open it running" : "The last picture of it running"}>
+          <img src={b.shot} alt="" draggable={false} />
+        </a>
+      ) : plan ? (
+        <ul className="bd-plan">
+          {plan.slice(0, 7).map((p, i) => (
+            <li key={i} className={p.status}><span className="bd-tick">{p.status === "completed" ? "✓" : p.status === "in_progress" ? "●" : "○"}</span><span>{p.content}</span></li>
+          ))}
+          {plan.length > 7 && <li><span className="bd-tick" /><span className="faint">and {plan.length - 7} more</span></li>}
+        </ul>
+      ) : (
+        <ul className="bd-steps">
+          {(steps.length ? steps : [{ kind: "read", text: "Reading the hand-off and your code…" }]).map((s, i) => (
+            <li key={i}><span className="bd-tick">{s.kind === "edit" ? "✎" : s.kind === "run" ? "›" : "·"}</span><span>{s.text}</span></li>
+          ))}
+        </ul>
+      )}
+      {status === "working" && plan && steps.length > 0 && <p className="bd-say faint">{steps.at(-1)!.text}</p>}
+      {status !== "working" && (b?.reply || say) && <p className="bd-say">{(b?.reply ?? say ?? "").replace(/[#*`]/g, "").trim()}</p>}
+      {b?.error && <p className="bd-error">{b.error}</p>}
+      <div className="bd-foot">
+        <Icon name="folder" size={11} />
+        <span title={b?.workdir}>{b ? short(b.workdir) : ""}</span>
+        {b?.branch && <span className="faint">· {b.branch}</span>}
+      </div>
+      {selected && b && status !== "working" && (
+        <div className="bd-ask nodrag" onPointerDown={(e) => e.stopPropagation()}>
+          <input
+            value={ask}
+            onChange={(e) => setAsk(e.target.value)}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter" && ask.trim()) {
+                const t = ask;
+                setAsk("");
+                void run(() => studioApi.message(b.id, t));
+              }
+            }}
+            placeholder="Ask Claude Code for a change…"
+          />
+          <button className="st-send" disabled={!ask.trim() || busy} onClick={() => { const t = ask; setAsk(""); void run(() => studioApi.message(b.id, t)); }} aria-label="Send"><Icon name="arrow-up" size={13} /></button>
+        </div>
+      )}
+      <NodeToolbar isVisible={selected && alone && !data.leaving && !!b} position={Position.Top} offset={10}>
+        <div className="bn-tools">
+          {b?.status === "working" ? (
+            <Tool icon="stop" label="Stop" onClick={() => void run(() => studioApi.stop(b.id))} />
+          ) : b?.preview ? (
+            b.serving ? (
+              <>
+                <Tool icon="external" label="Open" onClick={() => open(b.preview!.url, "_blank", "noopener")} />
+                <Tool icon="refresh" label="New picture" onClick={() => void run(() => studioApi.preview(b.id))} />
+                <Tool icon="stop" label="Stop running" onClick={() => void run(() => studioApi.stopPreview(b.id))} />
+              </>
+            ) : (
+              <Tool icon="play" label="Run it" onClick={() => void run(() => studioApi.preview(b.id))} />
+            )
+          ) : null}
+          {b?.resume && (
+            <Tool
+              icon="terminal"
+              label={copied ? "Copied" : "Continue in terminal"}
+              onClick={() => {
+                void navigator.clipboard.writeText(b.resume!);
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1600);
+              }}
+            />
+          )}
+          <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
+        </div>
+      </NodeToolbar>
+    </div>
+  );
+});
+
 // ---------- Lines, drawn from edge to edge of the two nodes ----------
 
 function rectOf(n: InternalNode) {
@@ -330,16 +526,18 @@ function exit(a: ReturnType<typeof rectOf>, b: ReturnType<typeof rectOf>) {
   return { x: a.cx + dx * s, y: a.cy + dy * s, side };
 }
 
-function FloatEdge({ id, source, target, selected }: EdgeProps) {
+function FloatEdge({ id, source, target, selected, label }: EdgeProps) {
   const s = useInternalNode(source), t = useInternalNode(target);
   if (!s || !t || !s.measured.width || !t.measured.width) return null;
   const a = rectOf(s), b = rectOf(t);
   const p = exit(a, b), q = exit(b, a);
   const [path] = getBezierPath({ sourceX: p.x, sourceY: p.y, sourcePosition: p.side, targetX: q.x, targetY: q.y, targetPosition: q.side, curvature: 0.3 });
   const kinds = [s.type, t.type];
-  const kind = kinds.includes("note") ? "note" : kinds.every((k) => k === "topic") ? "flow" : "link";
-  const chosen = kinds.includes("ref") && ((s.type === "ref" ? s : t).data as RefData).state === "chosen";
-  const out = kinds.includes("ref") && ((s.type === "ref" ? s : t).data as RefData).state === "ruled_out";
+  const kind = kinds.includes("note") ? "note" : kinds.every((k) => k === "topic") ? "flow" : label === "uses" ? "uses" : kinds.includes("build") ? "build" : "link";
+  // A line to a save or a sketch takes on its verdict.
+  const judged = [s, t].find((n) => n.type === "ref" || n.type === "sketch");
+  const chosen = (judged?.data as RefData | undefined)?.state === "chosen";
+  const out = (judged?.data as RefData | undefined)?.state === "ruled_out";
   const leaving = (s.data as Enter).leaving || (t.data as Enter).leaving || /\bfolding\b/.test(`${s.className ?? ""} ${t.className ?? ""}`);
   return (
     <g className={`fe fe-${kind} ${chosen ? "chosen" : ""} ${out ? "out" : ""} ${selected ? "sel" : ""} ${leaving ? "leaving" : ""}`} data-id={id}>
@@ -349,7 +547,7 @@ function FloatEdge({ id, source, target, selected }: EdgeProps) {
   );
 }
 
-const nodeTypes = { topic: TopicView, ref: RefView, note: NoteView };
+const nodeTypes = { topic: TopicView, ref: RefView, note: NoteView, sketch: SketchView, build: BuildView };
 const edgeTypes = { float: FloatEdge };
 
 // ---------- The canvas ----------
@@ -366,6 +564,10 @@ export interface CanvasProps {
   onSelection: (s: CanvasSelection | null) => void;
   /** Open Ask to ask about what's selected. */
   onAsk: () => void;
+  /** Ask FRIDAY something about what's given (from the studio: a sketch, or a part of it). */
+  onAskWith: (text: string, about: CanvasSelection) => void;
+  /** FRIDAY is answering. */
+  askRunning: boolean;
 }
 
 export default function ProjectCanvas(props: CanvasProps) {
@@ -379,7 +581,7 @@ export default function ProjectCanvas(props: CanvasProps) {
 /** This window, so it can tell its own changes from everyone else's on the live stream. */
 const CLIENT = localId();
 
-function Board({ id, dock, ...handlers }: CanvasProps) {
+function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
   // The app's callbacks, held steady: a new function from a parent redraw must never
   // look like a new project (that reloaded the whole canvas, entrance and all, on every redraw).
   const latest = useRef(handlers);
@@ -397,11 +599,13 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
   const [loaded, setLoaded] = useState(false);
   const [tray, setTray] = useState(false);
   /** What the assistant just did, with a way to take it back. */
-  const [notice, setNotice] = useState<{ label: string; key: number; more: number } | null>(null);
+  const [notice, setNotice] = useState<{ label: string; key: number; more: number; info?: boolean } | null>(null);
   const seq = useRef(0);
   // Changes go to the companion one after another, so an undo never overtakes the change it undoes.
   const queue = useRef<Promise<unknown>>(Promise.resolve());
   const revealRef = useRef<(ids: string[], spots: { x: number; y: number }[]) => void>(() => {});
+  /** The sketch open in the large view. */
+  const [viewing, setViewing] = useState<string | null>(null);
   /** Locked topics whose considered saves are unfolded. */
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const nodesRef = useRef(nodes);
@@ -601,7 +805,7 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
     [commit, settle],
   );
 
-  const sizeOf = (n: AnyNode) => ({ w: n.measured?.width ?? (n.type === "ref" ? 220 : 240), h: n.measured?.height ?? 120 });
+  const sizeOf = (n: AnyNode) => ({ w: n.measured?.width ?? (n.type === "ref" ? 220 : n.type === "sketch" ? 360 : n.type === "build" ? 380 : 240), h: n.measured?.height ?? (n.type === "sketch" ? 300 : n.type === "build" ? 330 : 120) });
 
   const note = useCallback(
     (forId: string) => {
@@ -721,9 +925,25 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
     });
   }, []);
 
+  // From a save, several, or a decision: FRIDAY makes a sketch that takes from them.
+  const sketchFrom = useCallback((ids: string[]) => {
+    const picked = nodesRef.current.filter((n) => ids.includes(n.id));
+    if (!picked.length) return;
+    const about = describePicked(id, picked, cards);
+    const many = picked.length > 1;
+    const text = many
+      ? "Sketch a direction from these, for this project: take from each what it does best, hang it from them, and say what you took from which."
+      : picked[0]!.type === "topic"
+        ? "Sketch a direction from this decision and its chosen saves, for this project."
+        : picked[0]!.type === "sketch"
+          ? "Try 3 alternates of this sketch, each a different direction."
+          : "Sketch a direction from this save, for this project: take what it does best, not a copy of it.";
+    latest.current.onAskWith(text, about);
+  }, [id, cards]);
+
   const actions = useMemo<Actions>(
-    () => ({ cards, patch, remove, note, open: onOpenRef, clearFocus, ask: onAsk, considered: fold.considered, toggleConsidered }),
-    [cards, patch, remove, note, onOpenRef, clearFocus, onAsk, fold.considered, toggleConsidered],
+    () => ({ project: id, cards, patch, remove, note, open: onOpenRef, openSketch: setViewing, clearFocus, ask: onAsk, error: onError, sketchFrom, considered: fold.considered, toggleConsidered }),
+    [id, cards, patch, remove, note, onOpenRef, clearFocus, onAsk, onError, sketchFrom, fold.considered, toggleConsidered],
   );
 
   // ---- What's selected, for Ask ----
@@ -965,7 +1185,7 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
           fitViewOptions={{ padding: 0.25 }}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--dot)" />
-          <SelectionTools nodes={shownNodes} patchMany={patchMany} remove={remove} onAsk={onAsk} />
+          <SelectionTools nodes={shownNodes} patchMany={patchMany} remove={remove} onAsk={onAsk} onSketch={sketchFrom} />
         </ReactFlow>
 
         {empty && (
@@ -985,10 +1205,36 @@ function Board({ id, dock, ...handlers }: CanvasProps) {
           <div className="canvas-notice" key={notice.key} role="status">
             <span className="canvas-notice-dot" />
             <span>{notice.label}{notice.more > 0 && <span className="canvas-notice-more"> and {notice.more} more {notice.more === 1 ? "change" : "changes"}</span>}</span>
-            <button className="canvas-notice-undo" onClick={() => undo("assistant")}>Undo</button>
+            {!notice.info && <button className="canvas-notice-undo" onClick={() => undo("assistant")}>Undo</button>}
             <button className="canvas-notice-x" onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" size={12} /></button>
           </div>
         )}
+
+        {(() => {
+          const open = viewing ? nodes.find((n) => n.id === viewing && n.type === "sketch") as SketchNode | undefined : undefined;
+          if (!open) return null;
+          const sketchStamp = nodes.filter((n) => n.type === "sketch").map((n) => `${n.id}:${(n as SketchNode).data.state}:${(n as SketchNode).data.version}`).join(",") + edges.length;
+          return (
+            <Studio
+              project={id}
+              sketch={{ id: open.id, ...open.data }}
+              stamp={sketchStamp}
+              running={askRunning}
+              onClose={() => setViewing(null)}
+              onSwitch={setViewing}
+              patch={patch}
+              onError={onError}
+              ask={(text: string, point?: SketchPoint) => {
+                const about = describePicked(id, [open], cards);
+                latest.current.onAskWith(text, point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : about);
+              }}
+              onBuilt={(title) => {
+                setViewing(null);
+                setNotice({ label: `Claude Code is building ${title}: its card is under the sketch`, key: Date.now(), more: 0, info: true });
+              }}
+            />
+          );
+        })()}
 
         {tray && <Tray onClose={() => setTray(false)} onAdd={(c) => addSaves([c])} target={selectedTopic()?.data} />}
 
@@ -1009,29 +1255,37 @@ function describePicked(project: string, picked: AnyNode[], cards: Map<string, R
   const topics = picked.filter((n) => n.type === "topic") as TopicNode[];
   const refs = picked.filter((n) => n.type === "ref") as RefNode[];
   const notes = picked.filter((n) => n.type === "note");
+  const sketches = picked.filter((n) => n.type === "sketch") as SketchNode[];
+  const builds = picked.filter((n) => n.type === "build") as BuildNode[];
   const topicName = (t: TopicNode) => t.data.title || facetLabel(t.data.facet);
   let label: string;
   if (picked.length === 1) {
-    label = topics[0] ? topicName(topics[0]) : refs[0] ? cards.get(refs[0].data.refId)?.title ?? "A save" : "A note";
+    label = topics[0] ? topicName(topics[0]) : refs[0] ? cards.get(refs[0].data.refId)?.title ?? "A save" : sketches[0] ? sketches[0].data.title || "A sketch" : builds[0] ? `Build of ${builds[0].data.title}` : "A note";
   } else {
     const parts = [
       ...(topics.length <= 2 ? topics.map(topicName) : [plural(topics.length, "topic", "topics")]),
+      ...(sketches.length ? [plural(sketches.length, "sketch", "sketches")] : []),
+      ...(builds.length ? [plural(builds.length, "build", "builds")] : []),
       ...(refs.length ? [plural(refs.length, "save", "saves")] : []),
       ...(notes.length ? [plural(notes.length, "note", "notes")] : []),
     ];
     label = parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]!;
     label = label.charAt(0).toUpperCase() + label.slice(1);
   }
-  const thumbs = refs.flatMap((n) => (cards.get(n.data.refId)?.thumb ? [cards.get(n.data.refId)!.thumb!] : [])).slice(0, 3);
+  const thumbs = [
+    ...sketches.map((n) => sketchPicture(project, n.id, n.data.version)),
+    ...refs.flatMap((n) => (cards.get(n.data.refId)?.thumb ? [cards.get(n.data.refId)!.thumb!] : [])),
+  ].slice(0, 3);
   return { project, nodes: picked.map((n) => n.id), label: label.replace(/\s+/g, " ").slice(0, 90), thumbs };
 }
 
 // ---------- Several things selected: one toolbar for them all ----------
 
-function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], data: Record<string, unknown>) => void; remove: (ids: string[]) => void; onAsk: () => void }) {
+function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], data: Record<string, unknown>) => void; remove: (ids: string[]) => void; onAsk: () => void; onSketch: (ids: string[]) => void }) {
   const picked = props.nodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
   if (picked.length < 2) return null;
-  const refs = picked.filter((n) => n.type === "ref") as RefNode[];
+  // Saves and sketches both take a verdict.
+  const refs = picked.filter((n) => n.type === "ref" || n.type === "sketch") as (RefNode | SketchNode)[];
   const ids = refs.map((n) => n.id);
   const every = (st: RefState) => refs.length > 0 && refs.every((n) => (n.data.state ?? "kept") === st);
   const someProposed = refs.some((n) => n.data.state === "proposed");
@@ -1039,7 +1293,8 @@ function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], da
     <NodeToolbar nodeId={picked.map((n) => n.id)} isVisible position={Position.Top} offset={14}>
       <div className="bn-tools many" key={picked.length}>
         <span className="bn-tools-count">{picked.length} selected</span>
-        <Tool icon="ask" label="Ask" onClick={props.onAsk} />
+        <Tool icon="build" label="Sketch from these" onClick={() => props.onSketch(picked.map((n) => n.id))} />
+        <Tool icon="ask" label="Ask FRIDAY" onClick={props.onAsk} />
         {refs.length > 0 && (
           <>
             <Tool icon="check" label="Choose" on={every("chosen")} onClick={() => props.patchMany(ids, { state: every("chosen") ? "kept" : "chosen" })} />

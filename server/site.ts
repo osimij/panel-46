@@ -180,7 +180,7 @@ async function shootOne(cdp: Cdp, url: string, vp: Viewport, rel: string) {
   }
 }
 
-async function evaluate<T>(s: (m: string, p?: object) => Promise<unknown>, expression: string, timeout: number) {
+export async function evaluate<T>(s: (m: string, p?: object) => Promise<unknown>, expression: string, timeout: number) {
   const r = (await Promise.race([
     s("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }),
     Bun.sleep(timeout).then(() => {
@@ -196,7 +196,7 @@ async function evaluate<T>(s: (m: string, p?: object) => Promise<unknown>, expre
  * WebSockets and long-lived streams don't count, and neither does a request
  * that has been open for over 10s (polling, analytics beacons that never close).
  */
-function trackNetwork(cdp: Cdp, sessionId: string) {
+export function trackNetwork(cdp: Cdp, sessionId: string) {
   const open = new Map<string, number>();
   const offs = [
     cdp.on("Network.requestWillBeSent", sessionId, (p) => {
@@ -240,7 +240,7 @@ function trackNetwork(cdp: Cdp, sessionId: string) {
  * - a <canvas> (WebGL, shaders) gets a little longer to draw its first frames.
  * Gives up after ~30s and lets the capture go ahead with what's there.
  */
-const READY_SCRIPT = `(async () => {
+export const READY_SCRIPT = `(async () => {
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const start = Date.now();
   const vw = innerWidth, vh = innerHeight;
@@ -397,7 +397,7 @@ function friendlyNetError(code: string) {
   return code;
 }
 
-async function devtoolsUrl(stderr: ReadableStream<Uint8Array>) {
+export async function devtoolsUrl(stderr: ReadableStream<Uint8Array>) {
   const reader = stderr.getReader();
   const dec = new TextDecoder();
   let text = "";
@@ -420,7 +420,7 @@ async function devtoolsUrl(stderr: ReadableStream<Uint8Array>) {
 }
 
 /** The smallest DevTools-protocol client that does the job. */
-class Cdp {
+export class Cdp {
   private ws!: WebSocket;
   private next = 1;
   private calls = new Map<number, { ok: (v: unknown) => void; fail: (e: Error) => void }>();

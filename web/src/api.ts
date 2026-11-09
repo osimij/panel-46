@@ -556,7 +556,7 @@ export const chatApi = {
   create: () => call<{ id: string }>("/api/chats", { method: "POST" }),
   get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
-  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[] }) =>
+  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: SketchPoint }) =>
     call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
   stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
   cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
@@ -600,9 +600,9 @@ export type RefState = "proposed" | "kept" | "chosen" | "ruled_out";
 
 export interface BoardNode {
   id: string;
-  kind: "topic" | "ref" | "note";
+  kind: "topic" | "ref" | "note" | "sketch" | "build";
   ref_id: string | null;
-  /** topic: { title, facet, status, summary } · ref: { state, taking } · note: { text } */
+  /** topic: { title, facet, status, summary } · ref: { state, taking } · note: { text } · sketch: { title, tries, state, version } */
   data: Record<string, unknown>;
   x: number;
   y: number;
@@ -665,7 +665,64 @@ export interface CanvasSelection {
   label: string;
   /** Up to 3 small pictures of the saves in it. */
   thumbs: string[];
+  /** A part of a sketch pointed at in the studio. */
+  point?: SketchPoint;
 }
+
+/** A part of a sketch the designer pointed at in the studio, for FRIDAY to change. */
+export interface SketchPoint {
+  sketch: string;
+  version?: number;
+  label: string;
+  selector: string;
+  text?: string;
+  html?: string;
+  style?: Record<string, string>;
+  state?: string;
+  device?: string;
+  mode?: "change" | "alternates";
+}
+
+export type Device = "desktop" | "tablet" | "phone";
+
+export interface SketchInfo {
+  versions: { v: number; errors: number; height: number }[];
+  states: { name: string; slug: string }[];
+  family: { id: string; parent: string | null; depth: number; title: string; tries?: string; state: string; version: number; reason?: string }[];
+}
+
+export interface Build {
+  id: string;
+  project: string;
+  sketch: string;
+  version: number;
+  title: string;
+  folder: string;
+  workdir: string;
+  branch: string | null;
+  status: "working" | "done" | "failed" | "stopped";
+  steps: { kind: "read" | "edit" | "run" | "look" | "plan" | "say" | "other"; text: string }[];
+  plan: { content: string; status: "pending" | "in_progress" | "completed" }[] | null;
+  reply: string | null;
+  preview: { command: string; url: string } | null;
+  serving: boolean;
+  shot: string | null;
+  error: string | null;
+  turns: number;
+  resume: string | null;
+  updated_at: string;
+}
+
+export const studioApi = {
+  sketch: (project: string, sketch: string) => call<SketchInfo>(`/api/projects/${project}/sketches/${sketch}`),
+  folders: () => call<{ recent: string[]; found: string[]; home: string }>("/api/builds/folders"),
+  build: (o: { project: string; sketch: string; folder: string; note?: string }) => call<Build>("/api/builds", { method: "POST", body: body(o) }),
+  getBuild: (id: string) => call<Build>(`/api/builds/${id}`),
+  message: (id: string, text: string) => call<Build>(`/api/builds/${id}/message`, { method: "POST", body: body({ text }) }),
+  stop: (id: string) => call<{ stopped: boolean }>(`/api/builds/${id}/stop`, { method: "POST" }),
+  preview: (id: string) => call<Build>(`/api/builds/${id}/preview`, { method: "POST" }),
+  stopPreview: (id: string) => call<Build>(`/api/builds/${id}/preview`, { method: "DELETE" }),
+};
 
 export interface Material {
   id: string;

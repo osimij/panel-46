@@ -13,6 +13,8 @@ import { db, newId, now } from "./db.ts";
 import { load, panelUrl, type Doc } from "./library.ts";
 import { PORT } from "./config.ts";
 import { materialsForSummary, removeProjectFiles } from "./materials.ts";
+import { fullUrl, sketchPath, versionsOf } from "./sketches.ts";
+import { buildSummary } from "./builds.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS projects (
@@ -27,6 +29,7 @@ CREATE TABLE IF NOT EXISTS board_nodes (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   -- topic: a decision to make · ref: a save from the library · note: the designer's words
+  -- · sketch: a quick page Claude made to try a direction (files in sketches.ts)
   kind TEXT NOT NULL,
   ref_id TEXT,
   data TEXT NOT NULL DEFAULT '{}',
@@ -79,10 +82,14 @@ export type RefState = (typeof REF_STATES)[number];
 export interface TopicData { title: string; facet?: TopicFacet; status?: "exploring" | "locked"; summary?: string }
 export interface RefData { state?: RefState; taking?: string }
 export interface NoteData { text: string }
+/** A sketch: what it is, what it tries, the designer's verdict, and the version it shows. */
+export interface SketchData { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: "desktop" | "tablet" | "phone" }
+/** A build: Claude Code making a chosen sketch for real, in the designer's code. Its progress lives in builds.ts. */
+export interface BuildData { build: string; title: string }
 
 export interface BoardNode {
   id: string;
-  kind: "topic" | "ref" | "note";
+  kind: "topic" | "ref" | "note" | "sketch" | "build";
   ref_id: string | null;
   data: Record<string, unknown>;
   x: number;
@@ -161,7 +168,7 @@ export function getProject(id: string) {
 
 // ---------- Changing a canvas ----------
 
-const KINDS = new Set(["topic", "ref", "note"]);
+const KINDS = new Set(["topic", "ref", "note", "sketch", "build"]);
 const finite = (n: unknown, fallback = 0) => (typeof n === "number" && Number.isFinite(n) ? Math.round(n * 10) / 10 : fallback);
 
 /** Keep a node's data to what its kind uses, with sane values. */
@@ -176,6 +183,16 @@ function cleanData(kind: BoardNode["kind"], data: Record<string, unknown>): Reco
   } else if (kind === "ref") {
     if ("state" in data) out.state = REF_STATES.includes(data.state as RefState) ? data.state : "kept";
     if ("taking" in data) out.taking = str(data.taking, 200);
+  } else if (kind === "sketch") {
+    if ("title" in data) out.title = str(data.title, 120) ?? "";
+    if ("tries" in data) out.tries = str(data.tries, 300);
+    if ("state" in data) out.state = REF_STATES.includes(data.state as RefState) ? data.state : "kept";
+    if ("version" in data) out.version = Number.isInteger(data.version) && (data.version as number) >= 1 && (data.version as number) < 100_000 ? data.version : 1;
+    if ("reason" in data) out.reason = str(data.reason, 400);
+    if ("device" in data) out.device = ["desktop", "tablet", "phone"].includes(data.device as string) ? data.device : "desktop";
+  } else if (kind === "build") {
+    if ("build" in data) out.build = typeof data.build === "string" && /^[0-9a-f]{16}$/.test(data.build) ? data.build : "";
+    if ("title" in data) out.title = str(data.title, 120) ?? "";
   } else if ("text" in data) out.text = str(data.text, 8000) ?? "";
   return out;
 }
@@ -217,7 +234,8 @@ export function apply(projectId: string, ops: Op[], actor: Actor = "designer", o
         if (n.kind === "ref" && !(n.ref_id && db.query("SELECT 1 FROM refs WHERE id = ?").get(n.ref_id))) continue;
         const id = n.id && /^[0-9a-z]{8,32}$/.test(n.id) && !owned(n.id) ? n.id : newId();
         const data = cleanData(n.kind, n.data ?? {});
-        if (n.kind === "ref" && !data.state) data.state = actor === "designer" ? "kept" : "proposed";
+        if ((n.kind === "ref" || n.kind === "sketch") && !data.state) data.state = actor === "designer" ? "kept" : "proposed";
+        if (n.kind === "sketch" && !data.version) data.version = 1;
         if (n.kind === "topic" && !data.status) data.status = "exploring";
         const origin = actor === "designer" ? "designer" : "assistant";
         db.run(
@@ -490,6 +508,29 @@ export function summary(idOrName: string) {
     };
   });
 
+  // Sketches, each with what it's linked to (the topic, saves or sketch it came from) and the notes on it.
+  const sketches = full.nodes.filter((n) => n.kind === "sketch").map((n) => {
+    near(n.id, "note").forEach((x) => filed.add(x.id));
+    const linked = [...(links.get(n.id) ?? [])].map((x) => byId.get(x)!).filter((x) => x && x.kind !== "note").map((x) =>
+      x.kind === "topic" ? `topic ${topicName(x)}` : x.kind === "ref" ? `save ${x.ref_id}` : x.kind === "build" ? `build ${String(x.data.build ?? "")} (Claude Code building it)` : `sketch ${x.id} (${String(x.data.title || "untitled")})`);
+    const version = Number(n.data.version) || 1;
+    return {
+      sketch: n.id,
+      title: String(n.data.title || "Untitled sketch"),
+      tries: (n.data.tries as string) || undefined,
+      state: String(n.data.state ?? "kept"),
+      why_ruled_out: n.data.state === "ruled_out" && n.data.reason ? String(n.data.reason) : undefined,
+      why_chosen: n.data.state === "chosen" && n.data.reason ? String(n.data.reason) : undefined,
+      device: n.data.device && n.data.device !== "desktop" ? String(n.data.device) : undefined,
+      version,
+      versions: versionsOf(p.id, n.id).length || undefined,
+      linked: linked.length ? linked : undefined,
+      notes: noteText(n.id).length ? noteText(n.id) : undefined,
+      by_assistant: n.origin === "assistant" || undefined,
+      page: fullUrl(sketchPath(p.id, n.id, version)),
+    };
+  });
+
   // Notes attached to a filed save are already said with it.
   for (const n of full.nodes) if (n.kind === "ref" && filed.has(n.id)) near(n.id, "note").forEach((x) => filed.add(x.id));
   const looseRefs = full.nodes.filter((n) => n.kind === "ref" && !filed.has(n.id));
@@ -505,13 +546,18 @@ export function summary(idOrName: string) {
     })(),
     updated_at: p.updated_at,
     decisions,
+    sketches: sketches.length ? sketches : undefined,
+    builds: (() => {
+      const b = full.nodes.filter((n) => n.kind === "build").map((n) => buildSummary(String(n.data.build ?? ""))).filter(Boolean);
+      return b.length ? b : undefined;
+    })(),
     not_filed_yet: looseRefs.length || looseNotes.length
       ? {
           saves: looseRefs.length ? looseRefs.map((r) => refView(r)) : undefined,
           notes: looseNotes.length ? looseNotes.map((n) => String(n.data.text ?? "").trim()).filter(Boolean) : undefined,
         }
       : undefined,
-    how_to_read: "The brief and materials say what the project is: read the materials that matter with get_project_material before designing. Locked topics are settled: build from their chosen saves and notes. Ruled-out saves say what to avoid. The designer's notes outrank the saves' reads.",
+    how_to_read: "The brief and materials say what the project is: read the materials that matter with get_project_material before designing. Locked topics are settled: build from their chosen saves and notes. Ruled-out saves say what to avoid. The designer's notes outrank the saves' reads. Sketches are quick pages tried for this project (suggested, kept, chosen, ruled out like saves, with the designer's reason when they gave one); look at one with get_sketch before talking about it. Builds are Claude Code making a chosen sketch for real in the designer's code.",
     open: `http://127.0.0.1:${PORT}/?project=${p.id}`,
   };
 }
@@ -546,6 +592,22 @@ export function describeSelection(projectId: string, nodeIds: string[]) {
         notes.length ? `designer's note: ${notes.join(" / ")}` : "",
       ].filter(Boolean);
       return [`the save [[${n.ref_id}]] ${d ? `“${title(d)}” ` : ""}(${bits.join("; ")})`];
+    }
+    if (n.kind === "sketch") {
+      const notes = near(n.id).filter((x) => x.kind === "note").map((x) => String(x.data.text ?? "").trim()).filter(Boolean);
+      const bits = [
+        `id ${n.id}`,
+        `version ${Number(n.data.version) || 1}`,
+        String(n.data.state ?? "kept").replace("_", " "),
+        n.data.tries ? `tries: ${String(n.data.tries)}` : "",
+        n.data.reason ? `designer's reason: ${String(n.data.reason)}` : "",
+        notes.length ? `designer's note: ${notes.join(" / ")}` : "",
+      ].filter(Boolean);
+      return [`the sketch “${String(n.data.title || "Untitled sketch")}” (${bits.join("; ")}; look at it with get_sketch, change it with edit_sketch)`];
+    }
+    if (n.kind === "build") {
+      const b = buildSummary(String(n.data.build ?? ""));
+      return b ? [`the build “${b.title}” (build ${b.build}; ${b.status}; in ${b.folder}${b.branch ? ` on branch ${b.branch}` : ""}; follow up with message_build)`] : [];
     }
     const text = String(n.data.text ?? "").trim();
     return text ? [`a note: “${text}”`] : [];

@@ -11,7 +11,8 @@ import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamTe
 import { Popover } from "./TagRow.tsx";
 
 export interface AssistantHandle {
-  ask: (text: string) => void;
+  /** Ask, about what's given instead of what's open or selected (the studio's sketch, or a part of it). */
+  ask: (text: string, about?: CanvasSelection) => void;
   focus: () => void;
 }
 
@@ -125,10 +126,12 @@ export function Assistant(props: {
   // "This" is whatever's open, until you take it off for that save.
   const [dropped, setDropped] = useState<string | null>(null);
   const context = looking && looking.id !== dropped ? looking : null;
+  const contextNow = context;
   // The canvas selection, until you take it off (for that selection).
   const pickKey = props.picked?.nodes.join(",") ?? "";
   const [droppedPick, setDroppedPick] = useState<string | null>(null);
   const picked = !context && props.picked && pickKey !== droppedPick ? props.picked : null;
+  const pickedNow = picked;
 
   useEffect(() => props.onRunning(running), [running]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -227,9 +230,11 @@ export function Assistant(props: {
   useEffect(() => store.set(LS_CHAT, chatId), [chatId]);
 
   const send = useCallback(
-    async (raw: string) => {
+    async (raw: string, about?: CanvasSelection) => {
       const text = raw.trim();
       if (!text || running) return;
+      const picked = about ?? pickedNow;
+      const context = about ? null : contextNow;
       setDraft("");
       stick.current = true;
       let id = chatId;
@@ -237,6 +242,7 @@ export function Assistant(props: {
         ...(context ? { open: context.id } : {}),
         ...(props.project ? { project: props.project } : {}),
         ...(picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : {}),
+        ...(picked?.point ? { point: picked.point } : {}),
       };
       if (context && !cards.has(context.id)) addCards([cardFromRef(context)]);
       const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: context ? { open: context.id } : picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : null, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
@@ -259,7 +265,7 @@ export function Assistant(props: {
         setMessages((ms) => ms.map((m) => (m.id === "pending" ? { ...m, status: "error", error: (e as Error).message } : m)));
       }
     },
-    [chatId, context, picked, running, title, follow, addCards, cards, props.project],
+    [chatId, contextNow, pickedNow, running, title, follow, addCards, cards, props.project],
   );
 
   const stop = () => {
@@ -278,7 +284,7 @@ export function Assistant(props: {
   };
 
   useImperativeHandle(props.handle, () => ({
-    ask: (text: string) => void send(text),
+    ask: (text: string, about?: CanvasSelection) => void send(text, about),
     focus: () => inputRef.current?.focus(),
   }), [send]);
 
@@ -387,7 +393,7 @@ export function Assistant(props: {
   return (
     <aside
       className={`ask ${open ? "open" : ""} ${running ? "running" : ""}`}
-      aria-label="Ask"
+      aria-label="FRIDAY"
       aria-hidden={!open}
       inert={!open}
       onMouseLeave={() => highlight(null, false)}
@@ -402,7 +408,7 @@ export function Assistant(props: {
       <Resizer />
       <header className="ask-head">
         <Mark size={16} active={running} />
-        <span className="ask-title" key={title || "new"}>{title || "Ask"}</span>
+        <span className="ask-title" key={title || "new"}>{title || "FRIDAY"}</span>
         <div className="ask-head-tools">
           <button className="ask-tool" onClick={openHistory} title="Conversations" aria-label="Conversations">
             <Icon name="history" size={15} />
@@ -444,7 +450,7 @@ export function Assistant(props: {
                   animate={live.current.has(keyOf(m))}
                   last={i === messages.length - 1}
                   ctx={ctx}
-                  onShowInGrid={(ids) => props.onShowInGrid(ids, title || "From Ask")}
+                  onShowInGrid={(ids) => props.onShowInGrid(ids, title || "From FRIDAY")}
                   onRetry={() => {
                     const q = messages.slice(0, i).findLast((x) => x.role === "user");
                     if (q) void send(q.text);
@@ -638,7 +644,7 @@ function Resizer() {
       }}
       role="separator"
       aria-orientation="vertical"
-      aria-label="Resize Ask"
+      aria-label="Resize FRIDAY"
       title="Drag to resize · double-click to reset"
     />
   );
@@ -685,7 +691,7 @@ function Welcome({ looking, picked, project, onPick }: { looking: Ref | null; pi
   return (
     <div className="ask-welcome">
       <Mark size={40} />
-      <h2>Ask your library</h2>
+      <h2>Ask FRIDAY</h2>
       <p>Find references by feeling, color, type or motion, and put them together into something new.</p>
       <div className="ask-ideas" key={looking?.id ?? (picked ? `pick-${picked.nodes.length === 1}` : project ? "project" : "all")}>
         {ideas.map((t, i) => (
@@ -910,6 +916,15 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
     }
     case "lock_topic":
       return { doing: <>{i.unlock ? "Reopening" : "Locking"} {q(i.topic)}</>, done: <>{i.unlock ? "Reopened" : "Locked"} {q(i.topic)}</> };
+    // A sketch is written, then rendered and looked at: the step stays on until the pictures are back.
+    case "make_sketch":
+      return { doing: <>Sketching {q(i.title) ?? "a direction"}</>, done: <>Sketched {q(i.title) ?? "a direction"}</> };
+    case "edit_sketch": {
+      const what = typeof i.sketch === "string" && !/^[0-9a-f]{16}$/.test(i.sketch) ? q(i.sketch) : "the sketch";
+      return { doing: <>Changing {what}</>, done: <>Changed {what}</> };
+    }
+    case "get_sketch":
+      return { doing: "Looking at the sketch", done: "Looked at the sketch" };
     default:
       return { doing: p.name.replace(/_/g, " "), done: p.name.replace(/_/g, " ") };
   }
@@ -924,10 +939,11 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
     return ids;
   }, [parts]);
   const tools = parts.filter((p) => p.type === "tool");
-  const EDITS = ["place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic"];
-  const CANVAS = ["list_projects", "get_project", "get_project_material", ...EDITS];
+  const EDITS = ["place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic", "make_sketch", "edit_sketch"];
+  const CANVAS = ["list_projects", "get_project", "get_project_material", "get_sketch", ...EDITS];
   const searches = tools.filter((p) => p.type === "tool" && p.name !== "get_reference" && p.name !== "library_overview" && p.name !== "save_to_collection" && !CANVAS.includes(p.name)).length;
   const placed = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "place_on_board" ? (p.refs?.length ?? 0) : 0), 0);
+  const sketched = tools.filter((p) => p.type === "tool" && p.name === "make_sketch" && !p.error).length;
   const edited = tools.some((p) => p.type === "tool" && EDITS.includes(p.name));
   const looked = tools.reduce((n, p) => n + (p.type === "tool" && p.name === "get_reference" ? ((p.input?.ids as string[] | undefined)?.length ?? 1) : 0), 0);
   const saved = tools.find((p) => p.type === "tool" && p.name === "save_to_collection");
@@ -938,7 +954,8 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
       looked ? `looked at ${looked}` : "",
       read && !searches && !looked ? "read the whole library" : "",
       saved && saved.type === "tool" ? `saved to “${String(saved.input?.name ?? "a collection")}”` : "",
-      placed ? `placed ${placed} on the canvas` : edited ? "updated the canvas" : "",
+      sketched ? `made ${sketched} ${sketched === 1 ? "sketch" : "sketches"}` : "",
+      placed ? `placed ${placed} on the canvas` : edited && !sketched ? "updated the canvas" : "",
     ].filter(Boolean).join(", ") || "Thought it over";
 
   return (

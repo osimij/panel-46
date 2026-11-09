@@ -244,6 +244,17 @@ export function App() {
     setTimeout(() => askRef.current?.focus(), 80);
   }, []);
 
+  // From the studio: ask about a sketch (or a part of it), with FRIDAY open to show the work.
+  const askWith = useCallback((text: string, about: CanvasSelection) => {
+    setAskOpenState(true);
+    try {
+      localStorage.setItem("panel.ask.open", "1");
+    } catch {
+      /* fine */
+    }
+    askRef.current?.ask(text, about);
+  }, []);
+
   useEffect(() => {
     refresh().catch((e) => say(`Can't reach the Panel companion. ${e.message}`, "error"));
   }, [refresh, say]);
@@ -668,8 +679,8 @@ export function App() {
       className={`round-btn ask-btn ${askOpen ? "on" : ""} ${askUnread ? "unread" : ""}`}
       onClick={() => setAskOpen(!askOpen)}
       aria-pressed={askOpen}
-      aria-label="Ask"
-      title="Ask about your library (⌘J)"
+      aria-label="FRIDAY"
+      title="Ask FRIDAY about your library (⌘J)"
       aria-keyshortcuts="Meta+J"
     >
       <Mark size={24} active={askRunning} />
@@ -724,6 +735,8 @@ export function App() {
               onDeleted={leaveProject}
               onSelection={setCanvasPick}
               onAsk={askAboutPick}
+              onAskWith={askWith}
+              askRunning={askRunning}
             />
           </Suspense>
         ) : (
@@ -761,7 +774,7 @@ export function App() {
             {refs.length
               ? `${refs.length} match${refs.length === 1 ? "" : "es"} for “${debounced}”`
               : looksLikeQuestion(debounced)
-                ? "No save matches those exact words. Press ⇥ to ask instead: Ask reads the whole library."
+                ? "No save matches those exact words. Press ⇥ to ask FRIDAY instead: FRIDAY reads the whole library."
                 : `Nothing matches “${debounced}” yet.`}
           </p>
         )}
@@ -924,7 +937,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
       };
     case "picked":
       return {
-        title: "From Ask",
+        title: "From FRIDAY",
         subtitle: `${scope.ids.length} saves · ${scope.title.length > 60 ? `${scope.title.slice(0, 59)}…` : scope.title}`,
       };
     case "collection": {
@@ -979,9 +992,9 @@ function Command(props: {
         aria-label="Search your library or paste a link to save"
       />
       {question && !isUrl ? (
-        <button className="command-ask" onClick={props.onAsk} title="Ask about your library (Tab)">
+        <button className="command-ask" onClick={props.onAsk} title="Ask FRIDAY about your library (Tab)">
           <Mark size={15} active />
-          Ask <kbd>⇥</kbd>
+          Ask FRIDAY <kbd>⇥</kbd>
         </button>
       ) : isUrl ? (
         <button className="command-save" onClick={props.onSave}>

@@ -11,9 +11,12 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, type Op } from "./projects.ts";
+import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
+import { sketchInfo } from "./board.ts";
+import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 
-const DIST = join(import.meta.dir, "..", "dist");
+const DIST = process.env.PANEL_DIST ?? join(import.meta.dir, "..", "dist");
 
 const json = (data: unknown, status = 200) => Response.json(data, { status });
 const bad = (message: string, status = 400) => json({ error: message }, status);
@@ -305,16 +308,38 @@ async function handle(req: Request): Promise<Response> {
     return serveFile(full, req, true);
   }
 
+  // Sketches: pages Claude made on a project's canvas, and their pictures. A page runs in a
+  // sandbox of its own (no same-origin), so its scripts can't reach Panel, even opened in a tab.
+  if (path.startsWith("/sketches/")) {
+    if (![`${HOST}:${PORT}`, `localhost:${PORT}`].includes(req.headers.get("host") ?? "")) return bad("Not allowed from here.", 403);
+    const f = sketchFile(path);
+    if (!f) return bad("Not found", 404);
+    if (!f.html) return serveFile(f.file, req, true);
+    return new Response(servedSketch(f.file), {
+      headers: {
+        "content-type": "text/html; charset=utf-8",
+        "content-security-policy": SKETCH_CSP,
+        "x-content-type-options": "nosniff",
+        // A version never changes once written, but the studio's kit added to it can.
+        "cache-control": "no-cache",
+      },
+    });
+  }
+
   // The library for AI apps (MCP over HTTP). Stateless: each request gets its own server.
   // Only this Mac's own addresses are accepted, so a web page can't reach it by DNS tricks.
   if (path === "/mcp") {
+    // AI apps send no Origin; a web page (or a sketch in its sandbox) does, and is turned away.
+    const origin = req.headers.get("origin");
+    if (origin && !fromPanel(req)) return bad("Not allowed from here.", 403);
     const transport = new WebStandardStreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
       enableDnsRebindingProtection: true,
       allowedHosts: [`${HOST}:${PORT}`, `localhost:${PORT}`],
     });
-    await createMcpServer().connect(transport);
+    // Ask asks with ?rules=0: the designer's rules are in its instructions already.
+    await createMcpServer({ withRules: url.searchParams.get("rules") !== "0" }).connect(transport);
     return transport.handleRequest(req);
   }
 
@@ -424,6 +449,51 @@ async function handle(req: Request): Promise<Response> {
       return bad((e as Error).message);
     }
   }
+  // A sketch, for the studio: its versions, states and family (the sketches branched from it).
+  const sketchRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})$/);
+  if (sketchRoute && m === "GET") {
+    if (!getProject(sketchRoute[1]!)) return bad("That project is gone.", 404);
+    return json(sketchInfo(sketchRoute[1]!, sketchRoute[2]!));
+  }
+
+  // Builds: a sketch handed to Claude Code to make for real.
+  if (path.startsWith("/api/builds") && !fromPanel(req) && !path.endsWith("/shot.jpg")) return bad("Not allowed from here.", 403);
+  if (path === "/api/builds/folders" && m === "GET") return json(folderSuggestions());
+  if (path === "/api/builds" && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { project?: string; sketch?: string; folder?: string; note?: string };
+    try {
+      return json(await startBuild({ project: String(b.project ?? ""), sketch: String(b.sketch ?? ""), folder: String(b.folder ?? ""), note: b.note ? String(b.note) : undefined }));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  const buildRoute = path.match(/^\/api\/builds\/([0-9a-f]{16})(\/message|\/stop|\/preview|\/shot\.jpg)?$/);
+  if (buildRoute) {
+    const [, bid, sub] = buildRoute as unknown as [string, string, string | undefined];
+    try {
+      if (!sub && m === "GET") {
+        const b = getBuild(bid);
+        return b ? json(b) : bad("That build is gone.", 404);
+      }
+      if (sub === "/shot.jpg" && m === "GET") {
+        const f = buildShot(bid);
+        return f ? serveFile(f, req, false) : bad("No picture yet.", 404);
+      }
+      if (sub === "/message" && m === "POST") {
+        const b = (await req.json().catch(() => ({}))) as { text?: string };
+        return json(messageBuild(bid, String(b.text ?? "")));
+      }
+      if (sub === "/stop" && m === "POST") return json({ stopped: stopBuild(bid) });
+      if (sub === "/preview" && m === "POST") return json(await startPreview(bid, true));
+      if (sub === "/preview" && m === "DELETE") {
+        stopPreview(bid);
+        return json(getBuild(bid));
+      }
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+
   const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream|\/undo)?$/);
   if (projectRoute) {
     const [, id, sub] = projectRoute as unknown as [string, string, string | undefined];

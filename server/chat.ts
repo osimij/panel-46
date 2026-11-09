@@ -5,9 +5,11 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { db, getSetting, newId, now, setSetting } from "./db.ts";
+import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
 import { describeSelection, findProject } from "./projects.ts";
+import { designRules } from "./rules.ts";
 import { claudeBinary, claudeToken, settings as readSettings, type Effort } from "./read.ts";
 
 db.exec(`
@@ -77,7 +79,7 @@ export interface MessageOut {
   id: string;
   role: "user" | "assistant";
   text: string;
-  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[] } | null;
+  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[]; pointed?: string } | null;
   parts: Part[];
   status: string;
   error: string | null;
@@ -181,11 +183,13 @@ interface Run {
   events: ChatEvent[];
   listeners: Set<(e: ChatEvent, seq: number) => void>;
   proc: ReturnType<typeof Bun.spawn> | null;
+  /** With the Agent SDK: the turn, to interrupt. */
+  sdk?: { q: Query; abort: AbortController };
   stopped: boolean;
 }
 const runs = new Map<string, Run>();
 
-const SYSTEM = `You are the assistant inside Panel, a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. You talk with the designer while they browse. Use the panel tools to find, look at and combine their saves. Never invent a save.
+const SYSTEM = `You are FRIDAY, the assistant inside Panel (the designer named you after Tony Stark's AI), a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. You talk with the designer while they browse. Use the panel tools to find, look at and combine their saves. Never invent a save.
 
 How the app shows your answer:
 - Write a save as [[id]] (its 16-character id) wherever you mention it. The app turns that into the save's name with a thumbnail, so don't repeat its title next to it, and never write links or URLs.
@@ -198,12 +202,44 @@ How to work:
 - Talk like a design partner: concrete about color (hex), type, layout and motion, and say what to take from each save. Keep it short; the pictures do the rest.
 - When the designer wants to keep a set, use save_to_collection.
 - A message can start with <panel-context>, saying what the designer has open. "This" or "it" means that save.
+- When the designer wants a brief or prompt to hand to Claude Code (or anyone) to build from, include their rules in full under their own heading, and tell the builder to check the result against them before showing it.
 
 On a project's canvas (the context says which project):
 - Read the project with get_project before anything else in the conversation, and again when the designer may have changed it. Its brief and materials (files and links the designer added: a spec, a brand book, the old site) say what the project is and who it's for; read the ones that matter for the question with get_project_material, and let them shape what you look for.
 - When they ask for references, always put them on the canvas with place_on_board, under the topic they're for (it makes the topic if needed; use after_topic to connect it to the one before, e.g. Color after a locked Typography). Place 4 to 8, the strongest first, each with a short why. Build on what's locked: a color search should suit the chosen type.
 - Then answer in a few lines: what you placed and the thinking behind the set, naming a save as [[id]] only where you say something particular about it. Don't repeat them all as a row of pictures; they're on the canvas.
-- Never choose, rule out or lock on your own. Use mark_saves and lock_topic only when the designer says so ("lock it with the second one"). When they give a reason, keep it with add_note.`;
+- Never choose, rule out or lock on your own. Use mark_saves and lock_topic only when the designer says so ("lock it with the second one"). When they give a reason, keep it with add_note.
+
+Sketches (on a project's canvas):
+- When the designer wants to see how something could look ("sketch the hero", "try it with the stamp", "show me three directions"), make it with make_sketch: one self-contained page that shows the idea, not a whole site. Make it from what's settled: the locked decisions, their chosen saves (look at them first), the brief and materials. Use real content in the project's language, never lorem ipsum.
+- Hang it from what it came from (from: the topic, save or sketch). For several directions, make one sketch each, from the same thing, each with a short title and a tries line that says how it differs.
+- Look at the pictures that come back before you answer. Check them against the designer's rules and the brief: corners, buttons, type (Cyrillic set in real text), anything physical looking real, no slop. Fix what's off with edit_sketch, then look again. Only then reply.
+- Reply in a few lines: what it tries and what you'd look at. Don't paste its HTML or describe it at length; it's on the canvas. Say plainly what it doesn't do yet.
+- Changes to a sketch go through edit_sketch with small edits (exact find and replace). To keep a version and try something else, make a new sketch from it instead.
+- When the designer has a sketch selected, "this" means it: read it with get_sketch if you haven't seen it in this conversation.
+- Pass uses: the ids of the saves it takes from (type from one, color from another), so lines on the canvas show where it came from.
+- Make it something they can click through, not a picture: buttons, tabs, menus and forms that work. A flow of screens or its states (empty, loading, error, success) go in one sketch: list them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; buttons between screens set location.hash. The studio shows these as a map they can jump around. Check the other states with get_sketch state.
+- A mobile app screen is made for a phone: device "phone" (390×844). To check a desktop sketch on a phone, get_sketch with device.
+- "Alternates" or "other versions" of a sketch: new sketches from it (from: its id), not edits to it.
+
+The studio (a sketch opened full size): the designer clicks through the live sketch, switches phone/desktop and states, and points at a part to change it. The context then gives that part's CSS path, text and HTML: change only that part.
+
+Building it for real:
+- When the designer has chosen a sketch and wants it built, it goes to Claude Code, which builds it in their code. The studio has a "Build with Claude Code" button for that. If they ask you to and name the folder, use start_build; if they don't name one, ask which folder, or point them at the button.
+- A build card on the canvas is Claude Code working. get_build says how it's going and what it said. To change the built version, message_build passes the request on, in the designer's words plus what you know (what they pointed at, the sketch). Report back in a line or two; the card shows the rest.`;
+
+/** The instructions for a turn: Panel's, then the designer's rules, read fresh so edits apply to the next message. */
+export function systemPrompt() {
+  const rules = designRules();
+  if (!rules) return SYSTEM;
+  return `${SYSTEM}
+
+The designer's rules (unugly.md) hold for everything you suggest, place, judge or write. They outrank any reference: take from a save only what passes them (a letter-spaced wordmark in a save they like is still out), and say so when a save you show breaks one.
+
+<designer-rules>
+${rules}
+</designer-rules>`;
+}
 
 function emit(chatId: string, run: Run, e: ChatEvent) {
   run.events.push(e);
@@ -223,7 +259,7 @@ function idsIn(text: string) {
 /** The words a tool is working with, read out of its input while it's still being written. */
 function partialInput(json: string): Record<string, unknown> {
   const found: Record<string, unknown> = {};
-  for (const key of ["query", "brief", "name", "id"]) {
+  for (const key of ["query", "brief", "name", "id", "title", "sketch"]) {
     const m = json.match(new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`));
     if (m) found[key] = m[1]!.replace(/\\"/g, '"');
   }
@@ -240,7 +276,21 @@ function readable(text: string) {
   });
 }
 
-export interface SendContext { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[] }
+/** A part of a sketch the designer pointed at in the studio. */
+export interface Point {
+  sketch: string;
+  version?: number;
+  label: string;
+  selector: string;
+  text?: string;
+  html?: string;
+  style?: Record<string, string>;
+  state?: string;
+  device?: string;
+  /** change: change that part · alternates: try a few versions of it, each as a new sketch. */
+  mode?: "change" | "alternates";
+}
+export interface SendContext { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: Point }
 
 export async function send(chatId: string, text: string, context: SendContext = {}) {
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
@@ -257,10 +307,10 @@ export async function send(chatId: string, text: string, context: SendContext = 
     ? {
         nodes,
         label: context.label.slice(0, 120),
-        thumbs: (Array.isArray(context.thumbs) ? context.thumbs : []).filter((t) => typeof t === "string" && /^\/(media|api)\//.test(t)).slice(0, 3),
+        thumbs: (Array.isArray(context.thumbs) ? context.thumbs : []).filter((t) => typeof t === "string" && /^\/(media|api|sketches)\//.test(t)).slice(0, 3),
       }
     : null;
-  const stored = context.open ? { open: context.open } : picked;
+  const stored = context.open ? { open: context.open } : picked ? { ...picked, ...(context.point?.label ? { pointed: String(context.point.label).slice(0, 120) } : {}) } : null;
   db.run("INSERT INTO chat_messages (id, chat_id, role, text, context, status, created_at) VALUES (?, ?, 'user', ?, ?, 'done', ?)", [
     userId, chatId, clean, stored ? JSON.stringify(stored) : null, ts,
   ]);
@@ -283,6 +333,17 @@ export async function send(chatId: string, text: string, context: SendContext = 
       said.push(`The designer is on the canvas of the project “${p.name}” (id ${p.id}). References you find for it go on the canvas (place_on_board).`);
       const sel = picked ? describeSelection(p.id, picked.nodes) : [];
       if (sel.length) said.push(`They have selected on the canvas: ${sel.join("; ")}. “This” and “these” mean what's selected; look at the saves with get_reference before you answer about them.`);
+      const pt = context.point;
+      if (pt && typeof pt.sketch === "string" && typeof pt.selector === "string") {
+        const clip = (v: unknown, n: number) => (typeof v === "string" ? v.slice(0, n) : "");
+        const style = pt.style && typeof pt.style === "object" ? Object.entries(pt.style).slice(0, 8).map(([k, v]) => `${k} ${clip(v, 80)}`).join("; ") : "";
+        said.push(
+          `In the studio, they pointed at one part of the sketch ${pt.sketch}${pt.version ? ` (version ${pt.version})` : ""}${pt.device && pt.device !== "desktop" ? `, seen on ${clip(pt.device, 10)}` : ""}${pt.state ? `, in its state #${clip(pt.state, 40)}` : ""}: the ${clip(pt.label, 120)}. Its CSS path: ${clip(pt.selector, 400)}.${pt.text ? ` Its text: “${clip(pt.text, 300)}”.` : ""}${style ? ` As rendered: ${style}.` : ""}${pt.html ? ` Its HTML as the browser has it (scripts may have changed it from the file):\n${clip(pt.html, 1600)}\n` : ""}` +
+            (pt.mode === "alternates"
+              ? ` They want alternates of that part: make 3 new sketches from this one (from: ${pt.sketch}), each the same page with only that part done a different way, each with a tries line saying how. Don't change the sketch itself.`
+              : ` “This” and “here” mean that part. Change it with edit_sketch (find it in the page with get_sketch first if you haven't read this version), and leave the rest of the page as it is.`),
+        );
+      }
     }
   }
   if (context.open) {
@@ -350,23 +411,18 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
-  const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: `http://127.0.0.1:${PORT}/mcp` } } });
+  // The rules are already in Ask's instructions, so its tools leave them out (rules=0).
+  const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
+  const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
   const args = [
     bin, "-p", prompt,
     "--model", chatSettings.model(), "--effort", chatSettings.effort(),
     "--output-format", "stream-json", "--verbose", "--include-partial-messages",
-    "--system-prompt", SYSTEM,
+    "--system-prompt", systemPrompt(),
     "--tools", "", "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__panel",
     "--setting-sources", "",
     ...(sessionId ? ["--resume", sessionId] : []),
   ];
-  const proc = Bun.spawn(args, {
-    cwd: CHAT_DIR,
-    env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
-    stdout: "pipe", stderr: "pipe",
-  });
-  run.proc = proc;
-  if (run.stopped) proc.kill();
 
   // Per content block: what kind it is, and a tool's input as it's written.
   const blocks = new Map<number, { kind: string; toolId?: string; json?: string; started?: number }>();
@@ -470,26 +526,48 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
     }
   };
 
-  // stdout is one JSON object per line.
-  const decoder = new TextDecoder();
-  let buf = "";
-  const errText = new Response(proc.stderr).text();
-  for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
-    buf += decoder.decode(chunk, { stream: true });
-    let nl: number;
-    while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl).trim();
-      buf = buf.slice(nl + 1);
-      if (!line) continue;
-      try {
-        handle(JSON.parse(line));
-      } catch (e) {
-        console.error("Chat: couldn't use a line from Claude Code:", (e as Error).message);
-      }
+  let code: number | null = 0;
+  let stderr = "";
+  // Through the Agent SDK by default: the same Claude Code, driven as a library (typed
+  // messages, a real interrupt, each tool call passed by Panel before it runs). The command
+  // line stays as the fallback (chat_engine = "cli", or when the SDK can't start).
+  let cli = getSetting("chat_engine") === "cli";
+  if (!cli) {
+    ({ code, stderr } = await viaSdk(run, bin, token, prompt, sessionId, mcpUrl, handle));
+    if (stderr && !gotResult && !run.parts.length && !run.stopped) {
+      console.error("Chat: the Agent SDK couldn't answer, using the command line:", stderr);
+      cli = true;
     }
   }
-  const code = await proc.exited;
-  const stderr = (await errText).trim();
+  if (cli) {
+    const proc = Bun.spawn(args, {
+      cwd: CHAT_DIR,
+      env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
+      stdout: "pipe", stderr: "pipe",
+    });
+    run.proc = proc;
+    if (run.stopped) proc.kill();
+    // stdout is one JSON object per line.
+    const decoder = new TextDecoder();
+    let buf = "";
+    const errText = new Response(proc.stderr).text();
+    for await (const chunk of proc.stdout as ReadableStream<Uint8Array>) {
+      buf += decoder.decode(chunk, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line) continue;
+        try {
+          handle(JSON.parse(line));
+        } catch (e) {
+          console.error("Chat: couldn't use a line from Claude Code:", (e as Error).message);
+        }
+      }
+    }
+    code = await proc.exited;
+    stderr = (await errText).trim();
+  }
 
   if (run.stopped) return;
   // A conversation whose saved session is gone (cleared by Claude Code) starts over quietly.
@@ -515,6 +593,10 @@ export function stop(chatId: string) {
   run.stopped = true;
   const proc = run.proc;
   proc?.kill();
+  if (run.sdk) {
+    void run.sdk.q.interrupt().catch(() => {});
+    setTimeout(() => run.sdk?.abort.abort(), 3000);
+  }
   // If it doesn't go quietly, it goes.
   if (proc) setTimeout(() => proc.exitCode === null && proc.kill("SIGKILL"), 3000);
   // The answer ends now, as far as anyone can see; the process winds down on its own.
@@ -567,4 +649,48 @@ export function follow(chatId: string, after: number, signal: AbortSignal) {
 export function setChatSettings(patch: { model?: string; effort?: string }) {
   if (patch.model) setSetting("chat_model", patch.model);
   if (patch.effort && ["low", "medium", "high", "xhigh", "max"].includes(patch.effort)) setSetting("chat_effort", patch.effort);
+}
+
+/**
+ * One turn through the Agent SDK (@anthropic-ai/claude-agent-sdk), on the designer's own
+ * claude binary and login. Only Panel's tools: no built-in ones, no settings from ~/.claude,
+ * and every tool call checked here before it runs. Messages come out in the same shapes as
+ * stream-json, so they go to the same handler.
+ */
+async function viaSdk(run: Run, bin: string, token: string | null, prompt: string, sessionId: string | null, mcpUrl: string, handle: (d: unknown) => void) {
+  const abort = new AbortController();
+  const q = query({
+    prompt,
+    options: {
+      pathToClaudeCodeExecutable: bin,
+      cwd: CHAT_DIR,
+      env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
+      model: chatSettings.model(),
+      effort: chatSettings.effort(),
+      systemPrompt: systemPrompt(),
+      tools: [],
+      mcpServers: { panel: { type: "http", url: mcpUrl } },
+      strictMcpConfig: true,
+      allowedTools: ["mcp__panel"],
+      settingSources: [],
+      includePartialMessages: true,
+      abortController: abort,
+      canUseTool: async (name, input) =>
+        name.startsWith("mcp__panel__") ? { behavior: "allow", updatedInput: input } : { behavior: "deny", message: "FRIDAY only uses Panel's tools." },
+      ...(sessionId ? { resume: sessionId } : {}),
+    },
+  });
+  run.sdk = { q, abort };
+  let stderr = "";
+  try {
+    for await (const m of q) {
+      handle(m);
+      if (run.stopped) break;
+    }
+  } catch (e) {
+    stderr = (e as Error).message;
+  } finally {
+    run.sdk = undefined;
+  }
+  return { code: stderr ? 1 : 0, stderr };
 }

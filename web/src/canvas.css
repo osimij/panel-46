@@ -104,11 +104,69 @@
 .note-text { font-size: 13px; line-height: 1.45; min-height: 19px; }
 .note-text::placeholder { color: var(--faint); }
 
+/* A sketch: a page Claude made to try a direction. Wider than a save, shown as its first screen. */
+.bn.sketch { width: 360px; padding: 6px 6px 10px; }
+.sketch-shot {
+  position: relative; width: 100%; aspect-ratio: 1440 / 900; overflow: hidden; background: var(--card); cursor: zoom-in;
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
+}
+.sketch-shot img { display: block; width: 100%; height: 100%; object-fit: cover; object-position: top; transition: filter 0.3s var(--ease), opacity 0.3s var(--ease); }
+.sketch-empty { display: grid; place-items: center; width: 100%; height: 100%; font-size: 12px; color: var(--muted); }
+.sketch-version {
+  position: absolute; top: 7px; right: 7px; height: 20px; padding: 0 7px; display: inline-flex; align-items: center;
+  border-radius: 999px; font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  background: color-mix(in oklch, var(--raised) 85%, transparent); color: var(--text); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.sketch-meta { padding: 9px 5px 0; }
+.sketch-title { display: block; font-size: 13px; font-weight: 550; line-height: 1.3; color: var(--text); }
+.sketch-tries {
+  margin: 3px 0 0; font-size: 12px; line-height: 1.4; color: var(--muted);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.bn.sketch.s-chosen { box-shadow: 0 0 0 2px var(--text), 0 18px 44px -18px oklch(0 0 0 / 0.5); }
+.react-flow__node.selected .bn.sketch.s-chosen { box-shadow: 0 0 0 2px var(--text), 0 0 0 5px var(--bg), 0 0 0 6.5px var(--faint), 0 18px 44px -18px oklch(0 0 0 / 0.5); }
+.bn.sketch.s-ruled_out .sketch-shot img { filter: grayscale(1); opacity: 0.45; }
+.bn.sketch.s-ruled_out .sketch-title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
+.bn.sketch.s-proposed { outline: 1.5px dashed var(--faint); outline-offset: 3px; }
+
+/* A sketch open large: the live page, clickable, over the canvas. */
+.sk-sheet {
+  position: absolute; inset: 0; z-index: 18; display: grid; place-items: center; padding: 20px 24px 24px;
+  background: color-mix(in oklch, var(--bg) 55%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  animation: sk-fade 0.22s var(--ease);
+}
+.sk-sheet.closing { opacity: 0; transition: opacity 0.16s var(--ease); }
+.sk-frame {
+  display: flex; flex-direction: column; width: min(1440px, 100%); height: 100%; overflow: hidden; background: var(--raised);
+  border-radius: calc(14px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 0 0 1px var(--line), 0 30px 80px -30px oklch(0 0 0 / 0.5);
+  animation: sk-in 0.4s var(--out);
+}
+.sk-sheet.closing .sk-frame { transform: scale(0.98); transition: transform 0.16s var(--ease); }
+.sk-head { display: flex; align-items: center; gap: 10px; min-width: 0; height: 44px; padding: 0 8px 0 16px; flex: none; }
+.sk-title { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.sk-version { font-size: 12px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sk-tries { min-width: 0; font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sk-gap { flex: 1; }
+.sk-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; flex: none;
+  font-size: 12px; color: var(--muted); text-decoration: none;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+}
+.sk-btn:hover { background: var(--fill); color: var(--text); }
+.sk-close { width: 28px; padding: 0; justify-content: center; }
+.sk-frame iframe { flex: 1; width: 100%; border: 0; background: #fff; }
+@keyframes sk-fade { from { opacity: 0; } }
+@keyframes sk-in { from { opacity: 0; transform: translateY(10px) scale(0.985); } }
+
 /* ---- Lines ---- */
 
 .fe-line { fill: none; stroke: var(--faint); stroke-width: 1.5; transition: stroke 0.2s var(--ease), opacity 0.2s var(--ease); }
 .fe-flow .fe-line { stroke: var(--muted); stroke-width: 2; }
 .fe-note .fe-line { stroke-dasharray: 2 5; stroke-linecap: round; }
+/* A save a sketch took from: a thin dashed line, there when you look for it. */
+.fe-uses .fe-line { stroke-dasharray: 5 5; stroke-width: 1.25; opacity: 0.7; }
+.fe-build .fe-line { stroke: var(--muted); stroke-width: 1.75; }
 .fe.chosen .fe-line { stroke: var(--text); stroke-width: 1.75; }
 .fe.out .fe-line { opacity: 0.4; }
 .fe.sel .fe-line, .react-flow__edge:hover .fe-line { stroke: var(--text); }
