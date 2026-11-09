@@ -101,6 +101,28 @@ describe("projects", () => {
   });
 });
 
+describe("verdicts", () => {
+  test("a reason stays with the save, comes first among the reasons offered, and reaches the AI", async () => {
+    const proj = await (await p.send("POST", "/api/projects", { name: "Verdict project" })).json();
+    const added = await (await p.send("POST", `/api/projects/${proj.id}/ops`, {
+      client: "test",
+      ops: [{ op: "add_node", node: { kind: "ref", ref_id: ids[2], data: { state: "proposed" }, x: 0, y: 0 } }],
+    })).json();
+    const node = added.ops[0].node.id;
+    await p.send("POST", `/api/projects/${proj.id}/ops`, { client: "test", ops: [{ op: "update_node", id: node, data: { state: "ruled_out", reason: "Looks like a template" } }] });
+    const board = await p.get(`/api/projects/${proj.id}`);
+    expect(board.nodes[0].data).toMatchObject({ state: "ruled_out", reason: "Looks like a template" });
+    const offered = await p.get("/api/projects/reasons");
+    expect(offered.ruled_out[0]).toBe("Looks like a template");
+    expect(offered.ruled_out.length).toBe(5);
+    expect(offered.chosen.length).toBe(5);
+    const res = await p.send("POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "get_verdicts", arguments: {} } }, { accept: "application/json, text/event-stream" });
+    const v = JSON.parse(((await res.json()) as any).result.content[0].text);
+    expect(v.ruled_out).toBe(1);
+    expect(v.by_reason[0]).toMatchObject({ verdict: "ruled out", reason: "Looks like a template", times: 1 });
+  });
+});
+
 describe("the library for AI apps (MCP)", () => {
   const rpc = async (method: string, params: unknown = {}) => {
     const res = await p.send("POST", "/mcp", { jsonrpc: "2.0", id: 1, method, params }, { accept: "application/json, text/event-stream" });

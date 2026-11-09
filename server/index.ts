@@ -10,7 +10,7 @@ import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, updateMaterial } from "./materials.ts";
-import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, type Op } from "./projects.ts";
+import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
 import { sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
@@ -432,6 +432,8 @@ async function handle(req: Request): Promise<Response> {
   // Only Panel's own page may change them (not another website, not DNS tricks).
   if (path.startsWith("/api/projects") && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/projects" && m === "GET") return json(listProjects());
+  // The reasons offered when choosing or ruling out: the designer's most used, then a few starters.
+  if (path === "/api/projects/reasons" && m === "GET") return json(verdictReasons());
   if (path === "/api/projects" && m === "POST") {
     const b = (await req.json().catch(() => ({}))) as { name?: string; brief?: string };
     try {

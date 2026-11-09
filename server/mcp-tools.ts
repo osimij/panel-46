@@ -5,7 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readMaterial } from "./materials.ts";
 import { designRules } from "./rules.ts";
-import { chosenRefs, findProject, listProjects, projectsOf, summary, REF_STATES, TOPIC_FACETS } from "./projects.ts";
+import { chosenRefs, findProject, listProjects, projectsOf, summary, verdicts, REF_STATES, TOPIC_FACETS } from "./projects.ts";
 import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, type SketchResult } from "./board.ts";
 import { DEVICES, fullUrl, SCREEN, sketchPath, type Device, type Render } from "./sketches.ts";
 import { describeFindings } from "./rulecheck.ts";
@@ -23,6 +23,7 @@ Use it to find references for a brief and to combine them: color from one save, 
 - get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend. For a website it also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures. Searching typography for a font's name, or for "cyrillic" or "tajik", finds sites whose own fonts have those letters.
 - save_to_collection puts the saves you chose in a Panel collection the designer can open.
 - Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials (files and links the designer added: specs, brand books, sites); get_project_material reads a material in full. When working on a project, read it and the materials that matter first, and build from its locked decisions.
+- get_verdicts is the designer's taste across every project: what they chose and ruled out, with their reasons. Lean on it.
 - On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
 - To try a direction before anyone builds it, make_sketch puts a quick page on the canvas: one self-contained HTML file. You get back pictures of it as rendered; look, check it against the brief and the rules, and fix it with edit_sketch before showing it. get_sketch reads one back, on any device or in any of its states.
 - A sketch can be clickable: a flow of screens, or states (empty, loading, error). List them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.
@@ -114,6 +115,13 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       return { content: [{ type: "text" as const, text: rules ? `${rulesHeading}\n\n${rules}` : "The designer hasn't written any rules yet (unugly.md is missing)." }] };
     });
   }
+
+  server.registerTool("get_verdicts", {
+    title: "The designer's verdicts",
+    description: "Everything the designer has chosen and ruled out across all their projects, grouped by the reason they gave: what they keep choosing and what they keep turning down, in their own words, with examples. Read it before suggesting references or sketching, to lean on their taste, and to notice a reason that keeps coming back (worth offering as a line for their rules).",
+    inputSchema: {},
+    annotations: readOnly,
+  }, safe(() => verdicts()));
 
   server.registerTool("library_overview", {
     title: "Library overview",

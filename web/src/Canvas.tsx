@@ -27,7 +27,7 @@ import { Popover } from "./TagRow.tsx";
 
 type Enter = { enter?: number; leaving?: boolean; focus?: boolean };
 type TopicData = Enter & { title: string; facet?: TopicFacet; status?: "exploring" | "locked"; summary?: string };
-type RefData = Enter & { refId: string; state?: RefState; taking?: string };
+type RefData = Enter & { refId: string; state?: RefState; taking?: string; reason?: string };
 type NoteData = Enter & { text: string };
 /** A quick page Claude made to try a direction; its files live at the companion, by version. */
 type SketchData = Enter & { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: Device };
@@ -58,7 +58,7 @@ function toFlow(b: BoardNode, enter?: number): AnyNode {
   if (b.kind === "topic") {
     return { id: b.id, type: "topic", position, data: { title: String(d.title ?? ""), facet: d.facet as TopicFacet, status: d.status as TopicData["status"], summary: d.summary as string | undefined, enter } };
   }
-  if (b.kind === "ref") return { id: b.id, type: "ref", position, data: { refId: b.ref_id!, state: d.state as RefState, taking: d.taking as string | undefined, enter } };
+  if (b.kind === "ref") return { id: b.id, type: "ref", position, data: { refId: b.ref_id!, state: d.state as RefState, taking: d.taking as string | undefined, reason: d.reason as string | undefined, enter } };
   if (b.kind === "sketch") {
     return { id: b.id, type: "sketch", position, data: { title: String(d.title ?? ""), tries: d.tries as string | undefined, state: d.state as RefState, version: Number(d.version) || 1, reason: d.reason as string | undefined, device: d.device as Device | undefined, enter } };
   }
@@ -70,7 +70,7 @@ const toEdge = (e: BoardEdge): Edge => ({ id: e.id, source: e.source, target: e.
 /** The part of a node's data the companion keeps. */
 function stored(n: AnyNode): Record<string, unknown> {
   if (n.type === "topic") return { title: n.data.title, facet: n.data.facet, status: n.data.status, summary: n.data.summary };
-  if (n.type === "ref") return { state: n.data.state, taking: n.data.taking };
+  if (n.type === "ref") return { state: n.data.state, taking: n.data.taking, reason: n.data.reason };
   if (n.type === "sketch") return { title: n.data.title, tries: n.data.tries, state: n.data.state, version: n.data.version, reason: n.data.reason, device: n.data.device };
   if (n.type === "build") return { build: n.data.build, title: n.data.title };
   return { text: n.data.text };
@@ -83,6 +83,8 @@ interface Actions {
   project: string;
   cards: Map<string, RefCard>;
   patch: (id: string, data: Record<string, unknown>) => void;
+  /** Give saves or sketches a verdict (keep, choose, rule out), then ask why and move on to the next one waiting. */
+  judge: (ids: string[], state: RefState) => void;
   remove: (ids: string[]) => void;
   note: (forId: string) => void;
   open: (refId: string) => void;
@@ -128,9 +130,9 @@ const selectAlone = (s: { nodes: { selected?: boolean }[] }) => {
   return true;
 };
 
-function Tool(props: { icon: Parameters<typeof Icon>[0]["name"]; label: string; on?: boolean; danger?: boolean; onClick: () => void }) {
+function Tool(props: { icon: Parameters<typeof Icon>[0]["name"]; label: string; on?: boolean; danger?: boolean; onClick: () => void; keyHint?: string }) {
   return (
-    <button className={`bn-tool ${props.on ? "on" : ""} ${props.danger ? "danger" : ""}`} onClick={props.onClick} title={props.label} aria-label={props.label} aria-pressed={props.on}>
+    <button className={`bn-tool ${props.on ? "on" : ""} ${props.danger ? "danger" : ""}`} onClick={props.onClick} title={props.keyHint ? `${props.label} (${props.keyHint})` : props.label} aria-label={props.label} aria-pressed={props.on}>
       <Icon name={props.icon} size={14} />
       <span>{props.label}</span>
     </button>
@@ -291,6 +293,7 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
         {state === "proposed" && <span className="ref-badge soft">Suggested</span>}
       </div>
       {data.taking && <p className="ref-why">{data.taking}</p>}
+      {data.reason && state !== "proposed" && state !== "kept" && <p className="ref-why reason">{state === "chosen" ? "Chosen for" : "Why not"}: {data.reason}</p>}
       <div className="ref-meta">
         <span className="ref-title">{card?.title ?? "Not in the library"}</span>
         {card && card.palette.length > 0 && (
@@ -301,9 +304,9 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
       </div>
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
-          <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
-          {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
-          <Tool icon="x" label="Rule out" on={state === "ruled_out"} onClick={() => act.patch(id, { state: state === "ruled_out" ? "kept" : "ruled_out" })} />
+          <Tool icon="check" label="Choose" keyHint="C" on={state === "chosen"} onClick={() => act.judge([id], state === "chosen" ? "kept" : "chosen")} />
+          {state === "proposed" && <Tool icon="plus" label="Keep" keyHint="K" onClick={() => act.judge([id], "kept")} />}
+          <Tool icon="x" label="Rule out" keyHint="X" on={state === "ruled_out"} onClick={() => act.judge([id], state === "ruled_out" ? "kept" : "ruled_out")} />
           <Tool icon="build" label="Sketch" onClick={() => act.sketchFrom([id])} />
           <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
@@ -368,9 +371,9 @@ const SketchView = memo(function SketchView({ id, data, selected }: NodeProps<Sk
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
           <Tool icon="eye" label="Open" onClick={() => act.openSketch(id)} />
-          <Tool icon="check" label="Choose" on={state === "chosen"} onClick={() => act.patch(id, { state: state === "chosen" ? "kept" : "chosen" })} />
-          {state === "proposed" && <Tool icon="plus" label="Keep" onClick={() => act.patch(id, { state: "kept" })} />}
-          <Tool icon="x" label="Rule out" on={state === "ruled_out"} onClick={() => act.patch(id, { state: state === "ruled_out" ? "kept" : "ruled_out" })} />
+          <Tool icon="check" label="Choose" keyHint="C" on={state === "chosen"} onClick={() => act.judge([id], state === "chosen" ? "kept" : "chosen")} />
+          {state === "proposed" && <Tool icon="plus" label="Keep" keyHint="K" onClick={() => act.judge([id], "kept")} />}
+          <Tool icon="x" label="Rule out" keyHint="X" on={state === "ruled_out"} onClick={() => act.judge([id], state === "ruled_out" ? "kept" : "ruled_out")} />
           <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
@@ -779,6 +782,92 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
     [commit],
   );
 
+  // ---- Verdicts: quick to give, and each one can carry a reason ----
+  // Keep (K), choose (C) and rule out (X) work on whatever is selected. After one, a strip
+  // offers the reasons used most ("Too generic") and a field for your own; none is needed.
+  // Judging a suggestion moves on to the next one still waiting, so a row of them goes fast.
+  const [judged, setJudged] = useState<{ ids: string[]; verdict: "chosen" | "ruled_out"; key: number; reason?: string } | null>(null);
+  const [reasons, setReasons] = useState<{ chosen: string[]; ruled_out: string[] }>({ chosen: [], ruled_out: [] });
+  const loadReasons = useCallback(() => void projectApi.reasons().then(setReasons).catch(() => {}), []);
+  useEffect(loadReasons, [loadReasons]);
+  const edgesRef = useRef(edges);
+  edgesRef.current = edges;
+
+  const judge = useCallback(
+    (ids: string[], state: RefState) => {
+      if (!ids.length) return;
+      const all = nodesRef.current;
+      const me = ids.length === 1 ? all.find((n) => n.id === ids[0]) : undefined;
+      const wasWaiting = (me?.type === "ref" || me?.type === "sketch") && me.data.state === "proposed";
+      patchMany(ids, { state, reason: "" });
+      setJudged(state === "chosen" || state === "ruled_out" ? { ids, verdict: state, key: Date.now() } : null);
+      if (!me || !wasWaiting) return;
+      // On to the nearest suggestion still waiting: under the same topic first, then anywhere.
+      const waiting = all.filter((n) => (n.type === "ref" || n.type === "sketch") && n.id !== me.id && !n.data.leaving && n.data.state === "proposed");
+      if (!waiting.length) return;
+      const topicsOf = (nid: string) => edgesRef.current.flatMap((e) => (e.source === nid ? [e.target] : e.target === nid ? [e.source] : [])).filter((x) => all.find((n) => n.id === x)?.type === "topic");
+      const mine = new Set(topicsOf(me.id));
+      const siblings = waiting.filter((n) => topicsOf(n.id).some((t) => mine.has(t)));
+      const far = (n: AnyNode) => Math.hypot(n.position.x - me.position.x, n.position.y - me.position.y);
+      const next = [...(siblings.length ? siblings : waiting)].sort((a, b) => far(a) - far(b))[0]!;
+      setNodes((ns) => ns.map((n) => (!!n.selected !== (n.id === next.id) ? ({ ...n, selected: n.id === next.id } as AnyNode) : n)));
+      revealRef.current([next.id], [next.position]);
+    },
+    [patchMany],
+  );
+  const giveReason = useCallback(
+    (text: string) => {
+      const reason = text.trim().slice(0, 400);
+      setJudged((j) => {
+        if (!j || !reason) return j;
+        patchMany(j.ids, { reason });
+        return { ...j, reason };
+      });
+      setTimeout(loadReasons, 600);
+    },
+    [patchMany, loadReasons],
+  );
+  // The strip steps aside by itself: quickly once a reason is given, in a while if not.
+  useEffect(() => {
+    if (!judged) return;
+    const t = setTimeout(() => setJudged((j) => (j?.key === judged.key ? null : j)), judged.reason ? 1600 : 12_000);
+    return () => clearTimeout(t);
+  }, [judged]);
+  const judgedRef = useRef(judged);
+  judgedRef.current = judged;
+  // With a sketch open in the studio, the keys belong to it.
+  const viewingRef = useRef<string | null>(null);
+  viewingRef.current = viewing;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.metaKey || e.ctrlKey || e.altKey || viewingRef.current) return;
+      if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
+      const k = e.key.toLowerCase();
+      // 1–5 pick one of the offered reasons for the verdict just given.
+      const j = judgedRef.current;
+      if (j && !j.reason && /^[1-5]$/.test(k)) {
+        const pick = reasonsRef.current[j.verdict][Number(k) - 1];
+        if (pick) {
+          e.preventDefault();
+          giveReason(pick);
+        }
+        return;
+      }
+      const state: RefState | null = k === "k" ? "kept" : k === "c" ? "chosen" : k === "x" ? "ruled_out" : null;
+      if (!state) return;
+      const picked = nodesRef.current.filter((n) => n.selected && !n.data.leaving && (n.type === "ref" || n.type === "sketch"));
+      if (!picked.length) return;
+      e.preventDefault();
+      // The same key again takes the verdict back, like the buttons do.
+      const all = picked.every((n) => (n.data as RefData).state === state);
+      judge(picked.map((n) => n.id), all && state !== "kept" ? "kept" : state);
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [judge, giveReason]);
+  const reasonsRef = useRef(reasons);
+  reasonsRef.current = reasons;
+
   const remove = useCallback(
     (ids: string[]) => {
       removeLocal(ids);
@@ -942,8 +1031,8 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
   }, [id, cards]);
 
   const actions = useMemo<Actions>(
-    () => ({ project: id, cards, patch, remove, note, open: onOpenRef, openSketch: setViewing, clearFocus, ask: onAsk, error: onError, sketchFrom, considered: fold.considered, toggleConsidered }),
-    [id, cards, patch, remove, note, onOpenRef, clearFocus, onAsk, onError, sketchFrom, fold.considered, toggleConsidered],
+    () => ({ project: id, cards, patch, judge, remove, note, open: onOpenRef, openSketch: setViewing, clearFocus, ask: onAsk, error: onError, sketchFrom, considered: fold.considered, toggleConsidered }),
+    [id, cards, patch, judge, remove, note, onOpenRef, clearFocus, onAsk, onError, sketchFrom, fold.considered, toggleConsidered],
   );
 
   // ---- What's selected, for Ask ----
@@ -1185,7 +1274,7 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
           fitViewOptions={{ padding: 0.25 }}
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--dot)" />
-          <SelectionTools nodes={shownNodes} patchMany={patchMany} remove={remove} onAsk={onAsk} onSketch={sketchFrom} />
+          <SelectionTools nodes={shownNodes} judge={judge} remove={remove} onAsk={onAsk} onSketch={sketchFrom} />
         </ReactFlow>
 
         {empty && (
@@ -1201,8 +1290,20 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
           </div>
         )}
 
+        {judged && !viewing && (
+          <VerdictNote
+            key={judged.key}
+            verdict={judged.verdict}
+            count={judged.ids.length}
+            reason={judged.reason}
+            offered={reasons[judged.verdict]}
+            onReason={giveReason}
+            onClose={() => setJudged(null)}
+          />
+        )}
+
         {notice && (
-          <div className="canvas-notice" key={notice.key} role="status">
+          <div className={`canvas-notice ${judged && !viewing ? "raised" : ""}`} key={notice.key} role="status">
             <span className="canvas-notice-dot" />
             <span>{notice.label}{notice.more > 0 && <span className="canvas-notice-more"> and {notice.more} more {notice.more === 1 ? "change" : "changes"}</span>}</span>
             {!notice.info && <button className="canvas-notice-undo" onClick={() => undo("assistant")}>Undo</button>}
@@ -1279,9 +1380,46 @@ function describePicked(project: string, picked: AnyNode[], cards: Map<string, R
   return { project, nodes: picked.map((n) => n.id), label: label.replace(/\s+/g, " ").slice(0, 90), thumbs };
 }
 
+/** After a verdict: why? The reasons used most, by number or by click, or a few words of your own. None is needed. */
+function VerdictNote(props: { verdict: "chosen" | "ruled_out"; count: number; reason?: string; offered: string[]; onReason: (text: string) => void; onClose: () => void }) {
+  const [text, setText] = useState("");
+  const what = props.verdict === "chosen" ? "Chosen" : "Ruled out";
+  if (props.reason) {
+    return (
+      <div className="canvas-notice verdict" role="status">
+        <span className="canvas-notice-dot" />
+        <span>{what}: {props.reason}</span>
+      </div>
+    );
+  }
+  return (
+    <div className="canvas-notice verdict" role="group" aria-label={`${what}. Why?`}>
+      <span className="verdict-what">{what}{props.count > 1 ? ` ${props.count}` : ""} <span className="canvas-notice-more">· why?</span></span>
+      {props.offered.map((r, i) => (
+        <button key={r} className="verdict-chip" onClick={() => props.onReason(r)} title={`Press ${i + 1}`}>
+          <span className="verdict-n">{i + 1}</span>
+          {r}
+        </button>
+      ))}
+      <input
+        className="verdict-input"
+        value={text}
+        placeholder="or in your words"
+        aria-label="Your reason"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && text.trim()) props.onReason(text);
+          if (e.key === "Escape") props.onClose();
+        }}
+      />
+      <button className="canvas-notice-x" onClick={props.onClose} aria-label="No reason"><Icon name="x" size={12} /></button>
+    </div>
+  );
+}
+
 // ---------- Several things selected: one toolbar for them all ----------
 
-function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], data: Record<string, unknown>) => void; remove: (ids: string[]) => void; onAsk: () => void; onSketch: (ids: string[]) => void }) {
+function SelectionTools(props: { nodes: AnyNode[]; judge: (ids: string[], state: RefState) => void; remove: (ids: string[]) => void; onAsk: () => void; onSketch: (ids: string[]) => void }) {
   const picked = props.nodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
   if (picked.length < 2) return null;
   // Saves and sketches both take a verdict.
@@ -1297,9 +1435,9 @@ function SelectionTools(props: { nodes: AnyNode[]; patchMany: (ids: string[], da
         <Tool icon="ask" label="Ask FRIDAY" onClick={props.onAsk} />
         {refs.length > 0 && (
           <>
-            <Tool icon="check" label="Choose" on={every("chosen")} onClick={() => props.patchMany(ids, { state: every("chosen") ? "kept" : "chosen" })} />
-            {someProposed && <Tool icon="plus" label="Keep" onClick={() => props.patchMany(refs.filter((n) => n.data.state === "proposed").map((n) => n.id), { state: "kept" })} />}
-            <Tool icon="x" label="Rule out" on={every("ruled_out")} onClick={() => props.patchMany(ids, { state: every("ruled_out") ? "kept" : "ruled_out" })} />
+            <Tool icon="check" label="Choose" keyHint="C" on={every("chosen")} onClick={() => props.judge(ids, every("chosen") ? "kept" : "chosen")} />
+            {someProposed && <Tool icon="plus" label="Keep" keyHint="K" onClick={() => props.judge(refs.filter((n) => n.data.state === "proposed").map((n) => n.id), "kept")} />}
+            <Tool icon="x" label="Rule out" keyHint="X" on={every("ruled_out")} onClick={() => props.judge(ids, every("ruled_out") ? "kept" : "ruled_out")} />
           </>
         )}
         <Tool icon="trash" label="Remove" danger onClick={() => props.remove(picked.map((n) => n.id))} />

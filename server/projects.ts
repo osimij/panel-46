@@ -183,6 +183,8 @@ function cleanData(kind: BoardNode["kind"], data: Record<string, unknown>): Reco
   } else if (kind === "ref") {
     if ("state" in data) out.state = REF_STATES.includes(data.state as RefState) ? data.state : "kept";
     if ("taking" in data) out.taking = str(data.taking, 200);
+    // Why the designer chose it or ruled it out, in a few words.
+    if ("reason" in data) out.reason = str(data.reason, 400);
   } else if (kind === "sketch") {
     if ("title" in data) out.title = str(data.title, 120) ?? "";
     if ("tries" in data) out.tries = str(data.tries, 300);
@@ -411,6 +413,73 @@ export function follow(projectId: string, after: number, signal: AbortSignal) {
   });
 }
 
+// ---------- Verdicts across every project: the designer's taste, in their own words ----------
+
+interface Judged { project: string; kind: "ref" | "sketch"; id: string; title: string; state: RefState; reason: string }
+
+function judgedNodes(): Judged[] {
+  const rows = db
+    .query<{ id: string; kind: "ref" | "sketch"; ref_id: string | null; data: string; project: string }, []>(
+      "SELECT n.id, n.kind, n.ref_id, n.data, p.name project FROM board_nodes n JOIN projects p ON p.id = n.project_id WHERE n.kind IN ('ref', 'sketch') ORDER BY n.updated_at DESC",
+    )
+    .all();
+  const { docs } = load();
+  return rows.map((r) => {
+    const d = parse(r.data);
+    const doc = r.ref_id ? docs.get(r.ref_id) : undefined;
+    return {
+      project: r.project, kind: r.kind, id: r.kind === "ref" ? r.ref_id ?? r.id : r.id,
+      title: r.kind === "sketch" ? String(d.title || "Untitled sketch") : doc ? title(doc) : "(removed from the library)",
+      state: (REF_STATES.includes(d.state as RefState) ? d.state : "kept") as RefState,
+      reason: String(d.reason ?? "").trim(),
+    };
+  });
+}
+
+const STARTER_REASONS = {
+  ruled_out: ["Too generic", "Wrong mood", "Too busy", "Type doesn't fit", "Color is off"],
+  chosen: ["The type", "The color", "The layout", "The mood", "The motion"],
+};
+
+/**
+ * The reasons offered when the designer chooses or rules something out: the ones they've
+ * given most often, in their words, filled up with a few plain starters.
+ */
+export function verdictReasons() {
+  const all = judgedNodes().filter((j) => j.reason);
+  const top = (state: "chosen" | "ruled_out") => {
+    const n = new Map<string, { text: string; n: number }>();
+    for (const j of all) {
+      if (j.state !== state || j.reason.length > 40) continue;
+      const k = j.reason.toLowerCase();
+      n.set(k, { text: n.get(k)?.text ?? j.reason, n: (n.get(k)?.n ?? 0) + 1 });
+    }
+    const own = [...n.values()].sort((a, b) => b.n - a.n).map((x) => x.text);
+    return [...new Set([...own, ...STARTER_REASONS[state]].map((x) => x.trim()))].filter((x, i, list) => list.findIndex((y) => y.toLowerCase() === x.toLowerCase()) === i).slice(0, 5);
+  };
+  return { chosen: top("chosen"), ruled_out: top("ruled_out") };
+}
+
+/** Every verdict the designer has given, across projects, grouped by the reason: what they keep choosing and keep ruling out. */
+export function verdicts() {
+  const all = judgedNodes();
+  const groups = new Map<string, { verdict: string; reason: string; times: number; examples: string[] }>();
+  for (const j of all) {
+    if (!j.reason || (j.state !== "chosen" && j.state !== "ruled_out")) continue;
+    const k = `${j.state}:${j.reason.toLowerCase()}`;
+    const g = groups.get(k) ?? groups.set(k, { verdict: j.state.replace("_", " "), reason: j.reason, times: 0, examples: [] }).get(k)!;
+    g.times++;
+    if (g.examples.length < 5) g.examples.push(`${j.kind === "ref" ? `save ${j.id}` : `sketch ${j.id}`} “${j.title}” (${j.project})`);
+  }
+  const count = (s: RefState) => all.filter((j) => j.state === s).length;
+  return {
+    chosen: count("chosen"), kept: count("kept"), ruled_out: count("ruled_out"), still_suggested: count("proposed"),
+    without_a_reason: all.filter((j) => (j.state === "chosen" || j.state === "ruled_out") && !j.reason).length,
+    by_reason: [...groups.values()].sort((a, b) => b.times - a.times),
+    how_to_read: "These are the designer's own verdicts and words, across every project. A reason that keeps coming back is their taste: lean on it when you suggest, place or sketch. When one has come up 3 times or more and unugly.md (get_design_rules) doesn't say it yet, tell the designer once, with the examples, and offer one line they could add to unugly.md in their own words. Never add it yourself.",
+  };
+}
+
 // ---------- The project as an AI reads it ----------
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components" };
@@ -479,6 +548,7 @@ export function summary(idOrName: string) {
       id: n.ref_id,
       title: d ? title(d) : "(hidden or removed from the library)",
       taking: (n.data.taking as string) || undefined,
+      designer_reason: (n.data.reason as string) || undefined,
       why: noteText(n.id).length ? noteText(n.id) : undefined,
       offers: d ? offer(d, facet) : undefined,
       by_assistant: n.origin === "assistant" || undefined,
@@ -589,6 +659,7 @@ export function describeSelection(projectId: string, nodeIds: string[]) {
         String(n.data.state ?? "kept").replace("_", " "),
         under.length ? `under ${under.join(", ")}` : "not under a topic",
         n.data.taking ? `why: ${String(n.data.taking)}` : "",
+        n.data.reason ? `designer's reason: ${String(n.data.reason)}` : "",
         notes.length ? `designer's note: ${notes.join(" / ")}` : "",
       ].filter(Boolean);
       return [`the save [[${n.ref_id}]] ${d ? `“${title(d)}” ` : ""}(${bits.join("; ")})`];

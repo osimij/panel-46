@@ -436,6 +436,16 @@ a.mat-name:hover { text-decoration: underline; text-decoration-color: var(--fain
 }
 @keyframes notice-in { from { opacity: 0; transform: translateY(12px) scale(0.96); } }
 .canvas-notice-more { color: var(--muted); }
+/* After a verdict: why? Reasons by number, or a few words. The assistant's notice moves up while it's there. */
+.canvas-notice.raised { bottom: 138px; }
+.canvas-notice.verdict { gap: 6px; padding-left: 14px; max-width: calc(100% - 40px); }
+.verdict-what { font-weight: 500; margin-right: 4px; }
+.verdict-chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 11px 0 8px; border-radius: 999px; background: var(--fill); }
+.verdict-chip:hover { background: var(--fill-hover); }
+.verdict-n { color: var(--faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.verdict-input { width: 132px; height: 28px; padding: 0 8px; background: none; border: 0; outline: 0; font: inherit; color: inherit; }
+.verdict-input::placeholder { color: var(--faint); }
+.ref-why.reason { color: var(--muted); }
 .canvas-notice-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text); animation: notice-dot 1.6s var(--ease) 2; }
 @keyframes notice-dot { 50% { transform: scale(1.6); opacity: 0.5; } }
 .canvas-notice-undo { height: 28px; padding: 0 12px; border-radius: 999px; background: var(--fill); font-weight: 500; }

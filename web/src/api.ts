@@ -792,6 +792,8 @@ export interface Material {
 
 export const projectApi = {
   list: () => call<ProjectSummary[]>("/api/projects"),
+  /** Reasons to offer when choosing or ruling out: the designer's own most used, then a few starters. */
+  reasons: () => call<{ chosen: string[]; ruled_out: string[] }>("/api/projects/reasons"),
   create: (name: string, brief = "") => call<{ id: string; name: string; brief: string }>("/api/projects", { method: "POST", body: body({ name, brief }) }),
   get: (id: string) => call<ProjectFull>(`/api/projects/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
