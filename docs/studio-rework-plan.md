@@ -58,8 +58,8 @@ Four rules. Everything in the packages below follows from them.
         same page width in both. Compare: no column, the pages get all of it.
 ```
 
-Three choices in this design are the designer's to confirm before package 2 starts. Each has
-a recommendation; package 1 does not depend on them.
+Three choices in this design were the designer's to confirm before package 2 started. **On
+10 Nov 2026 the designer said yes to all three recommendations** (A, B and C below).
 
 - **A. Knobs and FRIDAY take turns** (recommended), rather than sitting side by side.
 - **B. The studio's ask bar hides while FRIDAY's panel shows** (recommended).
@@ -174,6 +174,29 @@ Files: `web/src/Studio.tsx`, `web/src/studio.css`, and the few lines of plumbing
 
 Before packages 3 to 5 start, show the designer the result on 4747 at window widths 1280,
 1500 and 1728, FRIDAY open and folded.
+
+### Where packages 1 and 2 stand (10 Nov 2026)
+
+Both are in the working tree, not committed. What differs from the text above:
+
+- Package 1's header stopgap (moving the 1080px thresholds) was skipped: package 2's header
+  replaced it in the same pass.
+- The header has a seventh step, after "of 8": at a phone's width Point and Compare
+  themselves go (P still points). Before that, the title gives up its room down to 120px.
+  Checked with a 60-character title at studio widths 640, 760, 900, 1066, 1160, 1300, 1474
+  and 2000: nothing overlaps.
+- Knobs and Directions take FRIDAY's width (`--chat`). That meant deleting the 276px rule
+  in the Knobs block of `studio.css`, which package 3 owns.
+- While the studio is open, the library's room changes at once when FRIDAY opens or folds
+  (`.main:has(.studio)`), so Knobs can take FRIDAY's place in the same frame. Checked:
+  `.st-stage` stays at 1066px through Knobs → Directions → FRIDAY → Knobs → closed.
+- The frame and the page glide together only when the screen size changes; anything else
+  resizes both at once.
+- FRIDAY reports its current step upward (`onDoing` in `Assistant.tsx`); the bar shows it
+  ("Thinking", "Changing the sketch"), then "FRIDAY answered · See answer".
+- Not yet checked live: knob changes surviving a version step, a close and a new version,
+  and Compare's pages. Claude's built-in browser can't run sketch pages and Chrome wasn't
+  connected. Package 6 should start with these.
 
 ### Package 3: Knobs worth using
 

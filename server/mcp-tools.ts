@@ -4,13 +4,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readMaterial } from "./materials.ts";
+import { fontLines } from "./fonts.ts";
 import { designRules } from "./rules.ts";
 import { chosenRefs, findProject, listProjects, projectsOf, summary, verdicts, REF_STATES, TOPIC_FACETS } from "./projects.ts";
 import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, type SketchResult } from "./board.ts";
 import { DEVICES, fullUrl, SCREEN, sketchPath, type Device, type Render } from "./sketches.ts";
 import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
-import { FACETS, TYPES, findByColor, gather, overview, reference, saveToCollection, search, similar } from "./library.ts";
+import { FACETS, TYPES, findByColor, gather, overview, reference, search, similar } from "./library.ts";
 
 const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
 
@@ -21,11 +22,11 @@ Use it to find references for a brief and to combine them: color from one save, 
 - find_by_color matches measured palettes by hex (ΔE distance).
 - similar_to finds saves like one you have, by facet; the facet "look" compares the pictures themselves.
 - get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend. For a website it also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures. Searching typography for a font's name, or for "cyrillic" or "tajik", finds sites whose own fonts have those letters.
-- save_to_collection puts the saves you chose in a Panel collection the designer can open.
 - Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials (files and links the designer added: specs, brand books, sites); get_project_material reads a material in full. When working on a project, read it and the materials that matter first, and build from its locked decisions.
 - get_verdicts is the designer's taste across every project: what they chose and ruled out, with their reasons. Lean on it.
 - On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
 - To try a direction before anyone builds it, make_sketch puts a quick page on the canvas: one self-contained HTML file. You get back pictures of it as rendered; look, check it against the brief and the rules, and fix it with edit_sketch before showing it. get_sketch reads one back, on any device or in any of its states.
+- The designer uploads their own fonts to Panel (get_fonts lists them). Every sketch has them loaded already: write font-family with the family's name, no @font-face or link. When the designer names one, use it.
 - Give a sketch knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those.
 - A sketch can be clickable: a flow of screens, or states (empty, loading, error). List them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.
 - When the designer chooses a sketch, get_handoff writes down everything needed to build it, and start_build hands it to Claude Code to build in their code (get_build, message_build follow it).
@@ -116,6 +117,16 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       return { content: [{ type: "text" as const, text: rules ? `${rulesHeading}\n\n${rules}` : "The designer hasn't written any rules yet (unugly.md is missing)." }] };
     });
   }
+
+  server.registerTool("get_fonts", {
+    title: "The designer's fonts",
+    description: "The fonts the designer uploaded to Panel (licensed or brand typefaces that aren't on Google Fonts): each family with its weights and italics. Every sketch has them loaded already, so a sketch only writes font-family: \"The Family\". Use one when the designer names it.",
+    inputSchema: {},
+    annotations: readOnly,
+  }, async () => {
+    const lines = fontLines();
+    return { content: [{ type: "text" as const, text: lines.length ? `The designer's fonts, loaded in every sketch (write font-family with the name in quotes, plus a fallback):\n${lines.map((l) => `- ${l}`).join("\n")}` : "The designer hasn't uploaded any fonts yet." }] };
+  });
 
   server.registerTool("get_verdicts", {
     title: "The designer's verdicts",
@@ -328,7 +339,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     annotations: write,
   }, safe((a) => addNote(a)));
 
-  const html = z.string().min(1).describe("The whole page: one self-contained HTML file with its CSS and scripts inline. Fonts and libraries from CDNs are fine (Google Fonts, cdnjs, jsdelivr, unpkg); so are three.js and shaders. It runs sandboxed: no localStorage, cookies or calls to Panel. Real content in the project's language, never lorem ipsum.");
+  const html = z.string().min(1).describe("The whole page: one self-contained HTML file with its CSS and scripts inline. The designer's own fonts (get_fonts) are loaded already: just write font-family with their name. Other fonts and libraries from CDNs are fine (Google Fonts, cdnjs, jsdelivr, unpkg); so are three.js and shaders. It runs sandboxed: no localStorage, cookies or calls to Panel. Real content in the project's language, never lorem ipsum.");
 
   server.registerTool("make_sketch", {
     title: "Sketch a direction",
@@ -495,16 +506,6 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     },
     annotations: write,
   }, safe((a) => lockTopic(a)));
-
-  server.registerTool("save_to_collection", {
-    title: "Save to a collection",
-    description: "Put saves into a Panel collection, made if it doesn't exist yet, so the designer can open the set you picked. Use a name that says what it's for (\"Banking app: calm warm refs\"). Only adds; never removes or deletes.",
-    inputSchema: {
-      name: z.string().min(1),
-      ids: z.array(z.string()).min(1).max(200),
-    },
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-  }, safe((a) => saveToCollection(a.name, a.ids)));
 
   return server;
 }

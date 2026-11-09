@@ -320,7 +320,8 @@ export const api = {
   /** Read these references, or the next `limit` unread ones. "now" is full price, right away. */
   aiRead: (opts: { ids?: string[]; limit?: number; mode?: "batch" | "now" }) =>
     call<ReadingStatus & { added: number }>("/api/ai/read", { method: "POST", body: body(opts) }),
-  deleteCollection:(id: string) => call<{ ok: boolean }>(`/api/collections/${id}`, { method: "DELETE" }),
+  deleteCollection: (id: string) => call<{ ok: boolean }>(`/api/collections/${id}`, { method: "DELETE" }),
+  duplicateCollection: (id: string) => call<Collection>(`/api/collections/${id}/duplicate`, { method: "POST" }),
 };
 
 /**
@@ -889,3 +890,39 @@ export const projectApi = {
     }
   },
 };
+
+// ---------- Fonts ----------
+
+/** One font file: a weight, upright or italic, or a variable font ("100 900"). */
+export interface FontFace_ {
+  id: string;
+  family: string;
+  style_name: string;
+  weight: string;
+  italic: boolean;
+  format: string;
+  size: number;
+  original_name: string;
+  url: string;
+}
+export interface FontFamily {
+  family: string;
+  faces: FontFace_[];
+}
+
+export const fontApi = {
+  list: () => call<FontFamily[]>("/api/fonts"),
+  add: (files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("file", f, f.name);
+    return call<{ added: FontFace_[]; failed: string[] }>("/api/fonts", { method: "POST", body: form });
+  },
+  rename: (family: string, name: string) =>
+    call<{ family: string }>(`/api/fonts/family?name=${encodeURIComponent(family)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  removeFamily: (family: string) => call<{ removed: number }>(`/api/fonts/family?name=${encodeURIComponent(family)}`, { method: "DELETE" }),
+  remove: (id: string) => call<{ removed: number }>(`/api/fonts/${id}`, { method: "DELETE" }),
+};
+
+/** A font file, by its name: what Panel can take as one of the designer's fonts. */
+export const isFontFile = (f: File) => /\.(woff2?|ttf|otf)$/i.test(f.name);
+

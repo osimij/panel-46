@@ -31,6 +31,7 @@ Requires `ffmpeg`/`ffprobe` (verification and thumbnails). `yt-dlp` is an option
   media/<refId>/0.thumb.jpg
   media/<refId>/0.loop.mp4   a small silent copy of a video, for the grid to play
   projects/               sketches and materials, per project
+  fonts/                  the fonts you uploaded, for sketches
   backups/<date>/         a daily snapshot of the database and projects
   models/                 the two small models for search by meaning and by look
 ```
@@ -50,6 +51,14 @@ Paste a link anywhere on the page (⌘V) to save it. Pasting the same post again
 
 The grid shows 200 saves and brings in more as you scroll; only the cards near the screen are kept on the page, so a library of thousands stays light. Videos in the grid play a small copy (640px, 30 seconds); the detail view plays the original.
 
+### Collections and fonts
+
+**Collections** are yours: FRIDAY doesn't make them or fill them. Hover one in the sidebar and click `···` (or right-click it) to rename, duplicate or delete it. Deleting a collection keeps its saves.
+
+**Fonts** (in the sidebar) are the typefaces you upload: a licensed font, a client's brand font, anything that isn't on Google Fonts. Drop .woff2, .woff, .ttf or .otf files anywhere in Panel, or use Upload fonts. Panel reads each file's family, weight and style from inside it, and shows every face set in a line you can type over (Russian and Tajik by default). A family missing Cyrillic or the Tajik letters says so, because those letters would show in another font. Rename a family (that's the name sketches use) or delete it.
+
+Every sketch Panel shows has your fonts loaded, so naming one to FRIDAY is enough: "set the hero in Söhne", or type `@` and pick it from the list. FRIDAY knows which fonts you have (and Claude Code does too, through `get_fonts`), and won't look for them on the web.
+
 ### Honest status
 
 A reference only counts as **Archived** when every file was fully downloaded (size checked), hashed (sha256), and decoded by `ffprobe`. A thumbnail or an embed doesn't count.
@@ -64,7 +73,7 @@ Removing a reference moves its files to the macOS Trash.
 
 ### Backups
 
-Once a day Panel keeps a snapshot of the database and the projects folder in `backups/<date>/` (the last 7 days, then one a week for two months). In Library settings you can name a second folder, on another disk: it gets the newest snapshot and every saved file, so the library survives this Mac's disk. To go back to a snapshot, stop Panel and copy its `library.sqlite` (and `projects/`) over the library's.
+Once a day Panel keeps a snapshot of the database, the projects folder and your fonts in `backups/<date>/` (the last 7 days, then one a week for two months). In Library settings you can name a second folder, on another disk: it gets the newest snapshot and every saved file, so the library survives this Mac's disk. To go back to a snapshot, stop Panel and copy its `library.sqlite` (and `projects/`) over the library's.
 
 ### Design reads (AI)
 
@@ -101,13 +110,13 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | `list_projects` | Your projects, most recently worked on first |
 | `get_project` | A project's canvas as decisions: your rules first (see below), then its brief and materials, then each topic, locked or exploring, with the saves chosen, kept, suggested and ruled out, and your notes on why. Optionally with pictures of the chosen saves |
 | `get_design_rules` | Your standing rules for every design, from [unugly.md](unugly.md) |
+| `get_fonts` | The fonts you uploaded, which every sketch has loaded |
 | `get_project_material` | One of a project's materials: a file's text (PDF, Word, text), a picture to look at, or a linked page's text. With `find`, the passages where some words appear, so a detail in a 500-page spec is one call |
 | `place_on_board` | Puts saves under a topic on a project's canvas as suggestions, each with a short why; makes the topic if needed |
 | `add_topic`, `connect_topics`, `add_note` | Grow the canvas: a new decision (optionally after another), Typography → Color, a note on a topic or save |
 | `mark_saves`, `lock_topic` | Choose, keep or rule out saves; lock a decision with a sentence. Only when you say so |
 | `make_sketch`, `edit_sketch`, `get_sketch` | Put a quick page on a project's canvas to try a direction, change it (each change a new version), read it back. Each returns pictures of the page as Chrome rendered it, plus any errors the page threw, so Claude sees it before you do |
 | `get_handoff`, `start_build`, `get_build`, `message_build`, `see_build` | Build a chosen sketch for real: the hand-off written down, Claude Code started in your project folder (its own branch), its progress, follow-up changes, and pictures of the running result for Claude Code to check |
-| `save_to_collection` | Puts chosen saves in a Panel collection (only adds) |
 
 **Search by meaning and by look.** Two small models run on this Mac (multilingual-e5-small for what the reads say, CLIP for the pictures; about 300 MB, fetched once into `models/`). Nothing about the library leaves the machine. With them, "quiet and bookish" finds a save described as "calm, literary", in English or Russian, and a save can be found by how it looks. Library settings turns it off; search then goes by words alone.
 
@@ -127,7 +136,7 @@ Press **⌘J** (or the small gray orb in the dock) to open FRIDAY beside the lib
 
 Type **@** in FRIDAY to mention a save: a list of your saves appears (the newest, or what matches the words after the @); pick one with the arrow keys and Enter, or click. Claude gets that exact save, and it shows as a chip in your message. To answer one part of a reply, select it and click **Reply**: it goes above your message as a quote, and Claude reads your message as an answer to it.
 
-- **Through your Claude plan**, like the reads: each message runs Claude Code (`claude -p`, Opus 5.5) with Panel's own MCP tools and nothing else, so it can search, match colors, look at the pictures and save to a collection, but can't touch files. The conversation continues with Claude Code's session, so follow-ups ("put those in a collection") just work.
+- **Through your Claude plan**, like the reads: each message runs Claude Code (`claude -p`, Opus 5.5) with Panel's own MCP tools and nothing else, so it can search, match colors, look at the pictures and work on your canvases, but can't touch files or your collections (those are yours alone). The conversation continues with Claude Code's session, so follow-ups just work.
 - **It follows your rules.** [unugly.md](unugly.md) holds what every design must do and the signs of generic design to avoid. FRIDAY has it in its instructions on every message, takes from a save only what passes it, says when a save breaks a rule, and puts the rules in full into any prompt it writes for Claude Code to build from. Any other AI app over MCP gets them at the top of `get_project` and from `get_design_rules`. Edit the file and the next message uses it, without a restart.
 - **It knows what you have open.** With a save open, "this" means that save (the composer says so; × leaves it out).
 - **Type a question in search** and press ⇥ (or ↵ when it ends with "?") to ask it instead.

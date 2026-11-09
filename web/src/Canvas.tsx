@@ -567,10 +567,17 @@ export interface CanvasProps {
   onSelection: (s: CanvasSelection | null) => void;
   /** Open Ask to ask about what's selected. */
   onAsk: () => void;
-  /** Ask FRIDAY something about what's given (from the studio: a sketch, or a part of it). */
-  onAskWith: (text: string, about: CanvasSelection) => void;
+  /** Ask FRIDAY something about what's given (from the studio: a sketch, or a part of it); `quiet` leaves its panel as it is. */
+  onAskWith: (text: string, about: CanvasSelection, quiet?: boolean) => void;
   /** FRIDAY is answering. */
   askRunning: boolean;
+  /** What FRIDAY is doing right now, in a few words, while it answers. */
+  askDoing: React.ReactNode;
+  /** FRIDAY answered while its panel was closed, and it hasn't been looked at. */
+  askUnread: boolean;
+  /** FRIDAY's panel is open; the studio shares its column with it. */
+  askOpen: boolean;
+  setAskOpen: (open: boolean) => void;
 }
 
 export default function ProjectCanvas(props: CanvasProps) {
@@ -584,7 +591,7 @@ export default function ProjectCanvas(props: CanvasProps) {
 /** This window, so it can tell its own changes from everyone else's on the live stream. */
 const CLIENT = localId();
 
-function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
+function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers }: CanvasProps) {
   // The app's callbacks, held steady: a new function from a parent redraw must never
   // look like a new project (that reloaded the whole canvas, entrance and all, on every redraw).
   const latest = useRef(handlers);
@@ -1333,6 +1340,10 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
               sketch={{ id: open.id, ...open.data }}
               stamp={sketchStamp}
               running={askRunning}
+              doing={askDoing}
+              unread={askUnread}
+              askOpen={askOpen}
+              setAskOpen={(v: boolean) => latest.current.setAskOpen(v)}
               palettes={palettes}
               mix={(text: string, ids: string[]) => {
                 const these = ids.map((x) => nodes.find((n) => n.id === x)).filter((n): n is SketchNode => n?.type === "sketch");
@@ -1347,9 +1358,9 @@ function Board({ id, dock, askRunning, ...handlers }: CanvasProps) {
               onSwitch={setViewing}
               patch={patch}
               onError={onError}
-              ask={(text: string, point?: SketchPoint, fan?: number) => {
+              ask={(text: string, point?: SketchPoint, fan?: number, quiet?: boolean) => {
                 const about = { ...describePicked(id, [open], cards), ...(fan ? { fan } : {}) };
-                latest.current.onAskWith(text, point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : about);
+                latest.current.onAskWith(text, point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : about, quiet);
               }}
               onBuilt={(title) => {
                 setViewing(null);

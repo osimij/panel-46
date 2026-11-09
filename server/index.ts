@@ -6,13 +6,14 @@ import { cleanLinks, db, newId, now, parseLinks, refreshStatus, reindex, retag, 
 import { backfillAvatars, capture, fixEscapedText, parseXStatus, mimeFromExt, enrichLinks, registerLocalFile, retry, saveSkillText, upgradeSocialLinks, type LinkCard } from "./capture.ts";
 import { parseSocial, rememberPin } from "./social.ts";
 import { abs, makeLoop } from "./media.ts";
-import { MODELS, queue, readOf, startReading, status as readingStatus, unreadIds } from "./read.ts";
+import { MODELS, queue, readOf, startReading, startRemeasuring, status as readingStatus, unreadIds } from "./read.ts";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
 import { startSummaries, summarize } from "./digest.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
+import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
 import { setSketchText, setSketchVars, sketchInfo } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
@@ -371,6 +372,18 @@ async function handle(req: Request): Promise<Response> {
     });
   }
 
+  // The designer's fonts, for sketches. A sketch runs with no origin of its own (its sandbox), so
+  // the browser asks before loading a font from here: the CORS header says yes. Each file's name is
+  // new with every upload, so it can be kept forever.
+  if (path.startsWith("/fonts/")) {
+    if (![`${HOST}:${PORT}`, `localhost:${PORT}`].includes(req.headers.get("host") ?? "")) return bad("Not allowed from here.", 403);
+    const f = fontFile(path.slice("/fonts/".length));
+    if (!f) return bad("Not found", 404);
+    return new Response(Bun.file(f.path), {
+      headers: { "content-type": f.mime, "access-control-allow-origin": "*", "cache-control": "public, max-age=31536000, immutable" },
+    });
+  }
+
   // The library for AI apps (MCP over HTTP). Stateless: each request gets its own server.
   // Only this Mac's own addresses are accepted, so a web page can't reach it by DNS tricks.
   if (path === "/mcp") {
@@ -387,6 +400,36 @@ async function handle(req: Request): Promise<Response> {
     await createMcpServer({ withRules: url.searchParams.get("rules") !== "0" }).connect(transport);
     return transport.handleRequest(req);
   }
+
+  // ---- Fonts: the designer's own, uploaded here and used by every sketch ----
+  if (path.startsWith("/api/fonts") && !fromPanel(req)) return bad("Not allowed from here.", 403);
+  if (path === "/api/fonts" && m === "GET") return json(listFonts());
+  if (path === "/api/fonts" && m === "POST") {
+    const form = await req.formData();
+    const added = [];
+    const failed: string[] = [];
+    for (const f of form.getAll("file")) {
+      if (typeof f === "string") continue;
+      try {
+        added.push(await addFont(f));
+      } catch (e) {
+        failed.push((e as Error).message);
+      }
+    }
+    return json({ added, failed });
+  }
+  if (path === "/api/fonts/family" && (m === "PATCH" || m === "DELETE")) {
+    const family = url.searchParams.get("name") ?? "";
+    try {
+      if (m === "DELETE") return json(removeFonts({ family }));
+      const b = (await req.json().catch(() => ({}))) as { name?: string };
+      return json(renameFamily(family, String(b.name ?? "")));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  const fontRoute = path.match(/^\/api\/fonts\/([0-9a-f]{16})$/);
+  if (fontRoute && m === "DELETE") return json(removeFonts({ id: fontRoute[1]! }));
 
   // ---- The assistant ----
   // It spends your Claude plan and can change collections, so only Panel's own page may use
@@ -951,6 +994,8 @@ async function handle(req: Request): Promise<Response> {
         .map((c) => ({ ...c, cover: c.cover ? `/media/${c.cover}` : null })),
     );
   }
+  // Collections are the designer's own: only Panel's page may make, change or delete them.
+  if (path.startsWith("/api/collections") && m !== "GET" && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/collections" && m === "POST") {
     const body = (await req.json()) as { name?: string };
     const name = body.name?.trim();
@@ -958,6 +1003,23 @@ async function handle(req: Request): Promise<Response> {
     const id = newId();
     db.run("INSERT INTO collections (id, name, created_at) VALUES (?, ?, ?)", [id, name, now()]);
     return json({ id, name, n: 0, cover: null });
+  }
+  // A copy of a collection: a new one with the same saves, named "… copy" (then "… copy 2"…).
+  const dupMatch = path.match(/^\/api\/collections\/([a-z0-9]+)\/duplicate$/);
+  if (dupMatch && m === "POST") {
+    const from = db.query<{ name: string }, [string]>("SELECT name FROM collections WHERE id = ?").get(dupMatch[1]!);
+    if (!from) return bad("That collection is gone.", 404);
+    const taken = new Set(db.query<{ name: string }, []>("SELECT name FROM collections").all().map((c) => c.name.toLowerCase()));
+    let name = `${from.name} copy`;
+    for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${from.name} copy ${n}`;
+    const id = newId();
+    db.transaction(() => {
+      db.run("INSERT INTO collections (id, name, created_at) VALUES (?, ?, ?)", [id, name, now()]);
+      db.run("INSERT INTO ref_collections (ref_id, collection_id, added_at) SELECT ref_id, ?, added_at FROM ref_collections WHERE collection_id = ?", [id, dupMatch[1]!]);
+    })();
+    reindexCollection(id);
+    const n = db.query<{ n: number }, [string]>("SELECT COUNT(*) n FROM ref_collections WHERE collection_id = ?").get(id)!.n;
+    return json({ id, name, n, cover: null });
   }
   const colMatch = path.match(/^\/api\/collections\/([a-z0-9]+)$/);
   if (colMatch) {
@@ -1000,6 +1062,7 @@ fixEscapedText();
 void backfillAvatars();
 void upgradeSocialLinks();
 startReading();
+startRemeasuring();
 startBackups();
 startMeasuring();
 // Project documents: the ones cut at the old length are read again whole, then each long one gets its summary.

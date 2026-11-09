@@ -4,7 +4,7 @@
 
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { db, newId, now, reindex, type MediaRow, type RefRow } from "./db.ts";
+import { db, type MediaRow, type RefRow } from "./db.ts";
 import { MEDIA_DIR, PORT } from "./config.ts";
 import { toLab, type Swatch } from "./palette.ts";
 import { fontLine, parseMeasured, type Measured } from "./sitefacts.ts";
@@ -63,6 +63,7 @@ function signature() {
     .query<{ s: string }, []>(
       `SELECT (SELECT COUNT(*) || ':' || COALESCE(MAX(updated_at), '') FROM refs) || '|' ||
               (SELECT COUNT(*) || ':' || COALESCE(MAX(read_at), '') FROM reads WHERE state = 'done') || '|' ||
+              (SELECT COUNT(*) FROM reads WHERE palette_v IS NOT NULL) || '|' ||
               (SELECT COUNT(*) FROM ref_tags) || '|' || (SELECT COUNT(*) FROM ref_collections) || '|' ||
               (SELECT COUNT(*) FROM refs WHERE hidden = 1) AS s`,
     )
@@ -270,8 +271,30 @@ function dE(l1: number[], l2: number[]) {
 
 export interface ColorHit { asked: string; hex: string; name: string; share: number; role: string | null; distance: number }
 
+/**
+ * The role the read gave a measured color. Roles name the hexes measured when the save was read;
+ * when its colors were measured again more exactly (palette.ts), each role goes to the nearest
+ * new color instead, closest pairs first, one role per color.
+ */
 function roleOf(d: Doc, hex: string) {
-  return d.profile?.color?.roles?.find((x) => x.hex?.toLowerCase() === hex.toLowerCase())?.role ?? null;
+  const roles = (d.profile?.color?.roles ?? []).filter((r) => hexRgb(r.hex ?? ""));
+  if (!roles.length) return null;
+  const pairs: { s: string; r: string; at: number }[] = [];
+  // Lightness counts for less: an old halo-measured hex is mostly a darker version of the true color.
+  const near = (x: string, y: string) => {
+    const [a, b] = [toLab(hexRgb(x) ?? [0, 0, 0]), toLab(hexRgb(y) ?? [0, 0, 0])];
+    return Math.hypot((a[0] - b[0]) * 0.4, a[1] - b[1], a[2] - b[2]);
+  };
+  for (const s of d.palette) for (const r of roles) pairs.push({ s: s.hex.toLowerCase(), r: r.role, at: near(s.hex, r.hex) });
+  pairs.sort((x, y) => x.at - y.at);
+  const taken = new Set<string>(), given = new Set<string>();
+  for (const p of pairs) {
+    if (p.at > 60 || taken.has(p.s) || given.has(p.r)) continue;
+    if (p.s === hex.toLowerCase()) return p.r;
+    taken.add(p.s);
+    given.add(p.r);
+  }
+  return null;
 }
 
 /**
@@ -677,25 +700,4 @@ export function reference(id: string) {
     },
     pictures: d.visuals.map((v) => ({ path: abs(v.rel), label: v.label })),
   };
-}
-
-/** Put saves in a collection (made if it doesn't exist), so a set an AI picked shows up in Panel. */
-export function saveToCollection(name: string, ids: string[]) {
-  const clean = name.trim();
-  if (!clean) throw new Error("The collection needs a name.");
-  const { docs } = load();
-  const missing = ids.filter((id) => !docs.has(id));
-  let col = db.query<{ id: string }, [string]>("SELECT id FROM collections WHERE name = ? COLLATE NOCASE").get(clean);
-  const created = !col;
-  if (!col) {
-    col = { id: newId() };
-    db.run("INSERT INTO collections (id, name, created_at) VALUES (?, ?, ?)", [col.id, clean, now()]);
-  }
-  const added: string[] = [];
-  for (const id of ids.filter((x) => docs.has(x))) {
-    const res = db.run("INSERT OR IGNORE INTO ref_collections (ref_id, collection_id, added_at) VALUES (?, ?, ?)", [id, col.id, now()]);
-    if (res.changes) added.push(id);
-    reindex(id);
-  }
-  return { collection: clean, created, added: added.length, already_there: ids.length - added.length - missing.length, missing: missing.length ? missing : undefined, open: `http://127.0.0.1:${PORT}/` };
 }

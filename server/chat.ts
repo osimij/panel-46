@@ -2,6 +2,7 @@
 // (your plan, not API money), with Panel's own MCP tools. Each turn streams to the app as
 // small events; the app can leave and come back mid-answer and pick up where it was.
 
+import { fontLines, listFonts } from "./fonts.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { db, getSetting, newId, now, setSetting } from "./db.ts";
@@ -264,7 +265,7 @@ How to work:
 - Search before you say anything about the library. Search finds by words and by meaning, and by look when you describe one (look: "a dark dashboard with glowing charts"); found_by in its answer says which were used. If it says only "words", or results are thin, try other words or a facet.
 - Look at the pictures (get_reference) before you recommend a save for how it looks, when that matters.
 - Talk like a design partner: concrete about color (hex), type, layout and motion, and say what to take from each save. Keep it short; the pictures do the rest.
-- When the designer wants to keep a set, use save_to_collection.
+- Collections in Panel are the designer's own. Don't make them or put saves in them.
 - A message can start with <panel-context>, saying what the designer has open. "This" or "it" means that save.
 - When the designer wants a brief or prompt to hand to Claude Code (or anyone) to build from, include their rules in full under their own heading, and tell the builder to check the result against them before showing it.
 
@@ -297,10 +298,26 @@ Building it for real:
 - A build card on the canvas is Claude Code working. get_build says how it's going and what it said. To change the built version, message_build passes the request on, in the designer's words plus what you know (what they pointed at, the sketch). Report back in a line or two; the card shows the rest.`;
 
 /** The instructions for a turn: Panel's, then the designer's rules, read fresh so edits apply to the next message. */
+/** Whether a message has this name as a whole word, with or without @, in any case. */
+function namesWord(text: string, name: string) {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^\\p{L}\\p{N}])@?${escaped}(?![\\p{L}\\p{N}])`, "iu").test(text);
+}
+
+/** The designer's own fonts (fonts.ts), which every sketch has loaded already. */
+function fontsNote() {
+  const lines = fontLines();
+  if (!lines.length) return "";
+  return `
+
+The designer's own fonts. Panel loads them into every sketch, so write font-family with the name exactly as here (with a fallback) and nothing else: no @font-face, no link, no Google Fonts for them. When the designer names one of these, or mentions it with @, use it. They aren't on the web, so don't look for them there.
+${lines.map((l) => `- ${l}`).join("\n")}`;
+}
+
 export function systemPrompt() {
   const rules = designRules();
-  if (!rules) return SYSTEM;
-  return `${SYSTEM}
+  if (!rules) return SYSTEM + fontsNote();
+  return `${SYSTEM}${fontsNote()}
 
 The designer's rules (unugly.md) hold for everything you suggest, place, judge or write. They outrank any reference: take from a save only what passes them (a letter-spaced wordmark in a save they like is still out), and say so when a save you show breaks one.
 
@@ -454,6 +471,9 @@ export async function send(chatId: string, text: string, context: SendContext = 
     const list = named.flatMap((id) => (docs.get(id) ? [`[[${id}]] (${cardOf(docs.get(id)!).title})`] : []));
     if (list.length) said.push(`The designer mentions ${list.join(", ")}: each [[id]] in their message is that save; look at it with get_reference when it matters.`);
   }
+  // A font of theirs named in the message ("@Söhne", or just "in Söhne"): say it's theirs, so it isn't looked for on the web.
+  const fonts = listFonts().filter(({ family }) => namesWord(clean, family)).map(({ family }) => `“${family}” (font-family: "${family}")`);
+  if (fonts.length) said.push(`The designer names their own font${fonts.length > 1 ? "s" : ""} ${fonts.join(", ")}, already loaded in every sketch.`);
   // What happened beside this conversation since its last message (alternates made in parallel).
   const news = compacting ? null : sideNews.get(chatId);
   if (news) {
@@ -635,7 +655,7 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
 
 /** What the planner may use: Panel's tools that only read. Making and changing things is the builder's. */
 const READ_TOOLS = new Set(
-  ["get_design_rules", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
+  ["get_design_rules", "get_fonts", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
     .map((n) => `mcp__panel__${n}`),
 );
 
@@ -647,7 +667,7 @@ function handOver(got: (plan: string) => void) {
     tools: [
       tool(
         "hand_to_builder",
-        "Hand your plan to the builder, the model that makes things (sketches, edits, placing saves on the canvas, collections). Call it once, as your very last step, after your note to the designer.",
+        "Hand your plan to the builder, the model that makes things (sketches, edits, placing saves on the canvas). Call it once, as your very last step, after your note to the designer.",
         { plan: z.string().min(40).describe("The whole plan, as numbered steps with concrete values: everything the builder needs, since it won't search or judge taste on its own.") },
         async ({ plan }) => {
           got(plan);
@@ -660,7 +680,7 @@ function handOver(got: (plan: string) => void) {
 
 const plannerNote = (planner: string, builder: string) => `
 
-How you work right now: you are the planner, ${planner}, paired with a builder, ${builder}. You do the understanding and the taste: read the project and the rules, search, look at the saves, and decide. The builder does the making. You can only read; the tools that change things (make_sketch, edit_sketch, place_on_board, topics, notes, collections, builds) are the builder's.
+How you work right now: you are the planner, ${planner}, paired with a builder, ${builder}. You do the understanding and the taste: read the project and the rules, search, look at the saves, and decide. The builder does the making. You can only read; the tools that change things (make_sketch, edit_sketch, place_on_board, topics, notes, builds) are the builder's.
 - When the message only needs an answer (a question, an opinion, a search, a comparison), answer it yourself as usual and don't hand anything over.
 - When it needs something made or changed, think it through first: read what you need, search and look at the saves, decide. Then tell the designer in two or three lines what you're having made and why, and call hand_to_builder as your last step.
 - The plan is everything the builder needs, since it won't search or judge taste on its own. Say what to make and where it hangs (from:, the project and topic), and each save to use with what to take from it ([[id]] and the exact thing: the hex, the font, the layout move). Give the structure part by part with the real content in the project's language, the type (families, sizes, weights, line heights), the color (hex and where each goes), spacing and corners, the states, and the knobs. Name the rules that matter most here, what to check in the pictures before finishing, and what not to do. Concrete values, not adjectives. Number the steps.`;

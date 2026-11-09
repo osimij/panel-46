@@ -259,6 +259,9 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 `);
+// Which way of measuring colors made a read's palette (palette.ts PALETTE_VERSION); empty is the first.
+const readCols = db.query<{ name: string }, []>("PRAGMA table_info(reads)").all().map((c) => c.name);
+if (!readCols.includes("palette_v")) db.exec("ALTER TABLE reads ADD COLUMN palette_v INTEGER");
 
 export function getSetting(key: string): string | null {
   return db.query<{ value: string }, [string]>("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? null;

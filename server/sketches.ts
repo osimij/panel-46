@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { HOST, LIBRARY_DIR, PORT } from "./config.ts";
 import { Cdp, chromePath, devtoolsUrl, evaluate, READY_SCRIPT, trackNetwork } from "./site.ts";
 import { checkRules, type RuleFinding } from "./rulecheck.ts";
+import { fontFaceCss } from "./fonts.ts";
 
 const ID = /^[0-9a-f]{16}$/;
 /** The screen a sketch is looked at on: a laptop, at 1×. Claude sees screens of this size. */
@@ -213,7 +214,15 @@ const KIT = `<script data-panel-kit>(() => {
 
 /** A sketch's page as Panel serves it: as Claude wrote it, with the studio's kit at the end. */
 export function servedSketch(file: string) {
-  const html = readFileSync(file, "utf8");
+  let html = readFileSync(file, "utf8");
+  // The designer's own fonts (fonts.ts), so font-family: "Their Font" just works. At the end of
+  // the head, so their file wins over a web font of the same name the page loads itself.
+  const faces = fontFaceCss();
+  if (faces) {
+    const style = `<style data-panel-fonts>\n${faces}\n</style>`;
+    const head = html.search(/<\/head>/i);
+    html = head >= 0 ? html.slice(0, head) + style + html.slice(head) : style + html;
+  }
   const at = html.search(/<\/body>/i);
   return at >= 0 ? html.slice(0, at) + KIT + html.slice(at) : html + KIT;
 }

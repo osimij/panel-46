@@ -169,6 +169,8 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .side-row .side-edit { position: absolute; right: 0; opacity: 0; }
 .side-row:hover .side-edit, .side-edit:focus-visible { opacity: 1; }
 .side-row:hover .side-count { opacity: 0; }
+.side-row.menu-open .side-edit { opacity: 1; background: var(--fill); color: var(--text); }
+.side-row.menu-open .side-count { opacity: 0; }
 .side-input {
   height: 26px; margin: 1px 0; padding: 0 8px; border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner); outline: none; width: 100%;
   border: 0; background: var(--fill); box-shadow: inset 0 0 0 1px var(--text);
@@ -627,7 +629,7 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
 .detail-bar { display: flex; justify-content: space-between; padding: 14px 16px 6px; }
 .detail-bar-right { display: flex; gap: 6px; }
 .detail-scroll {
-  overflow-y: auto; padding: 8px 16px 20px; display: flex; flex-direction: column; gap: 32px; flex: 1;
+  overflow-y: auto; padding: 8px 16px 20px; display: flex; flex-direction: column; gap: 18px; flex: 1;
   animation: content-in 0.4s var(--ease) both; animation-delay: 60ms;
 }
 @keyframes content-in { from { opacity: 0; transform: translateY(6px); } }
@@ -1108,10 +1110,15 @@ a.cover-btn { text-decoration: none; }
 
 /* ============ Design reads ============ */
 
-.read-field { gap: 10px; }
+/* The panel reads as four groups: the save itself (title, links, note, tags); the read's overview
+   (summary, colors, moods); its parts (Type to Imagery, Worth taking, the caveats); and what you can
+   do (read again, collections, remove). Space is tight inside a group and wide between them. */
+.read-field { margin-top: 22px; }
+.read-body > .read-rows { margin-top: 28px; }
+.read-body ~ .read-actions { margin-top: 34px; }
 .read-field .field-label { align-items: baseline; }
 .read-meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; }
-.read-body { display: flex; flex-direction: column; gap: 22px; animation: field-in 0.28s var(--ease); }
+.read-body { display: flex; flex-direction: column; gap: 12px; animation: field-in 0.28s var(--ease); }
 .read-summary { margin: 0; line-height: 1.45; text-wrap: pretty; }
 .read-wait { margin: 0; display: flex; align-items: center; gap: 8px; color: var(--muted); }
 .read-error { margin: 0; color: var(--bad); font-size: 12px; }
@@ -1184,7 +1191,7 @@ a.cover-btn { text-decoration: none; }
 .read-take .read-peek { font-size: 12px; }
 @media (prefers-reduced-motion: reduce) { .read-peek, .read-full, .read-fold.open .read-full, .read-fold-head { transition: none; } }
 
-.read-actions { display: flex; flex-wrap: wrap; gap: 2px 14px; margin-top: 12px; }
+.read-actions { display: flex; flex-wrap: wrap; gap: 2px 14px; }
 .read-actions .text-btn { margin-left: -8px; }
 .read-cost { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
 .read-seen-btn { margin-left: auto !important; }

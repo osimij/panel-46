@@ -1,5 +1,12 @@
 /* The studio: one sketch, live and full size, over the canvas. */
 
+/*
+ * While the studio is open the library's room changes at once when FRIDAY opens or folds,
+ * not over half a second: Knobs or Directions take FRIDAY's place in the same frame, so the
+ * page beside them keeps its size. FRIDAY's panel still slides in and out over them.
+ */
+.main:has(.studio) { transition: none; }
+
 .studio {
   position: absolute; inset: 0; z-index: 18; display: flex; flex-direction: column; background: var(--bg); container-type: inline-size;
   animation: st-in 0.32s var(--ease);
@@ -12,7 +19,7 @@
   position: relative; display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 12px 0 10px; flex: none;
   box-shadow: 0 1px 0 var(--line);
 }
-.st-name { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 72px; max-width: 360px; line-height: 1.25; }
+.st-name { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 120px; max-width: 360px; line-height: 1.25; }
 .st-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .st-tries { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .st-gap { flex: 1; }
@@ -51,6 +58,15 @@
 }
 .st-tool:hover { background: var(--fill); color: var(--text); }
 .st-tool.on { background: var(--text); color: var(--bg); }
+
+/* The column switch: Knobs, Directions and FRIDAY take turns beside the page. */
+.st-cols button { position: relative; width: auto; min-width: 30px; padding: 0 9px; gap: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
+.st-cols .st-count { font-variant-numeric: tabular-nums; color: var(--faint); }
+.st-cols button.on .st-count { color: var(--muted); }
+.st-cols .mark { flex: none; }
+.st-cols .mark i { filter: blur(1.5px); }
+/* Something waiting there: knob changes not kept yet, or an answer not seen yet. */
+.st-dot { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 1.5px var(--fill); }
 .st-tool.chosen { color: var(--text); background: var(--fill); }
 .st-tool.out { color: var(--text); background: var(--fill); }
 .st-verdict { position: relative; display: flex; gap: 2px; }
@@ -89,12 +105,14 @@
 .st-device {
   position: relative; overflow: hidden; background: #fff; flex: none;
   box-shadow: 0 0 0 1px var(--line), 0 24px 60px -30px oklch(0 0 0 / 0.35);
-  transition: width 0.35s var(--ease), height 0.35s var(--ease);
 }
 .st-device.desktop { border-radius: 0; box-shadow: 0 0 0 1px var(--line); }
 .st-device.phone { border-radius: calc(36px * var(--smooth)); corner-shape: var(--corner); box-shadow: 0 0 0 7px oklch(0.16 0 0), 0 0 0 8px oklch(0.3 0 0), 0 30px 70px -26px oklch(0 0 0 / 0.5); }
 .st-device.tablet { border-radius: calc(20px * var(--smooth)); corner-shape: var(--corner); box-shadow: 0 0 0 8px oklch(0.16 0 0), 0 0 0 9px oklch(0.3 0 0), 0 30px 70px -26px oklch(0 0 0 / 0.5); }
 .st-device iframe { position: absolute; left: 0; top: 0; border: 0; transform-origin: 0 0; background: #fff; }
+/* Only for a new screen size: the frame and the page in it glide together. */
+.st-stage.glide .st-device { transition: width 0.35s var(--ease), height 0.35s var(--ease); }
+.st-stage.glide .st-device iframe { transition: transform 0.35s var(--ease); }
 
 .st-hint, .st-fresh {
   position: absolute; left: 50%; top: 14px; transform: translateX(-50%); padding: 7px 13px; border-radius: 999px;
@@ -146,14 +164,20 @@
   background: var(--raised); border-radius: 999px;
   box-shadow: 0 0 0 1px var(--line), 0 10px 30px -16px oklch(0 0 0 / 0.3);
 }
+.st-ask-field { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
 .st-ask input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; font-size: 13px; color: var(--text); }
+/* What FRIDAY is doing, where the placeholder would be: typing the next thing hides it. */
+.st-ask-status { position: absolute; inset: 0; display: flex; align-items: center; pointer-events: none; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-ask-status .step-q { color: var(--text); }
+.st-alts { height: 26px; padding: 0 8px; font-size: 12px; flex: none; }
 .st-ask .st-send { padding: 0; width: 30px; }
 .st-ask-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; transition: background-color 0.3s; }
 .st-ask.running .st-ask-mark { background: var(--accent); animation: st-breathe 1.2s ease-in-out infinite; }
 @keyframes st-breathe { 50% { transform: scale(0.6); opacity: 0.5; } }
 
 /* ---- Directions ---- */
-.st-rail { width: 248px; flex: none; display: flex; flex-direction: column; box-shadow: -1px 0 0 var(--line); background: var(--bg); animation: st-rail 0.3s var(--ease); }
+/* The column beside the page: as wide as FRIDAY's panel, whose place it takes. */
+.st-rail { width: var(--chat); flex: none; display: flex; flex-direction: column; box-shadow: -1px 0 0 var(--line); background: var(--bg); animation: st-rail 0.3s var(--ease); }
 @keyframes st-rail { from { opacity: 0; transform: translateX(8px); } }
 .st-rail-head { padding: 14px 14px 6px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
 .st-tree { flex: 1; overflow-y: auto; padding: 4px 6px 16px; display: flex; flex-direction: column; gap: 2px; }
@@ -175,7 +199,6 @@
 .st-dir-sub.chosen { color: var(--text); font-weight: 500; }
 
 /* ---- Knobs: the page's own variables, as swatches and sliders ---- */
-.st-rail.kn { width: 276px; }
 .kn-scroll { flex: 1; overflow-y: auto; padding: 2px 14px 14px; display: flex; flex-direction: column; gap: 18px; }
 .kn-group { display: flex; flex-direction: column; gap: 9px; }
 .kn-group h4 { margin: 0; font-size: 11.5px; font-weight: 500; color: var(--faint); }
@@ -291,24 +314,34 @@
 }
 .bd-ask .st-send { width: 30px; padding: 0; }
 
-/* Narrow (FRIDAY open beside it): the header keeps the essentials, the rail gets slimmer. */
+/*
+ * The header gives things up in a fixed order as it narrows. Studio.tsx decides how far
+ * from what actually fits and marks it with data-f1 … data-f7; never given up: back, the
+ * title (at least 120px, then an ellipsis), the version, the screens, Build.
+ */
+.st-head[data-f1] .st-tries { display: none; }
+.st-head[data-f2] .st-l-verdict { display: none; }
+.st-head[data-f2] .st-verdict .st-tool { padding: 0 9px; }
+.st-head[data-f3] .st-l-build { display: none; }
+.st-head[data-f4] .st-l-view { display: none; }
+.st-head[data-f4] .st-tool { padding: 0 9px; gap: 0; }
+.st-head[data-f5] .st-l-col { display: none; }
+.st-head[data-f5] .st-cols button { padding: 0 8px; gap: 4px; }
+.st-head[data-f6] .st-of { display: none; }
+.st-head[data-f6] .st-v { min-width: 36px; }
+.st-head[data-f6] { gap: 6px; }
+.st-head[data-f7] { gap: 4px; }
+.st-head[data-f7] .st-tool:not(.st-verdict .st-tool), .st-head[data-f7] .st-sep { display: none; }
+
 @container (max-width: 1080px) {
-  .st-tries, .st-tool .st-label, .st-size { display: none; }
-  .st-tool { padding: 0 9px; }
-  .st-build .st-label-long { display: none; }
-  .st-rail { width: 196px; }
+  .st-size { display: none; }
   .st-dir img { width: 48px; height: 32px; }
 }
-@container (min-width: 1081px) {
-  .st-build .st-label-short { display: none; }
-}
 @container (max-width: 760px) {
-  .st-rail { display: none; }
-  .st-versions .faint { display: none; }
-  .st-ask .st-quiet { display: none; }
+  .st-ask .st-ask-alts { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .studio, .st-bubble, .st-pop, .st-rail, .st-hint, .st-fresh { animation: none !important; }
-  .st-device { transition: none; }
+  .st-stage.glide .st-device, .st-stage.glide .st-device iframe { transition: none; }
 }

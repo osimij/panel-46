@@ -4,7 +4,7 @@
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
-import { api, chatApi, displayTitle, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
+import { api, chatApi, displayTitle, fontApi, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
@@ -120,6 +120,8 @@ export function Assistant(props: {
   onOpenRef: (id: string) => void;
   onShowInGrid: (ids: string[], title: string) => void;
   onRunning: (running: boolean) => void;
+  /** What it's doing right now, in a few words ("Sketching Header alt"), or null. */
+  onDoing?: (doing: React.ReactNode) => void;
   /** It changed the library (made or filled a collection): the app should reload what it shows. */
   onLibraryChanged: () => void;
   handle: ReactRef<AssistantHandle>;
@@ -405,6 +407,16 @@ export function Assistant(props: {
 
   const ctx = useMemo(() => ({ cards, onOpen: props.onOpenRef }), [cards, props.onOpenRef]);
 
+  // What it's doing right now, for the studio's bar while this panel is folded away: the
+  // latest step still going, or the answer being written.
+  const doing = useMemo(() => {
+    if (!running || last?.role !== "assistant") return null;
+    const p = last.parts.findLast((x) => x.type !== "text" && !x.done);
+    if (p) return stepText(p, ctx).doing || null;
+    return writing ? "Writing the answer" : null;
+  }, [running, last, writing, ctx]);
+  useEffect(() => props.onDoing?.(doing), [doing]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const openHistory = (e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setHistory({ x: r.left - 180, y: r.bottom + 6 });
@@ -579,7 +591,7 @@ let widthRule: CSSStyleDeclaration | null = null;
 function setChatWidth(px: number | null) {
   if (!widthRule) {
     const style = document.createElement("style");
-    style.textContent = ":root .app > .main, :root .app > .ask, :root .app > .detail, :root .app > .dock {}";
+    style.textContent = ":root .app > .main, :root .app > .ask, :root .app > .detail, :root .app > .dock, :root .studio .st-rail {}";
     document.head.append(style);
     widthRule = (style.sheet!.cssRules[0] as CSSStyleRule).style;
   }
@@ -1025,7 +1037,22 @@ function Step({ part, ctx, label }: { part: ChatPart; ctx: Ctx; label?: string }
  */
 const STILL = "<style data-panel-still>*,*::before,*::after{animation-delay:-1ms!important;animation-duration:1ms!important;animation-iteration-count:1!important;animation-fill-mode:both!important;transition:none!important;scroll-behavior:auto!important}</style>";
 function still(doc: string) {
-  return /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, (h) => h + STILL) : STILL + doc;
+  // The designer's fonts too, as a served sketch gets them, so the draft is set in the right type.
+  const add = STILL + draftFonts;
+  return /<head[^>]*>/i.test(doc) ? doc.replace(/<head[^>]*>/i, (h) => h + add) : add + doc;
+}
+let draftFonts = "";
+let draftFontsAt = 0;
+function loadDraftFonts() {
+  if (Date.now() - draftFontsAt < 10_000) return;
+  draftFontsAt = Date.now();
+  fontApi
+    .list()
+    .then((l) => {
+      const faces = l.flatMap((f) => f.faces).map((f) => `@font-face{font-family:"${f.family}";src:url("${f.url}");font-weight:${f.weight};font-style:${f.italic ? "italic" : "normal"}}`);
+      draftFonts = faces.length ? `<style data-panel-fonts>${faces.join("")}</style>` : "";
+    })
+    .catch(() => {});
 }
 
 /**
@@ -1037,6 +1064,7 @@ function LiveDraft({ id }: { id: string }) {
   const html = useSyncExternalStore(watchDrafts, () => drafts.get(id));
   const wrap = useRef<HTMLDivElement>(null);
   const turn = useRef({ front: 0, busy: false, next: null as string | null });
+  useEffect(loadDraftFonts, []);
   const show = useCallback((doc: string) => {
     const t = turn.current;
     const frames = wrap.current?.querySelectorAll("iframe");
@@ -1129,6 +1157,17 @@ function Seconds() {
 // ---------- Composer ----------
 
 /** The words after an @ being typed, up to the caret: "@inter", "@swiss poster". */
+/** The designer's font families for the @ list, asked for again at most every few seconds. */
+let fontNames: { at: number; list: Promise<string[]> } | null = null;
+function fontFamilies() {
+  if (!fontNames || Date.now() - fontNames.at > 5000)
+    fontNames = { at: Date.now(), list: fontApi.list().then((l) => l.map((f) => f.family)).catch(() => []) };
+  return fontNames.list;
+}
+
+/** A row in the @ list: one of the designer's fonts, or a save. */
+type Mentionable = { font: string } | { card: RefCard };
+
 const MENTION_AT = /(?:^|\s)@((?:[^\s@]+ ?){0,4})$/;
 const labelFor = (c: RefCard) => {
   const t = c.title.replace(/\s+/g, " ").trim();
@@ -1157,7 +1196,9 @@ function Composer(props: {
   // Saves mentioned with @, by the label written in the text ("@Swiss poster").
   const mentions = useRef(new Map<string, RefCard>());
   const [picker, setPicker] = useState<{ query: string; start: number } | null>(null);
-  const [found, setFound] = useState<RefCard[]>([]);
+  const [found, setFound] = useState<Mentionable[]>([]);
+  // Fonts mentioned with @. They stay as "@Söhne" in what's sent: Panel knows its fonts by name.
+  const fontMentions = useRef(new Set<string>());
   const [pick, setPick] = useState(0);
   // Esc closes the list until the next @.
   const dismissed = useRef<number | null>(null);
@@ -1179,21 +1220,22 @@ function Composer(props: {
     }
     const start = caret - m[1]!.length - 1;
     // Just after a mention already made ("@Swiss poster |"): that's not a new one.
-    if (dismissed.current === start || [...mentions.current.keys()].some((l) => m[1]!.startsWith(l))) return setPicker(null);
+    if (dismissed.current === start || [...mentions.current.keys(), ...fontMentions.current].some((l) => m[1]!.startsWith(l))) return setPicker(null);
     setPicker((p) => (p?.start === start && p.query === m[1] ? p : { query: m[1]!, start }));
   };
 
-  // Saves for the list: the newest with nothing typed yet, else the best matches.
+  // The list: their fonts that match first, then saves (the newest with nothing typed yet, else the best matches).
   const query = picker?.query.trim() ?? null;
   useEffect(() => {
     if (query === null) return;
     let live = true;
     const t = setTimeout(() => {
-      api
-        .refs({ q: query || undefined, library: true })
-        .then((list) => {
+      const q = query.toLowerCase();
+      Promise.all([api.refs({ q: query || undefined, library: true }).catch(() => []), fontFamilies()])
+        .then(([list, fonts]) => {
           if (!live) return;
-          setFound(list.slice(0, 7).map(cardFromRef));
+          const fontRows = fonts.filter((f) => !q || f.toLowerCase().includes(q)).slice(0, q ? 4 : 3).map((font) => ({ font }));
+          setFound([...fontRows, ...list.slice(0, 7).map((r) => ({ card: cardFromRef(r) }))]);
           setPick(0);
         })
         .catch(() => live && setFound([]));
@@ -1205,13 +1247,15 @@ function Composer(props: {
   }, [query]);
   const open = !!picker && found.length > 0;
 
-  const choose = (c: RefCard) => {
+  const choose = (item: Mentionable) => {
     if (!picker) return;
-    let label = labelFor(c);
-    // Two saves with the same name stay apart.
-    for (let n = 2; mentions.current.has(label) && mentions.current.get(label)!.id !== c.id; n++) label = `${labelFor(c)} (${n})`;
-    mentions.current.set(label, c);
-    props.onMention(c);
+    let label: string;
+    if ("font" in item) {
+      label = item.font;
+      fontMentions.current.add(label);
+    } else {
+      label = mentionSave(item.card);
+    }
     const el = props.inputRef.current;
     const caret = el?.selectionStart ?? value.length;
     const next = `${value.slice(0, picker.start)}@${label} ${value.slice(caret)}`;
@@ -1224,6 +1268,16 @@ function Composer(props: {
     });
   };
 
+  /** A save picked from the list: its label in the text, the save behind it. */
+  const mentionSave = (c: RefCard) => {
+    let label = labelFor(c);
+    // Two saves with the same name stay apart.
+    for (let n = 2; mentions.current.has(label) && mentions.current.get(label)!.id !== c.id; n++) label = `${labelFor(c)} (${n})`;
+    mentions.current.set(label, c);
+    props.onMention(c);
+    return label;
+  };
+
   /** What's sent: each mention as [[id]], which Claude reads as that save. */
   const resolve = (text: string) => {
     let out = text;
@@ -1232,10 +1286,12 @@ function Composer(props: {
     return out;
   };
   const mentioned = [...mentions.current].filter(([label]) => value.includes(`@${label}`));
+  const fontsMentioned = [...fontMentions.current].filter((f) => value.includes(`@${f}`));
   const send = () => {
     if (running || !value.trim()) return;
     const text = resolve(value);
     mentions.current.clear();
+    fontMentions.current.clear();
     setPicker(null);
     props.onSend(text);
   };
@@ -1261,21 +1317,31 @@ function Composer(props: {
       )}
       {open && (
         <div className="mention-pick" role="listbox" aria-label="Mention a save">
-          <div className="mention-head">{picker!.query.trim() ? "Saves matching" : "Mention a save"}</div>
-          {found.map((c, i) => (
+          <div className="mention-head">{picker!.query.trim() ? "Matching" : "Mention a font or a save"}</div>
+          {found.map((item, i) => (
             <button
-              key={c.id}
+              key={"font" in item ? `font:${item.font}` : item.card.id}
               role="option"
               aria-selected={i === pick}
               className={`mention-row ${i === pick ? "on" : ""}`}
               style={{ "--i": i } as React.CSSProperties}
               onMouseEnter={() => setPick(i)}
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => choose(c)}
+              onClick={() => choose(item)}
             >
-              <span className="mention-thumb">{c.thumb && <img src={c.thumb} alt="" />}</span>
-              <span className="mention-title">{c.title}</span>
-              <span className="mention-type">{c.type}</span>
+              {"font" in item ? (
+                <>
+                  <span className="mention-thumb mention-font" aria-hidden>Aa</span>
+                  <span className="mention-title">{item.font}</span>
+                  <span className="mention-type">font</span>
+                </>
+              ) : (
+                <>
+                  <span className="mention-thumb">{item.card.thumb && <img src={item.card.thumb} alt="" />}</span>
+                  <span className="mention-title">{item.card.title}</span>
+                  <span className="mention-type">{item.card.type}</span>
+                </>
+              )}
             </button>
           ))}
         </div>
@@ -1315,8 +1381,14 @@ function Composer(props: {
           </button>
         </div>
       )}
-      {mentioned.length > 0 && (
+      {(mentioned.length > 0 || fontsMentioned.length > 0) && (
         <div className="composer-mentions">
+          {fontsMentioned.map((f) => (
+            <span key={`font:${f}`} className="composer-mention" title="Your font">
+              <Icon name="type" size={12} />
+              <span>{f}</span>
+            </span>
+          ))}
           {mentioned.map(([label, c]) => (
             <span key={label} className="composer-mention" title={c.title}>
               {c.thumb && <img src={c.thumb} alt="" />}
@@ -1331,7 +1403,7 @@ function Composer(props: {
           value={value}
           rows={1}
           // Short enough for one line in the narrowest panel.
-          placeholder={props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention a save" : "Ask anything · @ to mention a save"}
+          placeholder={props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention" : "Ask anything · @ to mention"}
           onChange={(e) => {
             props.setValue(e.target.value);
             look(e.target.value, e.target.selectionStart);

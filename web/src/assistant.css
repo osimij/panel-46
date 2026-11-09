@@ -403,6 +403,7 @@
 .mention-row.on { background: var(--fill); }
 .mention-thumb { width: 34px; height: 34px; flex: none; overflow: hidden; background: var(--card); border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); }
 .mention-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mention-font { display: grid; place-items: center; font-size: 14px; font-weight: 600; color: var(--muted); }
 .mention-title { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mention-type { flex: none; font-size: 11px; color: var(--faint); text-transform: capitalize; }
 .composer-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 2px -8px; }

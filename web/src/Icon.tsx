@@ -2,6 +2,8 @@
 const paths = {
   search: <><circle cx="11" cy="11" r="6.5" /><path d="m20 20-4.2-4.2" /></>,
   x: <path d="M6 6l12 12M18 6 6 18" />,
+  more: <path d="M6 12h.01M12 12h.01M18 12h.01" strokeWidth={2.6} />,
+  type: <path d="M5 7V5h14v2M12 5v14M9 19h6" />,
   plus: <path d="M12 5v14M5 12h14" />,
   grid: <><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></>,
   heart: <path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10Z" />,

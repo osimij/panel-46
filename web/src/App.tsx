@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRe
 import { RailHandle } from "./RailHandle.tsx";
 import { flushSync } from "react-dom";
 import {
-  api, formatBytes, prefersReducedMotion, projectApi, STATUS_LABEL,
+  api, fontApi, formatBytes, isFontFile, prefersReducedMotion, projectApi, STATUS_LABEL,
   type CanvasSelection, type Collection, type ProjectSummary, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
 } from "./api.ts";
 import { Detail } from "./Detail.tsx";
@@ -14,6 +14,7 @@ import { InlineName } from "./InlineName.tsx";
 import { Assistant, type AssistantHandle } from "./Assistant.tsx";
 import { Mark } from "./Glow.tsx";
 import { Popover, TagRow } from "./TagRow.tsx";
+import { Fonts } from "./Fonts.tsx";
 
 // The canvas (and React Flow with it) loads only when a project is opened.
 const ProjectCanvas = lazy(() => import("./Canvas.tsx"));
@@ -56,6 +57,8 @@ type Scope =
   | { kind: "collection"; id: string }
   /** A project's canvas. */
   | { kind: "project"; id: string }
+  /** The designer's own fonts, for sketches. */
+  | { kind: "fonts" }
   /** Saves the assistant brought up, shown together in the grid. */
   | { kind: "picked"; ids: string[]; title: string };
 type MediaFilter = "all" | "image" | "video";
@@ -201,6 +204,8 @@ export function App() {
     peekTimer.current = setTimeout(() => setPeek(show), delay);
   }, []);
   const [askRunning, setAskRunning] = useState(false);
+  /** What FRIDAY is doing right now, in a few words (for the studio's bar). */
+  const [askDoing, setAskDoing] = useState<React.ReactNode>(null);
   // An answer that finished while Ask was closed: a dot on its button until you look.
   const [askUnread, setAskUnread] = useState(false);
   const wasRunning = useRef(false);
@@ -306,13 +311,16 @@ export function App() {
     setTimeout(() => askRef.current?.focus(), 80);
   }, []);
 
-  // From the studio: ask about a sketch (or a part of it), with FRIDAY open to show the work.
-  const askWith = useCallback((text: string, about: CanvasSelection) => {
-    setAskOpenState(true);
-    try {
-      localStorage.setItem("panel.ask.open", "1");
-    } catch {
-      /* fine */
+  // From the studio: ask about a sketch (or a part of it), with FRIDAY open to show the work,
+  // or `quiet`ly, leaving its panel as it is (the studio's own bar then shows what it's doing).
+  const askWith = useCallback((text: string, about: CanvasSelection, quiet?: boolean) => {
+    if (!quiet) {
+      setAskOpenState(true);
+      try {
+        localStorage.setItem("panel.ask.open", "1");
+      } catch {
+        /* fine */
+      }
     }
     askRef.current?.ask(text, about);
   }, []);
@@ -390,8 +398,29 @@ export function App() {
     [refresh, say, scope.kind],
   );
 
+  // Fonts dropped anywhere go to the font manager; it shows them when it's open.
+  const [fontsVersion, setFontsVersion] = useState(0);
+  const uploadFonts = useCallback(
+    async (files: File[]) => {
+      say(`Adding ${files.length} font${files.length > 1 ? "s" : ""}…`);
+      try {
+        const r = await fontApi.add(files);
+        if (r.failed.length) say(r.failed[0]!, "error");
+        else say(`Added ${r.added.length} font${r.added.length === 1 ? "" : "s"}. Name one to FRIDAY to use it.`);
+        setFontsVersion((v) => v + 1);
+      } catch (e) {
+        say((e as Error).message, "error");
+      }
+    },
+    [say],
+  );
+
   const uploadFiles = useCallback(
     async (files: File[]) => {
+      const fonts = files.filter(isFontFile);
+      if (fonts.length) void uploadFonts(fonts);
+      files = files.filter((f) => !isFontFile(f));
+      if (fonts.length && !files.length) return;
       const isSkill = (f: File) => /\.(md|markdown)$/i.test(f.name);
       const list = files.filter((f) => /^(image|video)\//.test(f.type) || isSkill(f));
       if (!list.length) return say("Only images, videos and .md skill files can be added.", "error");
@@ -409,7 +438,7 @@ export function App() {
         say((e as Error).message, "error");
       }
     },
-    [refresh, say],
+    [refresh, say, uploadFonts],
   );
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -823,7 +852,9 @@ export function App() {
       />
 
       <main className="main">
-        {scope.kind === "project" ? (
+        {scope.kind === "fonts" ? (
+          <Fonts version={fontsVersion} onError={sayError} onSay={say} />
+        ) : scope.kind === "project" ? (
           <Suspense fallback={null}>
             <ProjectCanvas
               key={scope.id}
@@ -837,6 +868,10 @@ export function App() {
               onAsk={askAboutPick}
               onAskWith={askWith}
               askRunning={askRunning}
+              askDoing={askDoing}
+              askUnread={askUnread}
+              askOpen={askOpen}
+              setAskOpen={setAskOpen}
             />
           </Suspense>
         ) : (
@@ -907,6 +942,8 @@ export function App() {
             <div ref={setDockSlot} style={{ display: "contents" }} />
             {askButton}
           </>
+        ) : scope.kind === "fonts" ? (
+          askButton
         ) : selecting ? (
           <div className="select-bar" role="toolbar" aria-label="Selection" key="select">
             <span className="select-count">
@@ -998,6 +1035,7 @@ export function App() {
         onOpenRef={openFromAsk}
         onShowInGrid={showPicked}
         onRunning={setAskRunning}
+        onDoing={setAskDoing}
         onLibraryChanged={() => void refresh()}
       />
 
@@ -1007,7 +1045,7 @@ export function App() {
         <div className="dropzone-card">
           <Icon name="download" size={22} />
           <p>Drop to save to your library</p>
-          <span>Images, videos, .md skill files, or a link</span>
+          <span>Images, videos, fonts, .md skill files, or a link</span>
         </div>
       </div>
 
@@ -1049,6 +1087,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
       return { title: c?.name ?? "Collection", subtitle: c ? `${c.n} reference${c.n === 1 ? "" : "s"}` : "" };
     }
     case "project": return { title: "Project", subtitle: "" };
+    case "fonts": return { title: "Fonts", subtitle: "" };
   }
 }
 
@@ -1222,6 +1261,37 @@ function Sidebar(props: {
   const [creating, setCreating] = useState(false);
   const [creatingProject, setCreatingProject] = useState(false);
   const [renaming, setRenaming] = useState<string | null>(null);
+  // A collection's menu (the ··· on its row, or a right-click): rename, duplicate, delete.
+  const [colMenu, setColMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const openColMenu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).closest(".side-row")!.getBoundingClientRect();
+    setConfirmDelete(false);
+    setColMenu({ id, x: r.right - 180, y: r.bottom + 4 });
+  };
+
+  const duplicate = async (id: string) => {
+    setColMenu(null);
+    try {
+      const c = await api.duplicateCollection(id);
+      await props.onChanged();
+      setScope({ kind: "collection", id: c.id });
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
+
+  const remove = async (id: string) => {
+    setColMenu(null);
+    try {
+      await api.deleteCollection(id);
+      if (scope.kind === "collection" && scope.id === id) setScope({ kind: "all" });
+      await props.onChanged();
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
 
   const createProject = async (name: string) => {
     setCreatingProject(false);
@@ -1303,6 +1373,7 @@ function Sidebar(props: {
         {link({ kind: "sites" }, "Sites", stats?.sites, undefined, "S")}
         {link({ kind: "people" }, "People & Accounts", stats?.people)}
         {link({ kind: "skills" }, "Skills", stats?.skills)}
+        {link({ kind: "fonts" }, "Fonts")}
         {link({ kind: "hidden" }, "Hidden", stats?.hidden, undefined, "H")}
       </div>
 
@@ -1349,14 +1420,39 @@ function Sidebar(props: {
           renaming === c.id ? (
             <InlineName key={c.id} initial={c.name} onDone={(v) => rename(c.id, v)} onCancel={() => setRenaming(null)} />
           ) : (
-            <div key={c.id} className="side-row" onDoubleClick={() => setRenaming(c.id)}>
+            <div key={c.id} className={`side-row ${colMenu?.id === c.id ? "menu-open" : ""}`} onDoubleClick={() => setRenaming(c.id)} onContextMenu={(e) => openColMenu(e, c.id)}>
               {link({ kind: "collection", id: c.id }, c.name, c.n)}
-              <button className="side-edit" onClick={() => setRenaming(c.id)} aria-label={`Rename ${c.name}`} title="Rename">
-                <Icon name="pencil" size={12} />
+              <button className="side-edit" onClick={(e) => openColMenu(e, c.id)} aria-label={`More for ${c.name}`} aria-haspopup="menu" title="Rename, duplicate or delete">
+                <Icon name="more" size={14} />
               </button>
             </div>
           ),
         )}
+        {colMenu && (() => {
+          const c = collections.find((x) => x.id === colMenu.id);
+          if (!c) return null;
+          return (
+            <Popover x={colMenu.x} y={colMenu.y} onClose={() => setColMenu(null)}>
+              <div className="menu-title">{c.name}</div>
+              <button className="menu-item" onClick={() => { setColMenu(null); setRenaming(c.id); }}>
+                <Icon name="pencil" size={13} /> Rename
+              </button>
+              <button className="menu-item" onClick={() => void duplicate(c.id)}>
+                <Icon name="copy" size={13} /> Duplicate
+              </button>
+              <div className="menu-sep" />
+              {/* A collection with saves in it takes a second click; the saves themselves stay. */}
+              <button
+                className="menu-item danger"
+                onClick={() => (c.n === 0 || confirmDelete ? void remove(c.id) : setConfirmDelete(true))}
+                title="The saves in it stay in Panel"
+              >
+                <Icon name="trash" size={13} />
+                {confirmDelete ? "Delete it? Its saves stay" : "Delete collection"}
+              </button>
+            </Popover>
+          );
+        })()}
         {creating ? (
           <InlineName initial="" placeholder="Collection name" onDone={create} onCancel={() => setCreating(false)} />
         ) : (

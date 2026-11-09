@@ -224,6 +224,41 @@ function keepOpenParts(s: Set<string>) {
   }
 }
 
+/** A hex as CIE Lab, where distance is close to what the eye sees. */
+function lab(hex: string): [number, number, number] | null {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex.trim());
+  if (!m) return null;
+  const n = parseInt(m[1]!, 16);
+  const lin = (c: number) => (c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  const [r, g, b] = [lin(n >> 16), lin((n >> 8) & 255), lin(n & 255)];
+  const f = (t: number) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+  const x = f((0.4124 * r + 0.3576 * g + 0.1805 * b) / 0.95047), y = f(0.2126 * r + 0.7152 * g + 0.0722 * b), z = f((0.0193 * r + 0.1192 * g + 0.9505 * b) / 1.08883);
+  return [116 * y - 16, 500 * (x - y), 200 * (y - z)];
+}
+
+/**
+ * Which role the read gave each measured color. Roles name the hexes measured when the save was
+ * read; after its colors were measured again more exactly, each role goes to the nearest new
+ * color, closest pairs first, one role per color.
+ */
+function matchRoles(palette: Swatch[], roles: { hex: string; role: string }[]): Map<string, string> {
+  const pairs: { s: string; r: string; at: number }[] = [];
+  for (const s of palette)
+    for (const r of roles) {
+      const a = lab(s.hex), b = lab(r.hex);
+      // Lightness counts for less: an old halo-measured hex is mostly a darker version of the true color.
+      if (a && b) pairs.push({ s: s.hex.toLowerCase(), r: r.role, at: Math.hypot((a[0] - b[0]) * 0.4, a[1] - b[1], a[2] - b[2]) });
+    }
+  pairs.sort((x, y) => x.at - y.at);
+  const out = new Map<string, string>(), given = new Set<string>();
+  for (const p of pairs) {
+    if (p.at > 60 || out.has(p.s) || given.has(p.r)) continue;
+    out.set(p.s, p.r);
+    given.add(p.r);
+  }
+  return out;
+}
+
 function ProfileView({ p, read }: { p: Profile; read: DesignRead }) {
   const [copied, setCopied] = useState<string | null>(null);
   const copy = (hex: string) => {
@@ -231,7 +266,8 @@ function ProfileView({ p, read }: { p: Profile; read: DesignRead }) {
     setCopied(hex);
     setTimeout(() => setCopied((c) => (c === hex ? null : c)), 1200);
   };
-  const role = (hex: string) => p.color?.roles?.find((x) => x.hex.toLowerCase() === hex.toLowerCase())?.role;
+  const roles = matchRoles(read.palette, p.color?.roles ?? []);
+  const role = (hex: string) => roles.get(hex.toLowerCase());
   const typeBits = [...(p.typography?.classification ?? []), ...(p.typography?.likely_fonts ?? []).map((f) => `maybe ${f}`)];
   const rows: [string, string | undefined, string[]?][] = [
     ["Type", p.typography?.present ? p.typography.summary : undefined, typeBits],

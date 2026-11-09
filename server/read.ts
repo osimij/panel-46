@@ -15,7 +15,7 @@ import { basename, dirname, join } from "node:path";
 import { MEDIA_DIR } from "./config.ts";
 import { db, getSetting, now, reindex, setSetting, type MediaRow, type RefRow } from "./db.ts";
 import { abs, probe, run } from "./media.ts";
-import { measurePalette, type Swatch } from "./palette.ts";
+import { measurePalette, PALETTE_VERSION, type Swatch } from "./palette.ts";
 import { applyReadTags, tagContext, tagGuide } from "./tagging.ts";
 
 // ---------- Settings ----------
@@ -718,7 +718,7 @@ async function readOneWithClaudeCode(refId: string) {
   const model = settings.model();
   try {
     const { signals, palette } = await prepare(r);
-    db.run("UPDATE reads SET palette = ?, signals = ? WHERE ref_id = ?", [JSON.stringify(palette), JSON.stringify(signals), refId]);
+    db.run("UPDATE reads SET palette = ?, palette_v = ?, signals = ? WHERE ref_id = ?", [JSON.stringify(palette), PALETTE_VERSION, JSON.stringify(signals), refId]);
     const { profile, usage, apiEquivalent } = await readWithClaudeCode(r, signals, palette, model, settings.effort());
     // Nothing is billed: it counts against the subscription's usage limits.
     db.run(
@@ -789,7 +789,7 @@ async function readNow(refId: string) {
   db.run("UPDATE reads SET state = 'sent' WHERE ref_id = ?", [refId]);
   try {
     const { signals, palette } = await prepare(r);
-    db.run("UPDATE reads SET palette = ?, signals = ? WHERE ref_id = ?", [JSON.stringify(palette), JSON.stringify(signals), refId]);
+    db.run("UPDATE reads SET palette = ?, palette_v = ?, signals = ? WHERE ref_id = ?", [JSON.stringify(palette), PALETTE_VERSION, JSON.stringify(signals), refId]);
     const msg = await ai.messages.create(await requestFor(r, signals, palette, model));
     const cost = logUsage(refId, model, "now", msg.usage);
     saveProfile(refId, model, parseProfile(msg), cost);
@@ -808,7 +808,7 @@ async function sendBatch(ids: string[]) {
     if (!r) continue;
     try {
       const { signals, palette } = await prepare(r);
-      db.run("UPDATE reads SET palette = ?, signals = ? WHERE ref_id = ?", [JSON.stringify(palette), JSON.stringify(signals), id]);
+      db.run("UPDATE reads SET palette = ?, palette_v = ?, signals = ? WHERE ref_id = ?", [JSON.stringify(palette), PALETTE_VERSION, JSON.stringify(signals), id]);
       requests.push({ custom_id: id, params: await requestFor(r, signals, palette, model) });
     } catch (e) {
       fail(id, (e as Error).message);
@@ -929,6 +929,39 @@ export function startReading() {
   db.run("UPDATE reads SET state = 'queued' WHERE state = 'sent' AND batch_id IS NULL");
   void tick();
   setInterval(() => void tick(), 60_000);
+}
+
+/**
+ * Palettes measured the older way are measured again from the same pictures, one every few
+ * seconds, so they come out exact without reading anything again (it costs nothing). Each
+ * measure holds the server for a moment; the pause keeps saving and browsing smooth.
+ */
+export function startRemeasuring() {
+  let busy = false;
+  const next = async () => {
+    if (busy) return;
+    const row = db
+      .query<{ ref_id: string; signals: string }, [number]>(
+        "SELECT ref_id, signals FROM reads WHERE signals IS NOT NULL AND palette IS NOT NULL AND (palette_v IS NULL OR palette_v < ?) ORDER BY read_at DESC LIMIT 1",
+      )
+      .get(PALETTE_VERSION);
+    if (!row) return clearInterval(timer);
+    busy = true;
+    try {
+      const paths = (JSON.parse(row.signals) as Signals).visuals.map((v) => abs(v.rel)).filter((p) => existsSync(p));
+      const palette = paths.length ? await measurePalette(paths) : [];
+      // Pictures gone from disk: keep the old palette rather than none.
+      if (palette.length) db.run("UPDATE reads SET palette = ?, palette_v = ? WHERE ref_id = ?", [JSON.stringify(palette), PALETTE_VERSION, row.ref_id]);
+      else db.run("UPDATE reads SET palette_v = ? WHERE ref_id = ?", [PALETTE_VERSION, row.ref_id]);
+      reindex(row.ref_id);
+    } catch (e) {
+      db.run("UPDATE reads SET palette_v = ? WHERE ref_id = ?", [PALETTE_VERSION, row.ref_id]);
+      console.error("Measuring colors again:", (e as Error).message);
+    } finally {
+      busy = false;
+    }
+  };
+  const timer = setInterval(() => void next(), 3000);
 }
 
 // ---------- For the API ----------
