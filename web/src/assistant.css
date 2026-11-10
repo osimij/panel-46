@@ -340,6 +340,28 @@
 @keyframes send-ready { 50% { transform: scale(1.1); } }
 .composer-btn.stop { background: var(--fill); color: var(--text); }
 
+/* Speaking instead of typing (Voice.tsx): a quiet mic beside Send. While it listens it turns
+   solid, and a soft ring swells with the voice (--level, 0 to 1). */
+.composer-actions { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.composer-btn.mic { position: relative; color: var(--muted); animation: none; transition: background 0.15s var(--ease), color 0.15s var(--ease); }
+.composer-btn.mic:hover { background: var(--fill); color: var(--text); }
+.composer-btn.mic.on, .composer-btn.mic.starting, .composer-btn.mic.finishing { background: var(--text); color: var(--bg); }
+.composer-btn.mic.starting, .composer-btn.mic.finishing { opacity: 0.6; }
+.composer-btn.mic::before {
+  content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--text); opacity: 0.14; z-index: -1;
+  transform: scale(calc(1 + var(--level, 0) * 0.55)); transition: transform 0.08s linear, opacity 0.2s var(--ease);
+}
+.composer-btn.mic:not(.on)::before { opacity: 0; transform: scale(1); }
+.composer-btn.mic { isolation: isolate; }
+.composer-voice-lang {
+  height: 22px; padding: 0 6px; border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner);
+  font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--muted); background: var(--fill);
+  animation: btn-swap 0.3s var(--spring) both;
+}
+.composer-voice-lang:hover { color: var(--text); background: var(--fill-hover); }
+.composer-voice-problem { font-size: 11.5px; color: var(--muted); text-align: right; line-height: 1.3; max-width: 190px; }
+@media (prefers-reduced-motion: reduce) { .composer-btn.mic::before, .composer-voice-lang { transition: none; animation: none; } }
+
 /* Which model answers: a quiet chip beside Send, and its menu. */
 .model-chip {
   flex: none; display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 7px 0 9px; min-width: 0;

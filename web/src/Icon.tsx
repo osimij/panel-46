@@ -62,6 +62,7 @@ const paths = {
   states: <><rect x="4" y="4" width="7" height="5" rx="1.5" /><rect x="13" y="15" width="7" height="5" rx="1.5" /><rect x="4" y="15" width="7" height="5" rx="1.5" /><path d="M7.5 9v6M7.5 12h9v3" /></>,
   terminal: <><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="m7.5 10 2.5 2-2.5 2M12.5 14.5h4" /></>,
   compose: <path d="M11.5 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4.5M17.2 4.8l2 2L12 14l-2.8.8.8-2.8 7.2-7.2Z" />,
+  mic: <><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" /></>,
 };
 
 export type IconName = keyof typeof paths;

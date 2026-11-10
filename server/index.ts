@@ -22,6 +22,7 @@ import { indexForMeaning, meaningStatus } from "./embed.ts";
 import { forMeaning, load as loadLibrary } from "./library.ts";
 import { backupStatus, mirror, setBackupDir, snapshot, startBackups } from "./backup.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
+import { listening, VOICE_LANGUAGES, type Listening, type VoiceLanguage } from "./voice.ts";
 
 const DIST = resolve(process.env.PANEL_DIST ?? join(import.meta.dir, "..", "dist"));
 
@@ -1107,11 +1108,20 @@ Bun.serve({
   port: PORT,
   maxRequestBodySize: 4 * 1024 ** 3,
   idleTimeout: 120,
-  fetch: (req) =>
-    handle(req).catch((e) => {
+  fetch: (req, server) => {
+    // Speaking to FRIDAY: the page's microphone, passed on to Deepgram (voice.ts). Only Panel's own page may.
+    const url = new URL(req.url);
+    if (url.pathname === "/api/listen") {
+      if (!fromPanel(req)) return bad("Only Panel can do this.", 403);
+      const lang = (VOICE_LANGUAGES as readonly string[]).includes(url.searchParams.get("lang") ?? "") ? (url.searchParams.get("lang") as VoiceLanguage) : "en";
+      return server.upgrade(req, { data: { lang, waiting: [] } satisfies Listening }) ? undefined : bad("Listening needs a WebSocket.", 400);
+    }
+    return handle(req).catch((e) => {
       console.error(e);
       return bad("Something went wrong in the companion.", 500);
-    }),
+    });
+  },
+  websocket: { ...listening, idleTimeout: 120 },
 });
 
 // Stopped or restarted (launchd sends SIGTERM): leave the normal way, so the headless Chrome

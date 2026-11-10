@@ -10,6 +10,7 @@ import { Icon, type IconName } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
 import { Popover } from "./TagRow.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { MicButton } from "./Voice.tsx";
 
 export interface AssistantHandle {
   /** Ask, about what's given instead of what's open or selected (the studio's sketch, or a part of it). */
@@ -1677,15 +1678,18 @@ function Composer(props: {
       {/* Its own row under the words, so a narrow panel never squeezes what you're writing. */}
       <div className="composer-foot">
         <ModelPicker use={props.use} running={running} onCompact={() => props.onSend("/compact")} />
-        {running ? (
-          <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
-            <Icon name="stop" size={14} />
-          </button>
-        ) : (
-          <button className="composer-btn send" key="send" onClick={send} disabled={!can} aria-label="Send" title="Send (↵)">
-            <Icon name="arrow-up" size={15} />
-          </button>
-        )}
+        <span className="composer-actions">
+          <MicButton value={value} setValue={props.setValue} inputRef={props.inputRef} />
+          {running ? (
+            <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
+              <Icon name="stop" size={14} />
+            </button>
+          ) : (
+            <button className="composer-btn send" key="send" onClick={send} disabled={!can} aria-label="Send" title="Send (↵)">
+              <Icon name="arrow-up" size={15} />
+            </button>
+          )}
+        </span>
       </div>
     </div>
   );

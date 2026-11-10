@@ -198,3 +198,12 @@ describe("FRIDAY's conversations belong to a place", () => {
     expect((await (await p.send("GET", `/api/chats/${gone.id}`)).json()).project).toBeNull();
   });
 });
+
+describe("Speaking to FRIDAY", () => {
+  test("only Panel's own page may listen, and only over a WebSocket", async () => {
+    const elsewhere = await fetch(`${p.url}/api/listen`, { headers: { Origin: "http://example.com" } });
+    expect(elsewhere.status).toBe(403);
+    const plain = await p.send("GET", "/api/listen");
+    expect(plain.status).toBe(400);
+  });
+});
