@@ -3,7 +3,9 @@
 // a palette measured from any save on the canvas can be tried on in a click. Nothing is
 // kept until "Keep as a new version", which writes the values into the page's :root.
 
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { fontApi } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
 export interface PageVar {
@@ -114,8 +116,157 @@ const ABOUT_TYPE = /font|type|text|size|leading|line|tracking|letter|weight|meas
 const NAMES: Record<string, string> = { bg: "Background", fg: "Text", ink: "Text" };
 const label = (name: string) => {
   const raw = name.replace(/^--/, "");
-  return NAMES[raw] ?? raw.replace(/[-_]+/g, " ").replace(/^./, (c) => c.toUpperCase());
+  if (NAMES[raw]) return NAMES[raw];
+  // --font-display reads as "Display font", not "Font display".
+  const font = raw.match(/^(?:font|typeface|family)[-_]+(.+)$/i);
+  const words = (font ? `${font[1]} font` : raw).replace(/[-_]+/g, " ");
+  return words.replace(/^./, (c) => c.toUpperCase());
 };
+
+// ---------- Fonts ----------
+
+// A font knob holds a CSS font stack ("ALS Unios VF", system-ui, sans-serif). The designer
+// only ever sees and picks the first family; the fallbacks behind it are kept as they were.
+const GENERIC = new Set(["serif", "sans-serif", "monospace", "system-ui", "ui-sans-serif", "ui-serif", "ui-monospace", "cursive", "fantasy"]);
+const familiesIn = (stack: string) => stack.split(",").map((s) => s.trim().replace(/^["']|["']$/g, "")).filter(Boolean);
+const quote = (f: string) => (GENERIC.has(f) ? f : `"${f}"`);
+/** Fonts every computer has, for when the designer wants none of their own. */
+const BUILT_IN = [
+  { name: "System sans", stack: "system-ui, sans-serif" },
+  { name: "Serif", stack: "ui-serif, Georgia, serif" },
+  { name: "Mono", stack: "ui-monospace, monospace" },
+];
+const builtInFor = (stack: string) => BUILT_IN.find((b) => familiesIn(b.stack)[0] === familiesIn(stack)[0]);
+
+// The designer's uploaded fonts, loaded into Panel's own page once so each name in the
+// picker can be drawn in its own face. Sketches get them separately, from the server.
+let yourFonts: Promise<string[]> | null = null;
+function loadYourFonts() {
+  yourFonts ??= fontApi
+    .list()
+    .then((list) => {
+      const style = document.getElementById("kn-fonts") ?? document.head.appendChild(Object.assign(document.createElement("style"), { id: "kn-fonts" }));
+      style.textContent = list
+        .flatMap((f) => f.faces)
+        .map((f) => `@font-face{font-family:"${f.family}";src:url("${f.url}");font-weight:${f.weight};font-style:${f.italic ? "italic" : "normal"};font-display:swap}`)
+        .join("");
+      return list.map((f) => f.family);
+    })
+    .catch(() => {
+      yourFonts = null;
+      return [];
+    });
+  return yourFonts;
+}
+
+/** One font knob: the font's name in its own face, and a list to pick another from. */
+function FontPick(props: {
+  name: string;
+  value: string;
+  was: string;
+  inSketch: string[];
+  /** Which of the sketch's fonts the page really has (it checks for itself, see sketches.ts). */
+  found: Record<string, boolean>;
+  onPick: (stack: string) => void;
+}) {
+  const [mine, setMine] = useState<string[]>([]);
+  const [at, setAt] = useState<DOMRect | null>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let live = true;
+    void loadYourFonts().then((l) => live && setMine(l));
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  // Closes on a click elsewhere, Escape (without also closing the studio), or the rail scrolling away under it.
+  useEffect(() => {
+    if (!at) return;
+    const away = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (!list.current?.contains(t) && !button.current?.contains(t)) setAt(null);
+    };
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      setAt(null);
+      button.current?.focus();
+    };
+    const scrolled = (e: Event) => {
+      if (!list.current?.contains(e.target as Node)) setAt(null);
+    };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", key, true);
+    document.addEventListener("scroll", scrolled, true);
+    addEventListener("resize", scrolled);
+    list.current?.querySelector<HTMLElement>(".on")?.scrollIntoView({ block: "nearest" });
+    return () => {
+      document.removeEventListener("pointerdown", away, true);
+      document.removeEventListener("keydown", key, true);
+      document.removeEventListener("scroll", scrolled, true);
+      removeEventListener("resize", scrolled);
+    };
+  }, [at]);
+
+  const current = familiesIn(props.value)[0] ?? "";
+  const shown = builtInFor(props.value)?.name ?? current;
+  // Whatever followed the first family when the sketch was made: kept behind any font picked.
+  const tail = familiesIn(props.was).slice(1).map(quote);
+  const pick = (stack: string) => {
+    props.onPick(stack);
+    setAt(null);
+  };
+  const fromSketch = props.inSketch.filter((f) => !mine.includes(f) && !GENERIC.has(f));
+  const missing = (f: string) => props.found[f] === false && !mine.includes(f);
+  const MISSING = "Not one of your fonts and not on this computer, so the page shows a stand-in. Add it in Fonts, or pick another.";
+
+  const item = (name: string, stack: string, on: boolean, family?: string) => (
+    <button key={name} className={`menu-item kn-font-item ${on ? "on" : ""}`} role="menuitemradio" aria-checked={on} onClick={() => pick(stack)}>
+      <span className="menu-check">{on && <Icon name="check" size={13} />}</span>
+      <span className="kn-font-name" style={{ fontFamily: stack }}>{name}</span>
+      {family && missing(family) && <span className="kn-missing" title={MISSING}>Missing</span>}
+    </button>
+  );
+  const below = at && innerHeight - at.bottom > 260;
+
+  return (
+    <div className="kn-row">
+      <span className="kn-name" title={props.name}>{label(props.name)}</span>
+      <button
+        ref={button}
+        className={`kn-font ${at ? "open" : ""}`}
+        title={props.value}
+        aria-label={`${label(props.name)}: ${shown || "none"}`}
+        aria-haspopup="menu"
+        aria-expanded={!!at}
+        onClick={() => setAt(at ? null : button.current!.getBoundingClientRect())}
+      >
+        <span className="kn-font-name" style={{ fontFamily: props.value }}>{shown || "Pick a font"}</span>
+        {current && missing(current) && <span className="kn-missing" title={MISSING}>Missing</span>}
+        <Icon name="chevron-down" size={12} />
+      </button>
+      {at && createPortal(
+        <div
+          ref={list}
+          className="popover kn-fonts"
+          role="menu"
+          style={{ left: at.left, width: Math.max(at.width, 220), ...(below ? { top: at.bottom + 4 } : { bottom: innerHeight - at.top + 4, transformOrigin: "bottom left" }) }}
+        >
+          {mine.length > 0 && <div className="menu-label">Your fonts</div>}
+          {mine.map((f) => item(f, [quote(f), ...tail].join(", "), f === current))}
+          {fromSketch.length > 0 && <div className="menu-label">In this sketch</div>}
+          {fromSketch.map((f) => item(f, [quote(f), ...tail].join(", "), f === current, f))}
+          <div className="menu-label">On every computer</div>
+          {BUILT_IN.map((b) => item(b.name, b.stack, builtInFor(props.value) === b))}
+          {mine.length === 0 && <p className="kn-fonts-note">Fonts you add to Panel show up here.</p>}
+        </div>,
+        document.body,
+      )}
+    </div>
+  );
+}
 
 function range(name: string, n: number, unit: string) {
   if (/weight/i.test(name) && n >= 100) return { min: 100, max: 900, step: 100 };
@@ -130,6 +281,8 @@ function range(name: string, n: number, unit: string) {
 
 export function Knobs(props: {
   vars: PageVar[] | null;
+  /** Which fonts the page named and really has, by family. */
+  fonts?: Record<string, boolean>;
   /** What the designer has changed so far, not yet kept. */
   edits: Record<string, string>;
   palettes: Palette[];
@@ -149,6 +302,8 @@ export function Knobs(props: {
   const colors = knobs.filter((k) => k.kind === "color");
   const type = knobs.filter((k) => k.kind === "font" || (k.kind !== "color" && ABOUT_TYPE.test(k.name)));
   const shape = knobs.filter((k) => k.kind !== "color" && !type.includes(k));
+  /** Every font the sketch was made with, so one can be swapped for another it already uses. */
+  const inSketch = [...new Set(knobs.filter((k) => k.kind === "font").map((k) => familiesIn(k.value)[0]!).filter(Boolean))];
 
   if (props.vars && !knobs.length) {
     return (
@@ -183,12 +338,7 @@ export function Knobs(props: {
       );
     }
     if (k.kind === "font") {
-      return (
-        <div className="kn-row" key={k.name}>
-          <span className="kn-name" title={k.name}>{label(k.name)}</span>
-          <input className="kn-text wide" value={value} spellCheck={false} aria-label={label(k.name)} onChange={(e) => props.onChange({ [k.name]: e.target.value })} />
-        </div>
-      );
+      return <FontPick key={k.name} name={k.name} value={value} was={k.value} inSketch={inSketch} found={props.fonts ?? {}} onPick={(stack) => props.onChange({ [k.name]: stack })} />;
     }
     const m = value.trim().match(LENGTH);
     const n = m ? Number(m[1]) : Number(value);

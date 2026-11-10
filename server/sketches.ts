@@ -195,7 +195,7 @@ const KIT = `<script data-panel-kit>(() => {
     if (m.t === "release") { hold = null; over = null; if (box) { box.style.display = "none"; tag.style.display = "none"; } }
     if (m.t === "state") { const h = m.slug ? "#" + m.slug : ""; if (location.hash !== h) { if (h) location.hash = h; else { history.replaceState(null, "", location.pathname + location.search); dispatchEvent(new HashChangeEvent("hashchange")); } } }
     if (m.t === "hello") hello();
-    if (m.t === "vars") post({ t: "vars", vars: vars() });
+    if (m.t === "vars") document.fonts.ready.then(() => { const v = vars(); post({ t: "vars", vars: v, fonts: found(v) }); });
     if (m.t === "set") { const root = document.documentElement.style; for (const k in m.vars) { if (!/^--[A-Za-z0-9_-]+$/.test(k)) continue; if (m.vars[k] == null) root.removeProperty(k); else root.setProperty(k, String(m.vars[k])); } }
     if (m.t === "scroll") { quiet = true; scrollTo(0, m.y); requestAnimationFrame(() => requestAnimationFrame(() => { quiet = false; })); }
     if (m.t === "follow") following = !!m.on;
@@ -206,6 +206,26 @@ const KIT = `<script data-panel-kit>(() => {
     const walk = (rules) => { for (const r of rules) { if (r.cssRules && !r.selectorText) { walk(r.cssRules); continue; } if (r.style && /^(:root|html)$/.test((r.selectorText || "").trim())) for (const n of r.style) if (n.startsWith("--") && !seen.has(n)) { seen.add(n); out.push({ name: n, value: r.style.getPropertyValue(n).trim() }); } } };
     for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
     return out.slice(0, 80);
+  };
+  // For each font a knob names, whether the page really has it: a web font it loads, one of the
+  // designer's fonts, or one installed on this computer. A missing one is drawn in a stand-in,
+  // so the studio says so. Installed fonts are found by drawing a line in the font with two
+  // different stand-ins behind it: if neither width changes, the font never showed up.
+  const found = (list) => {
+    const out = {}, unq = (s) => s.trim().replace(/^["']|["']$/g, "");
+    const generic = /^(serif|sans-serif|monospace|system-ui|ui-sans-serif|ui-serif|ui-monospace|cursive|fantasy)$/;
+    const ink = document.createElement("canvas").getContext("2d");
+    const width = (font) => { ink.font = "40px " + font; return ink.measureText("mmmmmmmmmmlli1WQ@#").width; };
+    for (const v of list) {
+      if (!/font|typeface|family/i.test(v.name) || /size|weight|leading|tracking|spacing|height/i.test(v.name)) continue;
+      const f = unq(v.value.split(",")[0] || "");
+      if (!f || f in out || generic.test(f) || /var\\(/.test(f)) continue;
+      let ok = false;
+      for (const face of document.fonts) if (unq(face.family) === f && face.status !== "error") ok = true;
+      if (!ok && ink) ok = ["monospace", "serif"].some((s) => width('"' + f + '", ' + s) !== width(s));
+      out[f] = ok;
+    }
+    return out;
   };
   // Side by side with other sketches, the studio keeps them scrolled together.
   let following = false, quiet = false, said = 0;

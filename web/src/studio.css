@@ -220,6 +220,23 @@
 .kn-text { min-width: 0; height: 24px; padding: 0 7px; background: var(--fill); border: 0; outline: 0; font: inherit; font-size: 11.5px; color: var(--text); border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner); }
 .kn-text:focus { box-shadow: inset 0 0 0 1.5px var(--faint); }
 .kn-text.wide { grid-column: 2 / -1; }
+/* A font knob: the font's name in its own face, opening a list of fonts to pick from. */
+.kn-font {
+  grid-column: 2 / -1; min-width: 0; height: 28px; padding: 0 8px 0 9px; display: flex; align-items: center; gap: 6px;
+  background: var(--fill); color: var(--text); border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+  transition: background 0.15s var(--ease);
+}
+.kn-font:hover, .kn-font.open { background: var(--fill-hover); }
+.kn-font > svg { flex: none; color: var(--faint); transition: transform 0.2s var(--ease); }
+.kn-font.open > svg { transform: rotate(180deg); }
+.kn-font-name { flex: 1; min-width: 0; text-align: left; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn-fonts { max-width: 300px; max-height: min(360px, 60vh); overflow-y: auto; }
+.kn-font-item { height: 34px; }
+.kn-fonts .menu-item + .menu-label { margin-top: 6px; }
+.kn-fonts-note { margin: 4px 9px 5px; font-size: 11.5px; color: var(--faint); }
+/* A font the sketch names that isn't anywhere: the page shows a stand-in instead. */
+.kn-missing { flex: none; font-size: 11px; color: var(--faint); cursor: help; }
+@media (prefers-reduced-motion: reduce) { .kn-font > svg { transition: none; } }
 .kn-palettes { display: flex; flex-wrap: wrap; gap: 6px; }
 .kn-palette { display: flex; height: 22px; padding: 0; border-radius: 999px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); transition: transform 0.15s var(--ease); }
 .kn-palette:hover { transform: scale(1.06); }

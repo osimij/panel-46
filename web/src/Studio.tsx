@@ -119,6 +119,8 @@ export function Studio(props: {
   // Knobs: the page's own variables, what's been moved and not yet kept (on this version).
   const key = pendingKey(project, sketch.id, sketch.version);
   const [vars, setVars] = useState<PageVar[] | null>(null);
+  /** Which fonts the page names and really has: a missing one shows as a stand-in. */
+  const [pageFonts, setPageFonts] = useState<Record<string, boolean>>({});
   const [edits, setEditsState] = useState<Record<string, string>>(() => pending.get(key) ?? {});
   const [keeping, setKeeping] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -215,6 +217,7 @@ export function Studio(props: {
       } else if (m.t === "vars") {
         const list: PageVar[] = Array.isArray(m.vars) ? m.vars : [];
         setVars(list);
+        setPageFonts(m.fonts && typeof m.fonts === "object" ? m.fonts : {});
         // Changes carried over from the version before: only the ones this page still has.
         if (carried.current) {
           carried.current = false;
@@ -729,6 +732,7 @@ export function Studio(props: {
         {column === "knobs" && (
           <Knobs
             vars={vars}
+            fonts={pageFonts}
             edits={edits}
             palettes={props.palettes}
             keeping={keeping}
