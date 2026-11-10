@@ -71,14 +71,22 @@
 .st-tool.out { color: var(--text); background: var(--fill); }
 .st-verdict { position: relative; display: flex; gap: 2px; }
 
-/* The one loud thing here: handing it off. A capsule, as primary actions are. */
-.st-build {
-  display: inline-flex; align-items: center; gap: 7px; height: 32px; padding: 0 15px 0 13px; flex: none;
-  font-size: 12.5px; font-weight: 600; color: var(--bg); background: var(--text); border-radius: 999px;
-  transition: transform var(--fast) var(--ease), opacity var(--fast) var(--ease);
+/*
+ * Handing it off to Claude Code is rare, so it is a quiet icon like the others here. Its
+ * name appears just under it on hover or keyboard focus, and stays away while the hand-off
+ * sheet is open. The label hangs from the icon's right edge so it never leaves the window.
+ */
+.st-build { position: relative; }
+.st-build.on { background: var(--fill); color: var(--text); }
+.st-build::after {
+  content: attr(data-tip); position: absolute; top: calc(100% + 6px); right: 0; z-index: 6; padding: 5px 9px;
+  font-size: 11.5px; font-weight: 500; white-space: nowrap; color: var(--bg); background: var(--text);
+  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+  opacity: 0; transform: translateY(-2px); pointer-events: none;
+  transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease);
 }
-.st-build:hover { opacity: 0.88; }
-.st-build:active { transform: scale(0.97); }
+.st-build:not(.on):hover::after, .st-build:not(.on):focus-visible::after { opacity: 1; transform: none; transition-delay: 0.25s; }
+@media (prefers-reduced-motion: reduce) { .st-build::after { transition: none; transform: none; } }
 
 /* ---- Body ---- */
 .st-body { flex: 1; min-height: 0; display: flex; }
@@ -316,22 +324,21 @@
 
 /*
  * The header gives things up in a fixed order as it narrows. Studio.tsx decides how far
- * from what actually fits and marks it with data-f1 … data-f7; never given up: back, the
+ * from what actually fits and marks it with data-f1 … data-f6; never given up: back, the
  * title (at least 120px, then an ellipsis), the version, the screens, Build.
  */
 .st-head[data-f1] .st-tries { display: none; }
 .st-head[data-f2] .st-l-verdict { display: none; }
 .st-head[data-f2] .st-verdict .st-tool { padding: 0 9px; }
-.st-head[data-f3] .st-l-build { display: none; }
-.st-head[data-f4] .st-l-view { display: none; }
-.st-head[data-f4] .st-tool { padding: 0 9px; gap: 0; }
-.st-head[data-f5] .st-l-col { display: none; }
-.st-head[data-f5] .st-cols button { padding: 0 8px; gap: 4px; }
-.st-head[data-f6] .st-of { display: none; }
-.st-head[data-f6] .st-v { min-width: 36px; }
-.st-head[data-f6] { gap: 6px; }
-.st-head[data-f7] { gap: 4px; }
-.st-head[data-f7] .st-tool:not(.st-verdict .st-tool), .st-head[data-f7] .st-sep { display: none; }
+.st-head[data-f3] .st-l-view { display: none; }
+.st-head[data-f3] .st-tool { padding: 0 9px; gap: 0; }
+.st-head[data-f4] .st-l-col { display: none; }
+.st-head[data-f4] .st-cols button { padding: 0 8px; gap: 4px; }
+.st-head[data-f5] .st-of { display: none; }
+.st-head[data-f5] .st-v { min-width: 36px; }
+.st-head[data-f5] { gap: 6px; }
+.st-head[data-f6] { gap: 4px; }
+.st-head[data-f6] .st-tool:not(.st-verdict .st-tool), .st-head[data-f6] .st-sep { display: none; }
 
 @container (max-width: 1080px) {
   .st-size { display: none; }

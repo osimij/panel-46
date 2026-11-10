@@ -52,7 +52,7 @@ const pending = new Map<string, Record<string, string>>();
 const pendingKey = (project: string, id: string, v: number) => `${project}/${id}/v${v}`;
 
 /** How far the header has given things up as it narrowed, 0 (nothing) to FOLDS (all it can). */
-const FOLDS = 7;
+const FOLDS = 6;
 
 interface Picked {
   label: string;
@@ -460,8 +460,8 @@ export function Studio(props: {
   const alternates = () => props.ask("Try 3 alternates of this sketch, each a different direction for the whole page.", undefined, 3, true);
 
   // ---- The header gives things up as it narrows ----
-  // In a fixed order (see .st-head[data-f1] … [data-f7] in studio.css): the line under the
-  // title, the words on Choose and Rule out, "with Claude Code", the words on Point and
+  // In a fixed order (see .st-head[data-f1] … [data-f6] in studio.css): the line under the
+  // title, the words on Choose and Rule out, the words on Point and
   // Compare, the words on the column switch, "of 8", and last, at a phone's width, Point and
   // Compare themselves (P still points). The steps come from what actually fits
   // (the header's width against its content), so they don't go stale when a label changes.
@@ -599,8 +599,9 @@ export function Studio(props: {
             />
           )}
         </div>
-        <button className="st-build" onClick={() => setBuilding(true)} title="Hand this to Claude Code to build for real, in your code">
-          <Icon name="build" size={14} /> <span>Build<span className="st-l-build"> with Claude Code</span></span>
+        {/* Rarely used, so it is a quiet icon; its name shows under it on hover or focus. */}
+        <button className={`st-icon st-build ${building ? "on" : ""}`} onClick={() => setBuilding(true)} aria-label="Build with Claude Code" data-tip="Build with Claude Code">
+          <Icon name="build" size={15} />
         </button>
         {building && (
           <BuildSheet

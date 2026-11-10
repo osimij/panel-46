@@ -898,7 +898,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
   const args = [
     bin, "-p", prompt,
-    "--model", model, "--effort", effort,
+    "--model", wideWindow(model), "--effort", effort,
     "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--system-prompt", systemPrompt(),
     "--tools", "", "--mcp-config", mcp, "--strict-mcp-config", "--allowedTools", "mcp__panel",
@@ -1063,6 +1063,14 @@ interface SdkTurn {
  */
 const COMPACT_WINDOW = 320_000;
 
+/**
+ * The name Claude Code is given for a model. Fable under its plain name gets a 200K window,
+ * so its conversations were summarized at 167K whatever COMPACT_WINDOW said; its 1M window
+ * is asked for by adding [1m]. Opus already gets 1M under its plain name. Everywhere else
+ * in Panel (the settings, the picker, the usage table) the model keeps its plain name.
+ */
+const wideWindow = (model: string) => (model === "claude-fable-5-2" ? `${model}[1m]` : model);
+
 const panelOnly = (name: string): true | string => (name.startsWith("mcp__panel__") ? true : "FRIDAY only uses Panel's tools.");
 
 async function viaSdk(run: Run, t: SdkTurn) {
@@ -1074,7 +1082,7 @@ async function viaSdk(run: Run, t: SdkTurn) {
       pathToClaudeCodeExecutable: t.bin,
       cwd: CHAT_DIR,
       env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(t.token ? { CLAUDE_CODE_OAUTH_TOKEN: t.token } : {}) },
-      model: t.model,
+      model: wideWindow(t.model),
       effort: t.effort,
       systemPrompt: t.system ?? systemPrompt(),
       tools: [],
