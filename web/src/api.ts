@@ -594,11 +594,16 @@ export type ChatPart =
   | { type: "thinking"; ms?: number; done?: boolean; model?: string }
   | { type: "tool"; id: string; name: string; model?: string; input?: Record<string, unknown>; refs?: string[]; total?: number; error?: string; done?: boolean };
 
+/** A file attached to a message, as the conversation shows it. Its picture is at /api/chat-files/<id>/view. */
+export interface ChatFileNote { id: string; name: string; picture: boolean }
+/** A file just attached, back from the server. */
+export interface ChatFile { id: string; name: string; mime: string | null; size: number | null; picture: boolean; url: string; thumb_url: string | null }
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   text: string;
-  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[] } | null;
+  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[]; files?: ChatFileNote[] } | null;
   parts: ChatPart[];
   status: "done" | "streaming" | "stopped" | "error" | string;
   error: string | null;
@@ -644,7 +649,13 @@ export const chatApi = {
   create: (project?: string | null) => call<{ id: string }>("/api/chats", { method: "POST", body: body({ project: project ?? null }) }),
   get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
-  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: SketchPoint; fan?: number }) =>
+  attach: (files: File[]) => {
+    const form = new FormData();
+    for (const f of files) form.append("file", f, f.name);
+    return call<{ added: ChatFile[]; failed: string[] }>("/api/chat-files", { method: "POST", body: form });
+  },
+  unattach: (fid: string) => call<{ ok: boolean }>(`/api/chat-files/${fid}`, { method: "DELETE" }),
+  send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: SketchPoint; fan?: number; files?: string[]; figma?: CanvasSelection["figma"] }) =>
     call<{ user: ChatMessage; assistant: ChatMessage }>(`/api/chats/${id}/messages`, { method: "POST", body: body({ text, context }) }),
   stop: (id: string) => call<{ stopped: boolean }>(`/api/chats/${id}/stop`, { method: "POST" }),
   cards: (ids: string[]) => call<RefCard[]>(`/api/cards?ids=${ids.join(",")}`),
@@ -757,6 +768,8 @@ export interface CanvasSelection {
   point?: SketchPoint;
   /** Make this many alternates of the sketch, each by its own run, at the same time. */
   fan?: number;
+  /** Bring a sketch back from Figma: the reading of its frame Panel just made. */
+  figma?: { sketch: string; read: string; version?: number };
 }
 
 /** A part of a sketch the designer pointed at in the studio, for FRIDAY to change. */
@@ -787,6 +800,23 @@ export interface SketchInfo {
   versions: { v: number; errors: number; height: number; rules?: RuleFinding[] }[];
   states: { name: string; slug: string }[];
   family: { id: string; parent: string | null; depth: number; title: string; tries?: string; state: string; version: number; reason?: string }[];
+  /** The Figma frame it was last brought back from. */
+  figma?: { node: string; name: string; at: string };
+}
+
+/** A frame read from the Figma app, for FRIDAY to rebuild the sketch from (figma.ts). */
+export interface FigmaRead {
+  read: string;
+  node: string;
+  frame: string;
+  width?: number;
+  height?: number;
+  base_version: number;
+  assets: string[];
+  /** The frame as Figma draws it, relative to the sketch's page. */
+  picture?: string;
+  found: "selected" | "last time" | "asked for";
+  at: string;
 }
 
 export interface Build {
@@ -817,6 +847,14 @@ export const studioApi = {
   setVars: (project: string, sketch: string, vars: Record<string, string>, from_version: number) =>
     call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/vars`, { method: "POST", body: body({ vars, from_version }) }),
   /** Words the designer edited in place in the studio, kept as a new version. */
+  /** One version on one screen and in one state, as Figma pastes it (editable layers). */
+  figmaCopy: async (project: string, sketch: string, o: { version: number; device: Device; state?: string }) => {
+    const res = await fetch(`/api/projects/${project}/sketches/${sketch}/figma/copy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(o) });
+    if (!res.ok) throw new Error(((await res.json().catch(() => null)) as { error?: string } | null)?.error ?? "Couldn't copy it for Figma.");
+    return res.blob();
+  },
+  figmaRead: (project: string, sketch: string, version: number) =>
+    call<FigmaRead>(`/api/projects/${project}/sketches/${sketch}/figma/read`, { method: "POST", body: body({ version }) }),
   setText: (project: string, sketch: string, edit: { path: string; before: string; after: string; before_text: string; after_text: string }, from_version: number) =>
     call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/text`, { method: "POST", body: body({ ...edit, from_version }) }),
   folders: () => call<{ recent: string[]; found: string[]; home: string }>("/api/builds/folders"),

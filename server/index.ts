@@ -12,15 +12,17 @@ import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
 import { startSummaries, summarize } from "./digest.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
-import { SKETCH_CSP, servedSketch, sketchFile } from "./sketches.ts";
+import { captureForFigma, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
+import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
-import { setSketchText, setSketchVars, sketchInfo } from "./board.ts";
+import { setSketchText, setSketchVars, sketchInfo, sketchMeta } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
 import { startMeasuring } from "./measure.ts";
 import { indexForMeaning, meaningStatus } from "./embed.ts";
 import { forMeaning, load as loadLibrary } from "./library.ts";
 import { backupStatus, mirror, setBackupDir, snapshot, startBackups } from "./backup.ts";
+import { addChatFile, chatFile, removeChatFile } from "./chatfiles.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 import { listening, VOICE_LANGUAGES, type Listening, type VoiceLanguage } from "./voice.ts";
 
@@ -361,6 +363,15 @@ async function handle(req: Request): Promise<Response> {
     if (![`${HOST}:${PORT}`, `localhost:${PORT}`].includes(req.headers.get("host") ?? "")) return bad("Not allowed from here.", 403);
     const f = sketchFile(path);
     if (!f) return bad("Not found", 404);
+    if (f.figma) {
+      // An image brought back from Figma: never run as a page here (an SVG could carry a script),
+      // and readable by the sketch's own sandboxed page, which has no origin to match.
+      const res = serveFile(f.file, req, true);
+      res.headers.set("content-security-policy", SKETCH_CSP);
+      res.headers.set("access-control-allow-origin", "*");
+      res.headers.set("x-content-type-options", "nosniff");
+      return res;
+    }
     if (!f.html) return serveFile(f.file, req, true);
     return new Response(servedSketch(f.file), {
       headers: {
@@ -449,6 +460,41 @@ async function handle(req: Request): Promise<Response> {
   if (path === "/api/cards" && m === "GET") {
     const ids = (url.searchParams.get("ids") ?? "").split(",").filter((x) => /^[0-9a-f]{16}$/.test(x)).slice(0, 200);
     return json(cards(ids));
+  }
+  // Files attached to a message for FRIDAY: added before it's sent, shown in the conversation after.
+  if (path === "/api/chat-files" && m === "POST") {
+    const form = await req.formData().catch(() => null);
+    if (!form) return bad("No files came.");
+    const added = [];
+    const failed: string[] = [];
+    for (const f of form.getAll("file")) {
+      if (typeof f === "string") continue;
+      try {
+        added.push(await addChatFile(f));
+      } catch (e) {
+        failed.push((e as Error).message);
+      }
+    }
+    return json({ added, failed });
+  }
+  const chatFileRoute = path.match(/^\/api\/chat-files\/([0-9a-f]{16})(\/view)?$/);
+  if (chatFileRoute) {
+    const [, fid, view] = chatFileRoute as unknown as [string, string, string | undefined];
+    if (!view && m === "DELETE") return json({ ok: removeChatFile(fid) });
+    if (m === "GET") {
+      const f = chatFile(fid, view ? "view" : "file");
+      if (!f) return bad("That file is gone.", 404);
+      // Pages and drawings that could run scripts open as plain text, so a file can't act as Panel.
+      const active = /html|xml|svg|javascript/.test(f.mime);
+      return new Response(f.file, {
+        headers: {
+          "content-type": active ? "text/plain; charset=utf-8" : f.mime,
+          "content-disposition": `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`,
+          "cache-control": "private, max-age=31536000, immutable",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
   }
   const chatRoute = path.match(/^\/api\/chats\/([0-9a-f]{16})(\/messages|\/stream|\/stop)?$/);
   if (chatRoute) {
@@ -580,6 +626,26 @@ async function handle(req: Request): Promise<Response> {
       return json(await setSketchText(textRoute[1]!, textRoute[2]!, {
         path: str(b.path), before: str(b.before), after: str(b.after), beforeText: str(b.before_text), afterText: str(b.after_text),
       }, Number.isInteger(b.from_version) ? b.from_version : undefined));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+
+  // Figma and back (figma.ts). Copy: one version on one screen and in one state, as Figma pastes
+  // it (editable layers), for the studio to put on the clipboard. Read: the frame selected in the
+  // Figma app, kept beside the sketch for FRIDAY to rebuild the page from.
+  const figmaRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/figma\/(copy|read)$/);
+  if (figmaRoute && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { version?: number; device?: string; state?: string };
+    try {
+      const sk = sketchMeta(figmaRoute[1]!, figmaRoute[2]!);
+      const version = Number.isInteger(b.version) ? b.version! : sk.version;
+      if (figmaRoute[3] === "read") return json(await readFrame(sk.project, sk.id, version));
+      const device = (["desktop", "tablet", "phone"] as const).find((d) => d === b.device) ?? sk.device;
+      const slug = typeof b.state === "string" ? b.state.replace(/^#/, "") : "";
+      const state = slug ? statesOf(readSketch(sk.project, sk.id, version)).find((x) => x.slug === slug) : undefined;
+      const html = await captureForFigma(sk.project, sk.id, version, device, state?.slug ?? "", frameName(sk.title, version, state?.name, device));
+      return new Response(html, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
     } catch (e) {
       return bad((e as Error).message);
     }

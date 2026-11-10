@@ -7,8 +7,10 @@ import { readMaterial } from "./materials.ts";
 import { fontLines } from "./fonts.ts";
 import { designRules } from "./rules.ts";
 import { chosenRefs, findProject, listProjects, projectsOf, summary, verdicts, REF_STATES, TOPIC_FACETS } from "./projects.ts";
-import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, type SketchResult } from "./board.ts";
-import { DEVICES, fullUrl, SCREEN, sketchPath, type Device, type Render } from "./sketches.ts";
+import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, sketchMeta, type SketchResult } from "./board.ts";
+import { figmaReading, readFrame } from "./figma.ts";
+import { existsSync } from "node:fs";
+import { DEVICES, fullUrl, readSketch, renderOf, SCREEN, sketchPath, type Device, type Render } from "./sketches.ts";
 import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, search, similar } from "./library.ts";
@@ -29,6 +31,7 @@ Use it to find references for a brief and to combine them: color from one save, 
 - The designer uploads their own fonts to Panel (get_fonts lists them). Every sketch has them loaded already: write font-family with the family's name, no @font-face or link. When the designer names one, use it.
 - Give a sketch knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those.
 - A sketch can be clickable: a flow of screens, or states (empty, loading, error). List them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.
+- A sketch can go to Figma and come back: the designer copies it into Figma from the studio, changes it there, and brings it back. get_figma_frame then gives the Figma frame beside the page it started from; rebuild the page with edit_sketch as its next version, keeping its knobs, states and scripts.
 - When the designer chooses a sketch, get_handoff writes down everything needed to build it, and start_build hands it to Claude Code to build in their code (get_build, message_build follow it).
 Always give the designer the "open" link for each save you recommend, so they can watch or look at the original.`;
 
@@ -81,6 +84,14 @@ async function sketchContent(head: Record<string, unknown>, render: Render, pict
 }
 
 const LOOK = "Look at the screens before you answer: check them against the brief, the locked decisions and the designer's rules, and fix what's off with edit_sketch first. page_errors come from the page itself (scripts, fonts, images that failed). rule_checks are what Panel measured in the page against the designer's rules: fix every one marked breaks before you reply; for each marked check, remove it or be ready to say why it earns its place. The checks can't see everything (whether something physical looks real, whether a font's Cyrillic is well drawn), so still look.";
+
+/** How a page comes back from Figma: what to take from the frame, and what of the page to keep. */
+const FIGMA_HOW_TO = (sketch: string, base: number) =>
+  `Rebuild the page so it looks like the Figma frame, as the sketch's next version: edit_sketch with sketch "${sketch}", from_version ${base}, and html: the whole new page. Don't make a new sketch. ` +
+  "Start from the page as it was (below) and take on everything the designer changed in Figma: layout, words, sizes, colors, type, images, what was added or taken away. Read exact values from Figma's code; don't copy its structure, class names or absolute positions, rebuild with flex and grid so the page still works at other widths. " +
+  "Keep what Figma can't hold: the :root variables (same names; give one its new value when the frame shows a new color, font, size or radius, and keep using the variable where the page did), the states in <meta name=\"panel:states\"> and the script that switches them, other scripts, hover, motion and links, and fonts by their family name. The frame shows one state on one screen size; keep the others working, changed the same way where it applies. " +
+  "Figma's images are beside the page: use each by the relative path given in images (figma/…/name.png). Pictures that were in the page before stay as they were. When the frame came part by part, a part's picture shows that whole area as Figma draws it, with whatever lies over it: use one as an image only for a photo or an illustration, and draw shapes, icons and words yourself (CSS, inline SVG, text), with the sizes and places the outline gives. " +
+  "Then look at the new version's render next to the Figma picture and fix what differs before you answer. Say in a line or two what changed and anything you couldn't carry over.";
 
 const made = async (r: SketchResult, device: Device = "desktop") =>
   sketchContent({
@@ -408,6 +419,56 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       const { render, html: page, ...head } = await getSketch(a);
       const content = await sketchContent(head, render, pictures, head.seen_on);
       if (withHtml) content.push({ type: "text", text: page });
+      return { content };
+    } catch (e) {
+      return failure(e);
+    }
+  });
+
+  server.registerTool("get_figma_frame", {
+    title: "Bring a sketch back from Figma",
+    description: "The designer copied a sketch into Figma, changed it there, and wants it back as the sketch's next version. Returns the Figma frame (a picture of it, the code Figma writes for it, its variables and images) and the page it started from. Without read, reads the frame selected in the Figma app on this Mac now (or the one the sketch came back from last time). Then rebuild the page with edit_sketch, following how_to.",
+    inputSchema: {
+      project: projectArg,
+      sketch: z.string().describe("The sketch's id (or its title)."),
+      read: z.string().optional().describe("A reading Panel already made (the studio's Bring back gives one). Leave it out to read Figma now."),
+      frame: z.string().optional().describe("Which Figma frame to read now, when the designer names one: its layer id (12:34) or a link to it. Default: what's selected in Figma, or the frame from last time."),
+    },
+    annotations: { readOnlyHint: false, openWorldHint: false },
+  }, async (a) => {
+    try {
+      const sk = sketchMeta(a.project, a.sketch);
+      const id = a.read?.trim() || (await readFrame(sk.project, sk.id, sk.version, a.frame?.trim() || undefined)).read;
+      const r = figmaReading(sk.project, sk.id, id);
+      const page = readSketch(sk.project, sk.id, r.base_version);
+      const content: Content = [{
+        type: "text",
+        text: JSON.stringify({
+          sketch: sk.id,
+          title: sk.title,
+          figma_frame: r.frame,
+          frame_size: r.width && r.height ? `${r.width}×${r.height}` : undefined,
+          started_from_version: r.base_version,
+          showing_now: sk.version,
+          images: r.assets.length ? r.assets : undefined,
+          figma_variables: r.variables,
+          how_to: FIGMA_HOW_TO(sk.id, r.base_version),
+        }),
+      }];
+      if (r.picture) {
+        content.push({ type: "text", text: "The frame as it is in Figma now: this is what the new version must look like." });
+        content.push({ type: "image", data: Buffer.from(await Bun.file(r.picture).arrayBuffer()).toString("base64"), mimeType: r.picture.endsWith(".jpg") ? "image/jpeg" : "image/png" });
+      }
+      const before = renderOf(sk.project, sk.id, r.base_version).screens[0];
+      if (before && existsSync(before)) {
+        content.push({ type: "text", text: `Version ${r.base_version} as it was before Figma (its first screen), to see what changed.` });
+        content.push({ type: "image", data: Buffer.from(await Bun.file(before).arrayBuffer()).toString("base64"), mimeType: "image/jpeg" });
+      }
+      if (r.outline) {
+        content.push({ type: "text", text: `Figma would only give its code part by part (it may not write images into Panel's folder), so here are the frame's layers first, each with its size and place in the frame, then the code of each part. Parts with images came as pictures, listed in images.\n${r.outline}` });
+      }
+      content.push({ type: "text", text: `Figma's code for the frame${r.outline ? ", part by part" : ""} (React and Tailwind, a reference for exact values, not a structure to copy):\n${r.code || "(Figma gave no code; work from the picture.)"}` });
+      content.push({ type: "text", text: `The page of version ${r.base_version}, to rebuild from:\n${page}` });
       return { content };
     } catch (e) {
       return failure(e);

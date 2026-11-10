@@ -12,6 +12,8 @@ import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load, type Doc } from "./library.ts";
 import { describeSelection, findProject } from "./projects.ts";
 import { materialsForSummary } from "./materials.ts";
+import { claimFiles, fileNote, filesForClaude, removeChatFiles } from "./chatfiles.ts";
+import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { designRules } from "./rules.ts";
 import { partialHtml } from "./partial.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
@@ -149,7 +151,7 @@ export interface MessageOut {
   id: string;
   role: "user" | "assistant";
   text: string;
-  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[]; pointed?: string } | null;
+  context: { open?: string; nodes?: string[]; label?: string; thumbs?: string[]; pointed?: string; files?: { id: string; name: string; picture: boolean }[] } | null;
   parts: Part[];
   status: string;
   error: string | null;
@@ -252,6 +254,7 @@ export function getChat(id: string) {
 export function deleteChat(id: string) {
   stop(id);
   db.run("DELETE FROM chats WHERE id = ?", [id]);
+  removeChatFiles(id);
 }
 
 // ---------- Running a turn ----------
@@ -403,7 +406,14 @@ export interface SendContext {
   open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: Point;
   /** Make this many alternates of the sketch in question, each by its own run, at the same time. */
   fan?: number;
+  /** Files attached to the message (chatfiles.ts), by id. */
+  files?: string[];
+  /** Bring a sketch back from Figma: the reading the studio made of the frame (figma.ts). */
+  figma?: { sketch: string; read: string; version?: number };
 }
+
+/** What a turn is asked: words, or words with pictures and documents attached. */
+type Prompt = string | ContentBlockParam[];
 
 export async function send(chatId: string, text: string, context: SendContext = {}) {
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
@@ -412,11 +422,15 @@ export async function send(chatId: string, text: string, context: SendContext = 
   // A conversation started by an older Panel has no place yet: it takes the one it's used in.
   db.run("UPDATE chats SET project_id = ? WHERE id = ? AND project_id IS NULL", [(context.project && findProject(context.project)?.id) || "", chatId]);
   const clean = text.trim();
-  if (!clean) throw new Error("Write something first.");
+  const attaching = Array.isArray(context.files) && context.files.length > 0;
+  if (!clean && !attaching) throw new Error("Write something first.");
   // "/compact" (optionally with what to keep: "/compact keep the type decisions") is Claude
   // Code's own command: it summarizes the conversation so far to make room, now.
   const compacting = /^\/compact(\s|$)/i.test(clean);
   if (compacting && !chat.session_id) throw new Error("There's nothing to summarize yet: this conversation has just started.");
+  if (compacting && attaching) throw new Error("Send the files in a message of their own, not with /compact.");
+  const files = claimFiles(chatId, context.files);
+  if (attaching && !files.length) throw new Error("The attached files are gone. Attach them again.");
 
   const ts = now();
   const userId = newId();
@@ -429,14 +443,15 @@ export async function send(chatId: string, text: string, context: SendContext = 
         thumbs: (Array.isArray(context.thumbs) ? context.thumbs : []).filter((t) => typeof t === "string" && /^\/(media|api|sketches)\//.test(t)).slice(0, 3),
       }
     : null;
-  const stored = context.open ? { open: context.open } : picked ? { ...picked, ...(context.point?.label ? { pointed: String(context.point.label).slice(0, 120) } : {}) } : null;
+  const about = context.open ? { open: context.open } : picked ? { ...picked, ...(context.point?.label ? { pointed: String(context.point.label).slice(0, 120) } : {}) } : null;
+  const stored = files.length ? { ...about, files: files.map(fileNote) } : about;
   db.run("INSERT INTO chat_messages (id, chat_id, role, text, context, status, created_at) VALUES (?, ?, 'user', ?, ?, 'done', ?)", [
     userId, chatId, clean, stored ? JSON.stringify(stored) : null, ts,
   ]);
   const messageId = newId();
   db.run("INSERT INTO chat_messages (id, chat_id, role, parts, status, created_at) VALUES (?, ?, 'assistant', '[]', 'streaming', ?)", [messageId, chatId, now()]);
   db.run("UPDATE chats SET updated_at = ?, title = CASE WHEN title = '' THEN ? ELSE title END WHERE id = ?", [
-    now(), readable(clean).replace(/\s+/g, " ").slice(0, 80), chatId,
+    now(), (readable(clean) || files.map((f) => f.name).join(", ")).replace(/\s+/g, " ").slice(0, 80), chatId,
   ]);
 
   const run: Run = { messageId, parts: [], events: [], listeners: new Set(), proc: null, sdks: new Set(), stopped: false };
@@ -444,7 +459,6 @@ export async function send(chatId: string, text: string, context: SendContext = 
   const message = out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(messageId)!);
   emit(chatId, run, { t: "start", message });
 
-  let prompt = clean;
   const said: string[] = [];
   if (context.project) {
     const p = findProject(context.project);
@@ -474,6 +488,11 @@ export async function send(chatId: string, text: string, context: SendContext = 
       }
     }
   }
+  // Back from Figma: the studio has read the frame already; FRIDAY rebuilds the page from it.
+  const fig = context.figma && typeof context.figma.sketch === "string" && /^[0-9a-f]{12}$/.test(String(context.figma.read)) ? context.figma : null;
+  if (fig) {
+    said.push(`In the studio, the designer brought the sketch ${fig.sketch} back from Figma, where they changed it. Panel has read the frame: call get_figma_frame with sketch "${fig.sketch}" and read "${fig.read}", then make it the sketch's next version with edit_sketch, as its how_to says.`);
+  }
   // Off the canvas, the card of the project this conversation was about still comes back after a compaction.
   if (!run.keep) {
     const was = db.query<{ card_project: string | null }, [string]>("SELECT card_project FROM chats WHERE id = ?").get(chatId)?.card_project;
@@ -500,28 +519,35 @@ export async function send(chatId: string, text: string, context: SendContext = 
     said.push(news);
     sideNews.delete(chatId);
   }
+  // Attached files: pictures to look at, PDFs to read, documents as their words, after the message.
+  const attached = files.length ? await filesForClaude(files) : null;
+  if (attached) said.push(`They attached ${attached.lines.join(", ")}; ${files.length === 1 ? "it comes" : "they come"} after their message. “This” and “these” mean the attachment${files.length === 1 ? "" : "s"} unless they say otherwise.`);
+  const asked = clean || "(They sent only the attachments.)";
   // A command goes to Claude Code as typed; anything before it would make it a message. The card
   // isn't counted as given (it would be summarized away at once), but comes back after (run.keep).
+  let words = asked;
   if (compacting) run.card = undefined;
-  else if (said.length) prompt = `<panel-context>${said.join(" ")}</panel-context>\n\n${clean}`;
+  else if (said.length) words = `<panel-context>${said.join(" ")}</panel-context>\n\n${asked}`;
+  const prompt: Prompt = attached?.blocks.length ? [{ type: "text", text: words }, ...attached.blocks] : words;
   // A small, pointed job ("make this button darker") doesn't need minutes of thought, or a
   // plan: it runs at low effort whatever the setting (on the builder, when two models share
   // the work), so the studio answers in seconds.
   const pointed = !!context.point && context.point.mode !== "alternates";
   const duoOn = chatSettings.mode() === "duo" && getSetting("chat_engine") !== "cli";
   const model = duoOn ? chatSettings.buildModel() : chatSettings.model();
-  const effort: Effort = pointed ? "low" : chatSettings.effort();
+  // Rebuilding from Figma is a known job too (no plan needed), but a whole page: medium effort.
+  const effort: Effort = pointed ? "low" : fig ? "medium" : chatSettings.effort();
   // Alternates: one run each, side by side, instead of one run making them one after another.
   const base = fanBase(context, nodes);
   const n = Math.min(4, Math.max(0, Math.floor(Number(context.fan) || 0)));
   if (compacting) void drive(chatId, run, chat.session_id, clean, model, "low").catch((e) => finish(chatId, run, "error", (e as Error).message));
   else if (base && n >= 2 && getSetting("chat_engine") !== "cli") {
-    void fanOut(chatId, run, chat.session_id, { context: said.join(" "), asked: clean, base, n, part: context.point?.mode === "alternates" ? context.point.label : undefined })
+    void fanOut(chatId, run, chat.session_id, { context: said.join(" "), asked, base, n, part: context.point?.mode === "alternates" ? context.point.label : undefined, attached: attached?.blocks })
       .catch((e) => finish(chatId, run, "error", (e as Error).message));
-  } else if (duoOn && !pointed) void duo(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  } else if (duoOn && !pointed && !fig) void duo(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
   else void drive(chatId, run, chat.session_id, prompt, model, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
   // A short name for a new conversation, made alongside the answer.
-  if (!chat.title) void nameChat(chatId, readable(clean), run);
+  if (!chat.title) void nameChat(chatId, readable(clean) || `Files: ${files.map((f) => f.name).join(", ")}`, run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
 }
 
@@ -633,7 +659,7 @@ const ANGLES = {
  * the sketches taking shape) show together in the one answer; their words come at the end.
  * What used to take one run three sketches' worth of time takes about one.
  */
-async function fanOut(chatId: string, run: Run, sessionId: string | null, o: { context: string; asked: string; base: { id: string; title: string }; n: number; part?: string }) {
+async function fanOut(chatId: string, run: Run, sessionId: string | null, o: { context: string; asked: string; base: { id: string; title: string }; n: number; part?: string; attached?: ContentBlockParam[] }) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
@@ -645,11 +671,12 @@ async function fanOut(chatId: string, run: Run, sessionId: string | null, o: { c
   const effort = duo ? chatSettings.buildEffort() : chatSettings.effort();
   const jobs = angles.map(([name, how], i) => {
     const others = angles.filter((_, j) => j !== i).map(([x]) => x).join(", ");
-    const prompt = `<panel-context>${o.context} You are one of ${o.n} copies of yourself working at the same time, each making one alternate of the sketch “${o.base.title}” (${o.base.id}).</panel-context>
+    const words = `<panel-context>${o.context} You are one of ${o.n} copies of yourself working at the same time, each making one alternate of the sketch “${o.base.title}” (${o.base.id}).</panel-context>
 
 ${o.asked}
 
 Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), ${o.part ? `the same page with only the ${o.part} done differently` : "a different direction for the whole page"}. Your angle is ${name}. ${how} The other copies are taking: ${others}. Commit to yours; don't hedge towards theirs. Read the sketch with get_sketch first if you haven't seen this version. Give yours a short title and a tries line that says how it differs. Look at the pictures that come back, fix what breaks the rules with edit_sketch, then answer in one line: its title, and what it tries. Don't make any other sketch and don't change the original.`;
+    const prompt: Prompt = o.attached?.length ? [{ type: "text", text: words }, ...o.attached] : words;
     const r = reader(chatId, run, { side: true, model });
     return viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle: r.handle, model, effort, fork: true }).then((res) => ({ ...res, ...r.state, name }));
   });
@@ -717,7 +744,7 @@ ${plan}
  * hands it over, and the builder (Opus, by default) continues the same conversation and
  * carries the plan out. Both show in the one answer, each step marked with its model.
  */
-async function duo(chatId: string, run: Run, sessionId: string | null, prompt: string) {
+async function duo(chatId: string, run: Run, sessionId: string | null, prompt: Prompt) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
@@ -909,7 +936,7 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
   return { handle, state };
 }
 
-async function drive(chatId: string, run: Run, sessionId: string | null, prompt: string, model: string, effort: Effort) {
+async function drive(chatId: string, run: Run, sessionId: string | null, prompt: Prompt, model: string, effort: Effort) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
@@ -917,7 +944,8 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
   const mcp = JSON.stringify({ mcpServers: { panel: { type: "http", url: mcpUrl } } });
   const args = [
-    bin, "-p", prompt,
+    // Pictures and documents can't go as an argument: they go on stdin, as one stream-json message.
+    ...(typeof prompt === "string" ? [bin, "-p", prompt] : [bin, "-p", "--input-format", "stream-json"]),
     "--model", wideWindow(model), "--effort", effort,
     "--output-format", "stream-json", "--verbose", "--include-partial-messages",
     "--system-prompt", systemPrompt(),
@@ -945,9 +973,14 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
     const proc = Bun.spawn(args, {
       cwd: CHAT_DIR,
       env: { HOME: process.env.HOME ?? "", USER: process.env.USER ?? "", PATH: `${process.env.PATH ?? ""}:/usr/bin:/bin`, ...(token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {}) },
+      stdin: typeof prompt === "string" ? "ignore" : "pipe",
       stdout: "pipe", stderr: "pipe",
     });
     run.proc = proc;
+    if (typeof prompt !== "string" && proc.stdin) {
+      proc.stdin.write(`${JSON.stringify({ type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null, session_id: "" })}\n`);
+      void proc.stdin.end();
+    }
     if (run.stopped) proc.kill();
     // stdout is one JSON object per line.
     const decoder = new TextDecoder();
@@ -1059,7 +1092,7 @@ export function follow(chatId: string, after: number, signal: AbortSignal) {
 interface SdkTurn {
   bin: string;
   token: string | null;
-  prompt: string;
+  prompt: Prompt;
   sessionId: string | null;
   mcpUrl: string;
   handle: (d: unknown) => void;
@@ -1096,8 +1129,14 @@ const panelOnly = (name: string): true | string => (name.startsWith("mcp__panel_
 async function viaSdk(run: Run, t: SdkTurn) {
   const abort = new AbortController();
   const allow = t.allow ?? panelOnly;
+  // Words go as they are; a message with pictures or documents goes as one streamed message.
+  const content = t.prompt;
   const q = query({
-    prompt: t.prompt,
+    prompt: typeof content === "string"
+      ? content
+      : (async function* () {
+          yield { type: "user" as const, message: { role: "user" as const, content }, parent_tool_use_id: null };
+        })(),
     options: {
       pathToClaudeCodeExecutable: t.bin,
       cwd: CHAT_DIR,

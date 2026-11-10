@@ -1358,8 +1358,8 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
               onSwitch={setViewing}
               patch={patch}
               onError={onError}
-              ask={(text: string, point?: SketchPoint, fan?: number, quiet?: boolean) => {
-                const about = { ...describePicked(id, [open], cards), ...(fan ? { fan } : {}) };
+              ask={(text: string, point?: SketchPoint, fan?: number, quiet?: boolean, figma?: CanvasSelection["figma"]) => {
+                const about = { ...describePicked(id, [open], cards), ...(fan ? { fan } : {}), ...(figma ? { figma } : {}) };
                 latest.current.onAskWith(text, point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : about, quiet);
               }}
               onBuilt={(title) => {

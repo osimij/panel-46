@@ -15,7 +15,7 @@
 // What FRIDAY changes arrives as a new version on the canvas, and loads here in place.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { studioApi, type Device, type RefState, type RuleFinding, type SketchInfo, type SketchPoint } from "./api.ts";
+import { studioApi, type Device, type FigmaRead, type RefState, type RuleFinding, type SketchInfo, type SketchPoint } from "./api.ts";
 import { Icon, type IconName } from "./Icon.tsx";
 import { Knobs, type PageVar, type Palette } from "./Knobs.tsx";
 import { Compare } from "./Compare.tsx";
@@ -87,7 +87,7 @@ export function Studio(props: {
    * Ask FRIDAY about this sketch, or a part of it; `fan` makes that many alternates side by
    * side. `quiet` asks without opening FRIDAY's panel: the studio's bar shows what it's doing.
    */
-  ask: (text: string, point?: SketchPoint, fan?: number, quiet?: boolean) => void;
+  ask: (text: string, point?: SketchPoint, fan?: number, quiet?: boolean, figma?: { sketch: string; read: string; version?: number }) => void;
   /** The measured palettes of the saves on this canvas, to try on the sketch. */
   palettes: Palette[];
   /** From the side-by-side view: make a new sketch that takes these things from these sketches. */
@@ -109,6 +109,7 @@ export function Studio(props: {
   const [side, setSide] = useState<"knobs" | "directions" | null>(null);
   const [verdict, setVerdict] = useState<null | "chosen" | "ruled_out">(null);
   const [building, setBuilding] = useState(false);
+  const [figmaOpen, setFigmaOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [fresh, setFresh] = useState<{ v: number; mine: boolean } | null>(null);
   // Words being edited in the page, and being kept as a new version.
@@ -432,9 +433,10 @@ export function Studio(props: {
           post({ t: "release" });
         } else if (pointing) setPointing(false);
         else if (view === "compare" && !typing) leaveCompareRef.current();
-        else if (verdict || building) {
+        else if (verdict || building || figmaOpen) {
           setVerdict(null);
           setBuilding(false);
+          setFigmaOpen(false);
         } else if (!typing) close();
         return;
       }
@@ -443,7 +445,7 @@ export function Studio(props: {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [close, picked, pointing, post, verdict, building, view]);
+  }, [close, picked, pointing, post, verdict, building, figmaOpen, view]);
 
   // ---- Asking ----
   // Always without opening FRIDAY's panel: if it's folded away, the bar says what it's doing,
@@ -602,6 +604,27 @@ export function Studio(props: {
             />
           )}
         </div>
+        {/* To Figma and back: a quiet icon like Build, with its two actions under it. */}
+        <button className={`st-icon st-build st-figma-toggle ${figmaOpen ? "on" : ""}`} onClick={() => setFigmaOpen((v) => !v)} aria-label="Figma" aria-expanded={figmaOpen} data-tip="Figma">
+          <Icon name="figma" size={15} />
+        </button>
+        {figmaOpen && (
+          <FigmaSheet
+            project={project}
+            sketch={sketch}
+            device={device}
+            state={states.length > 1 ? state || states[0]!.slug : ""}
+            stateName={states.length > 1 ? (states.find((x) => x.slug === state) ?? states[0])!.name : ""}
+            last={info?.of === sketch.id ? info.figma : undefined}
+            nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
+            running={props.running}
+            onClose={() => setFigmaOpen(false)}
+            onRead={(r) => {
+              setFigmaOpen(false);
+              props.ask(`Bring “${sketch.title || "this sketch"}” back from Figma as a new version, from the frame “${r.frame}”.`, undefined, undefined, true, { sketch: sketch.id, read: r.read, version: r.base_version });
+            }}
+          />
+        )}
         {/* Rarely used, so it is a quiet icon; its name shows under it on hover or focus. */}
         <button className={`st-icon st-build ${building ? "on" : ""}`} onClick={() => setBuilding(true)} aria-label="Build with Claude Code" data-tip="Build with Claude Code">
           <Icon name="build" size={15} />
@@ -957,6 +980,146 @@ function BuildSheet({ project, sketch, onCancel, onStarted, onError }: { project
         <button className="st-quiet" onClick={onCancel}>Cancel</button>
         <button className="st-send" disabled={!folder.trim() || busy} onClick={() => void start()}>{busy ? "Starting…" : "Start building"}</button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * To Figma and back. Copy puts the page as it's shown here (this screen, this state) on the
+ * clipboard the way Figma pastes it: frames, text and images to work on. Bring back reads the
+ * frame selected in the Figma app, and FRIDAY makes it the sketch's next version, keeping its
+ * knobs, states and scripts.
+ */
+function FigmaSheet(props: {
+  project: string;
+  sketch: StudioSketch;
+  device: Device;
+  state: string;
+  stateName: string;
+  last?: { node: string; name: string };
+  nextVersion: number;
+  running: boolean;
+  onClose: () => void;
+  onRead: (r: FigmaRead) => void;
+}) {
+  const { project, sketch } = props;
+  const [copy, setCopy] = useState<"idle" | "busy" | "ready" | "done">("idle");
+  /** The frame found in Figma, shown before FRIDAY spends anything on it. */
+  const [found, setFound] = useState<FigmaRead | null>(null);
+  /** What Figma pastes, kept when the clipboard said no while it was being made, for one more click. */
+  const ready = useRef<string | null>(null);
+  // Another version, screen or state: what was copied or made ready was of the one before.
+  useEffect(() => {
+    ready.current = null;
+    setCopy("idle");
+    setFound(null);
+  }, [sketch.id, sketch.version, props.device, props.state]);
+  const [reading, setReading] = useState(false);
+  /** What went wrong, said in full here: it can name a folder to allow in Figma, too long for a notice. */
+  const [problem, setProblem] = useState<string | null>(null);
+  // A click anywhere else closes it, like a menu.
+  const { onClose } = props;
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      if (!(e.target as Element | null)?.closest?.(".st-figma-pop, .st-figma-toggle")) onClose();
+    };
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [onClose]);
+  const what = [`v${sketch.version}`, props.stateName, props.device !== "desktop" ? DEVICES[props.device].label.toLowerCase() : ""].filter(Boolean).join(", ");
+
+  const copyIt = async () => {
+    if (copy === "busy") return;
+    setProblem(null);
+    // The second click, after the clipboard said no: copy what's ready, right inside the click.
+    if (copy === "ready" && ready.current) {
+      const html = ready.current;
+      const put = (e: ClipboardEvent) => {
+        e.clipboardData?.setData("text/html", html);
+        e.preventDefault();
+      };
+      document.addEventListener("copy", put);
+      const ok = document.execCommand("copy");
+      document.removeEventListener("copy", put);
+      if (ok) {
+        ready.current = null;
+        setCopy("done");
+      } else setProblem("The browser wouldn't let Panel use the clipboard. Try Copy for Figma in Chrome.");
+      return;
+    }
+    setCopy("busy");
+    // Asked for at once, inside the click, so the browser lets it onto the clipboard when it comes.
+    const data = studioApi.figmaCopy(project, sketch.id, { version: sketch.version, device: props.device, state: props.state || undefined });
+    data.catch(() => {});
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "text/html": data })]);
+      setCopy("done");
+    } catch {
+      const made = await data.then((b) => b.text(), (e: Error) => e);
+      if (made instanceof Error) {
+        setProblem(made.message);
+        setCopy("idle");
+      } else {
+        // Made, but the browser wanted a fresh click to reach the clipboard (copying took a few seconds).
+        ready.current = made;
+        setCopy("ready");
+      }
+    }
+  };
+
+  const bringBack = async () => {
+    if (reading || props.running) return;
+    setReading(true);
+    setProblem(null);
+    try {
+      setFound(await studioApi.figmaRead(project, sketch.id, sketch.version));
+    } catch (e) {
+      setProblem((e as Error).message);
+    } finally {
+      setReading(false);
+    }
+  };
+
+  return (
+    <div className="st-pop st-figma-pop" role="dialog" aria-label="Figma">
+      <button className="st-figma-row" onClick={() => void copyIt()} disabled={copy === "busy"}>
+        <Icon name={copy === "done" ? "check" : "copy"} size={15} />
+        <span>
+          <b>{copy === "busy" ? "Copying…" : copy === "ready" ? "Ready: click to copy" : copy === "done" ? "Copied" : "Copy for Figma"}</b>
+          <i>{copy === "done" ? "Paste it in Figma with ⌘V." : copy === "ready" ? "It took a moment, so the browser wants one more click." : `${what}, as layers to paste in Figma.`}</i>
+        </span>
+      </button>
+      {found ? (
+        <div className="st-figma-found">
+          {found.picture && <img src={`/sketches/${project}/${sketch.id}/${found.picture}`} alt="" />}
+          <p>
+            <b>“{found.frame}”</b>
+            <i>
+              {found.found === "selected" ? "Selected in Figma" : found.found === "asked for" ? "From Figma" : "As last time"}
+              {found.width && found.height ? `, ${Math.round(found.width)}×${Math.round(found.height)}` : ""}. FRIDAY rebuilds v{found.base_version} to look like it, keeping its knobs and states, as v{props.nextVersion}.
+            </i>
+          </p>
+          <div className="st-pop-actions">
+            <button className="st-quiet" onClick={() => setFound(null)}>Not this one</button>
+            <button className="st-send" disabled={props.running} onClick={() => props.onRead(found)}>Make v{props.nextVersion}</button>
+          </div>
+        </div>
+      ) : (
+      <button className="st-figma-row" onClick={() => void bringBack()} disabled={reading || props.running}>
+        <Icon name="arrow-left" size={15} />
+        <span>
+          <b>{reading ? "Reading the frame…" : "Bring back from Figma"}</b>
+          <i>
+            {props.running
+              ? "After FRIDAY's answer."
+              : props.last
+                ? `The frame selected in Figma, or “${props.last.name}” as last time. FRIDAY makes it v${props.nextVersion}.`
+                : `Select its frame in Figma first. FRIDAY makes it v${props.nextVersion}.`}
+          </i>
+        </span>
+      </button>
+      )}
+      {problem && <p className="st-figma-problem" role="alert">{problem}</p>}
     </div>
   );
 }

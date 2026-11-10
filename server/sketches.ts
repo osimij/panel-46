@@ -57,7 +57,7 @@ export function readSketch(projectId: string, sketchId: string, v: number) {
 }
 
 /** The file behind a /sketches/… path, or null when there's no such file. */
-export function sketchFile(raw: string): { file: string; html: boolean } | null {
+export function sketchFile(raw: string): { file: string; html: boolean; figma?: boolean } | null {
   let path = raw;
   try {
     path = decodeURIComponent(raw);
@@ -65,10 +65,11 @@ export function sketchFile(raw: string): { file: string; html: boolean } | null 
     return null;
   }
   if (path.includes("..")) return null;
-  const m = path.match(/^\/sketches\/([0-9a-f]{16})\/([0-9a-f]{16})\/((?:views\/v\d{1,5}-(?:desktop|tablet|phone)(?:-[a-z0-9_-]{1,60})?(?:-\d)?\.(jpg))|(?:v\d{1,5}(?:-\d)?\.(html|jpg)))$/u);
+  const m = path.match(/^\/sketches\/([0-9a-f]{16})\/([0-9a-f]{16})\/((?:views\/v\d{1,5}-(?:desktop|tablet|phone)(?:-[a-z0-9_-]{1,60})?(?:-\d)?\.(jpg))|(?:v\d{1,5}(?:-\d)?\.(html|jpg))|(?:figma\/[0-9a-f]{12}\/[A-Za-z0-9_][A-Za-z0-9_.-]{0,99}\.(?:png|jpe?g|svg|gif|webp)))$/u);
   if (!m) return null;
   const file = join(sketchDir(m[1]!, m[2]!), m[3]!);
-  return existsSync(file) ? { file, html: m[5] === "html" } : null;
+  // Images brought back from Figma (figma.ts), which a rebuilt page uses by a relative path.
+  return existsSync(file) ? { file, html: m[5] === "html", figma: m[3]!.startsWith("figma/") } : null;
 }
 
 /**
@@ -415,6 +416,87 @@ function queue(run: () => Promise<Render>): Promise<Render> {
     .catch((e: Error) => ({ screens: [], height: 0, errors: [], failed: e.message }) as Render);
   line = job.catch(() => {});
   return job;
+}
+
+// ---------- Copying a sketch into Figma ----------
+
+/**
+ * Figma's own script for turning a web page into Figma layers (the one its MCP server hands
+ * out for "send this page to Figma"). Run without a Figma file to send to, it puts the page on
+ * the clipboard instead, in the form Figma pastes as editable frames, text and images.
+ */
+export const FIGMA_CAPTURE_SCRIPT = "https://mcp.figma.com/mcp/html-to-design/capture.js";
+
+/**
+ * Turns one version (on one screen, in one state) into what Figma pastes as layers. Panel's
+ * own Chrome opens the page, loads Figma's script into it and lets it read the page; the
+ * script would put the result on the clipboard, so the clipboard is swapped for a box that
+ * keeps it. The studio then puts it on the designer's real clipboard, for ⌘V in Figma.
+ * The frame is named after the sketch, its version and its id, so the way back finds it.
+ */
+export function captureForFigma(projectId: string, sketchId: string, v: number, device: Device, slug = "", name = ""): Promise<string> {
+  if (slug && !/^[a-z0-9_-]{1,40}$/.test(slug)) throw new Error("Not a state.");
+  if (!versionsOf(projectId, sketchId).includes(v)) throw new Error(`That sketch has no version ${v}.`);
+  const url = fullUrl(sketchPath(projectId, sketchId, v)) + (slug ? `#${slug}` : "");
+  let out = "";
+  return queue(async () => {
+    out = await capture(url, device, name);
+    return { screens: [], height: 0, errors: [] };
+  }).then((r) => {
+    if (r.failed || !out) throw new Error(r.failed ?? "Figma's copy didn't work.");
+    return out;
+  });
+}
+
+async function capture(url: string, device: Device, name: string): Promise<string> {
+  const screen = DEVICES[device];
+  const { cdp } = await browser();
+  const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
+  const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
+  const s = <T = unknown>(method: string, params: object = {}) => cdp.send<T>(method, params, sessionId);
+  try {
+    await s("Page.enable");
+    await s("Runtime.enable");
+    await s("Network.enable");
+    // Not as a phone (mobile: false): a page with no viewport tag would be laid out 980 wide, and
+    // the frame in Figma should be the screen's own width.
+    await s("Emulation.setDeviceMetricsOverride", { width: screen.width, height: screen.height, deviceScaleFactor: 1, mobile: false });
+    // Figma's script waits for the page to have focus before it copies; a hidden page never gets it.
+    await s("Emulation.setFocusEmulationEnabled", { enabled: true }).catch(() => {});
+    const net = trackNetwork(cdp, sessionId);
+    try {
+      const loaded = cdp.waitFor("Page.loadEventFired", sessionId, 20_000);
+      const nav = await s<{ errorText?: string }>("Page.navigate", { url });
+      if (nav.errorText) throw new Error(/CONNECTION_REFUSED/.test(nav.errorText) ? "Panel isn't running, so the sketch can't be copied." : nav.errorText);
+      await loaded;
+      await net.idle(0, 400, 8000);
+      await evaluate(s, READY_SCRIPT, 15_000).catch(() => {});
+      await evaluate(s, "document.fonts.ready.then(() => true)", 5000).catch(() => {});
+    } finally {
+      net.stop();
+    }
+    const script = `(async () => {
+      if (${JSON.stringify(name)}) document.title = ${JSON.stringify(name)};
+      if (!(window.figma && window.figma.captureForDesign)) await new Promise((ok, no) => {
+        const s = document.createElement("script");
+        s.src = ${JSON.stringify(FIGMA_CAPTURE_SCRIPT)};
+        s.onload = ok; s.onerror = () => no(new Error("load"));
+        document.head.append(s);
+      });
+      let out = null, failed = null;
+      const keep = async (items) => { out = await (await items[0].getType("text/html")).text(); };
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { write: keep, writeText: async (t) => { out = t; } } });
+      window.figma.captureForDesign({ selector: "body" }).then((r) => { if (r && r.success === false) failed = r.error || "failed"; }, (e) => { failed = String(e); });
+      for (let i = 0; i < 600 && out == null && !failed; i++) await new Promise((r) => setTimeout(r, 100));
+      return { out, failed };
+    })()`;
+    const r = await evaluate<{ out: string | null; failed: string | null }>(s, script, 70_000).catch((e: Error) => ({ out: null, failed: e.message }));
+    if (!r?.out) throw new Error(r?.failed === "load" ? "Couldn't load Figma's copying script. Check the internet connection." : `Figma's copy didn't work${r?.failed ? `: ${r.failed}` : "."}`);
+    return r.out;
+  } finally {
+    await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+    closeSoon();
+  }
 }
 
 export type Device = "desktop" | "tablet" | "phone";

@@ -452,6 +452,42 @@
 .composer-mention span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msg-bubble .ref-chip { vertical-align: middle; }
 
+/* ---- Pictures and files attached to a message ---- */
+.composer.dropping { box-shadow: inset 0 0 0 1.5px var(--text), 0 16px 40px -14px oklch(0 0 0 / 0.35); }
+.composer-btn.attach { color: var(--muted); animation: none; transition: background 0.15s var(--ease), color 0.15s var(--ease); }
+.composer-btn.attach:hover:not(:disabled) { background: var(--fill); color: var(--text); }
+.composer-btn.attach:disabled { opacity: 0.4; cursor: default; }
+.composer-files { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px; margin: 4px 0 4px -8px; }
+.composer-file {
+  position: relative; display: inline-flex; align-items: center; gap: 5px; height: 28px; max-width: 220px; padding: 0 22px 0 7px;
+  font-size: 11.5px; color: var(--text); background: var(--fill);
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+  animation: rise-in 0.35s var(--ease) both; transition: opacity 0.3s var(--ease);
+}
+.composer-file > .icon { flex: none; color: var(--muted); }
+.composer-file > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-file.pic { width: 52px; height: 52px; padding: 0; overflow: hidden; background: var(--card); }
+.composer-file.pic img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.composer-file.going-up { opacity: 0.45; }
+.composer-file.failed { color: var(--muted); }
+.composer-file button {
+  position: absolute; top: 50%; right: 3px; translate: 0 -50%; width: 18px; height: 18px; border-radius: 50%;
+  display: grid; place-items: center; color: var(--faint);
+}
+.composer-file button:hover { background: var(--fill-hover); color: var(--text); }
+/* On a picture: a small solid dot in the corner, shown on hover (always there to a finger). */
+.composer-file.pic button { top: 3px; right: 3px; translate: none; background: var(--text); color: var(--bg); opacity: 0; transition: opacity 0.15s var(--ease); }
+.composer-file.pic:hover button, .composer-file.pic button:focus-visible { opacity: 1; }
+@media (hover: none) { .composer-file.pic button { opacity: 1; } }
+.composer-file.pic button:hover { background: var(--text); color: var(--bg); }
+.msg-files { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: flex-end; gap: 6px; max-width: 100%; }
+.msg-file-pic {
+  display: block; height: 96px; max-width: 220px; overflow: hidden; background: var(--card);
+  border-radius: calc(12px * var(--smooth)); corner-shape: var(--corner);
+  animation: bubble-in 0.5s var(--ease) both;
+}
+.msg-file-pic img { height: 100%; width: auto; max-width: 220px; object-fit: cover; display: block; }
+
 /* ---- Replying to part of the conversation ---- */
 .reply-btn {
   position: fixed; z-index: 60; translate: -50% calc(-100% - 8px);
@@ -487,7 +523,10 @@
 .msg-about > .icon { flex: none; margin-left: 3px; color: var(--faint); }
 
 /* ---- History ---- */
-.ask-history { max-height: 420px; overflow-y: auto; width: 280px; }
+/* Menus stop at 260px wide; this list is wider so long titles fit, so its menu has to
+   make room for it, or the highlighted row and its × spill past the card's edge. */
+.popover.ask-history-pop { max-width: none; }
+.ask-history { max-height: 420px; overflow-y: auto; overflow-x: hidden; width: 280px; }
 .ask-history-group + .ask-history-group { margin-top: 6px; }
 .ask-history-row { position: relative; }
 .ask-history-row .menu-item { width: 100%; padding-right: 30px; }
@@ -580,6 +619,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .rt-live .w, .ref-chip, .gallery-card, .step, .msg-bubble, .ask-idea, .mention-pick, .mention-row, .composer-mention, .reply-btn, .composer-quote { animation: none !important; }
+  .rt-live .w, .ref-chip, .gallery-card, .step, .msg-bubble, .ask-idea, .mention-pick, .mention-row, .composer-mention, .reply-btn, .composer-quote, .composer-file, .msg-file-pic { animation: none !important; }
   .mark i, .composer::before { animation: none !important; }
 }

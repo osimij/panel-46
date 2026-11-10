@@ -24,7 +24,8 @@ function sparePort() {
   return port;
 }
 
-export async function startPanel(): Promise<TestPanel> {
+/** `env`: more settings for the companion, e.g. a stand-in for the Figma app (PANEL_FIGMA_APP). */
+export async function startPanel(env: Record<string, string> = {}): Promise<TestPanel> {
   const dir = mkdtempSync(join(tmpdir(), "panel-test-"));
   // Reading new saves by AI is off before Panel first looks, so a test never spends anything.
   const seed = new Database(join(dir, "library.sqlite"), { create: true });
@@ -35,7 +36,7 @@ export async function startPanel(): Promise<TestPanel> {
   const port = sparePort();
   const proc = Bun.spawn(["bun", "server/index.ts"], {
     cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, PANEL_PORT: String(port), PANEL_LIBRARY_DIR: dir, PANEL_DIST: join(dir, "no-ui") },
+    env: { ...process.env, PANEL_PORT: String(port), PANEL_LIBRARY_DIR: dir, PANEL_DIST: join(dir, "no-ui"), ...env },
     stdout: "ignore",
     stderr: "inherit",
   });

@@ -124,7 +124,7 @@ export function htmlText(html: string) {
     .trim();
 }
 
-async function textOf(absPath: string, ext: string, mime: string) {
+export async function textOf(absPath: string, ext: string, mime: string) {
   try {
     if (ext === ".pdf" || mime === "application/pdf") {
       const bin = Bun.which("pdftotext") ?? (existsSync("/opt/homebrew/bin/pdftotext") ? "/opt/homebrew/bin/pdftotext" : null);
@@ -147,7 +147,7 @@ async function textOf(absPath: string, ext: string, mime: string) {
 }
 
 /** A JPEG at most 1600px on its long side, for Claude to look at (and the app to show small). */
-async function pictureOf(absPath: string, viewAbs: string) {
+export async function pictureOf(absPath: string, viewAbs: string) {
   const r = await run(["/usr/bin/sips", "-Z", "1600", "-s", "format", "jpeg", "-s", "formatOptions", "82", absPath, "--out", viewAbs], 60_000).catch(() => null);
   return r?.code === 0 && existsSync(viewAbs);
 }

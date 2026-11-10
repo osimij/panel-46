@@ -11,6 +11,7 @@ import { PORT } from "./config.ts";
 import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionsOf, writeVersion, type Device, type Render } from "./sketches.ts";
 import { withVars } from "./pagevars.ts";
 import { withText, type TextEdit } from "./pagetext.ts";
+import { rememberedFrame } from "./figma.ts";
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components", other: "Other" };
 const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 }, sketch: { w: 360, h: 300 }, build: { w: 380, h: 330 } };
@@ -411,6 +412,14 @@ export async function getSketch(o: { project: string; sketch: string; version?: 
   };
 }
 
+/** One sketch by its id or title: which project it's in, its name, and the version it shows. */
+export function sketchMeta(project: string, sketch: string) {
+  const b = board(project);
+  const node = findSketch(b, sketch);
+  if (!node) throw new Error(`No sketch “${sketch}” on this canvas. get_project lists the sketches.`);
+  return { project: b.p.id, id: node.id, title: sketchName(node), version: Number(node.data.version) || 1, device: (node.data.device as Device | undefined) ?? "desktop" };
+}
+
 /** The sketches that branch from this one, and the ones it branches from: its family, for the studio. */
 export function sketchFamily(projectId: string, sketchId: string) {
   const full = getProject(projectId);
@@ -439,5 +448,6 @@ export function sketchInfo(projectId: string, sketchId: string) {
   });
   const last = versions.at(-1)?.v;
   const states = last ? statesOf(readSketch(projectId, sketchId, last)) : [];
-  return { versions, states, family: sketchFamily(projectId, sketchId) };
+  // The Figma frame it was last brought back from, so the studio can say where "Bring back" looks.
+  return { versions, states, family: sketchFamily(projectId, sketchId), figma: rememberedFrame(projectId, sketchId) ?? undefined };
 }

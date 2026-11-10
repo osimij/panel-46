@@ -4,7 +4,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
-import { api, chatApi, displayTitle, fontApi, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
+import { api, chatApi, displayTitle, fontApi, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatFileNote, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
@@ -282,9 +282,9 @@ export function Assistant(props: {
   }, [place]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = useCallback(
-    async (raw: string, about?: CanvasSelection) => {
+    async (raw: string, about?: CanvasSelection, files: ChatFileNote[] = []) => {
       const text = raw.trim();
-      if (!text || running) return;
+      if ((!text && !files.length) || running) return;
       const picked = about ?? pickedNow;
       const context = about ? null : contextNow;
       setDraft("");
@@ -296,14 +296,17 @@ export function Assistant(props: {
         ...(picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : {}),
         ...(picked?.point ? { point: picked.point } : {}),
         ...(picked?.fan ? { fan: picked.fan } : {}),
+        ...(picked?.figma ? { figma: picked.figma } : {}),
+        ...(files.length ? { files: files.map((f) => f.id) } : {}),
       };
       if (context && !cards.has(context.id)) addCards([cardFromRef(context)]);
-      const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: context ? { open: context.id } : picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : null, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
+      const about0 = context ? { open: context.id } : picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : null;
+      const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: files.length ? { ...about0, files } : about0, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
       const pending: Msg = { id: "pending", key: `a${Date.now()}`, role: "assistant", text: "", context: null, parts: [], status: "streaming", error: null, created_at: temp.created_at };
       live.current.add(pending.key!);
       setMessages((ms) => [...ms, temp, pending]);
       setRunning(true);
-      if (!title) setTitle(text.replace(/\s+/g, " ").slice(0, 80));
+      if (!title) setTitle((text || files.map((f) => f.name).join(", ")).replace(/\s+/g, " ").slice(0, 80));
       try {
         if (!id) {
           id = (await chatApi.create(place)).id;
@@ -568,8 +571,8 @@ export function Assistant(props: {
           value={draft}
           setValue={setDraft}
           running={running}
-          onSend={(text) => {
-            void send(withQuote(text));
+          onSend={(text, files) => {
+            void send(withQuote(text), undefined, files);
             setQuote(null);
           }}
           quote={quote}
@@ -601,7 +604,7 @@ export function Assistant(props: {
         )}
 
       {history && (
-        <Popover x={history.x} y={history.y} onClose={() => setHistory(null)}>
+        <Popover x={history.x} y={history.y} onClose={() => setHistory(null)} className="ask-history-pop">
           <div className="ask-history">
             {groups.map((g) => (
               <section key={g.place ?? "library"} className="ask-history-group">
@@ -786,8 +789,25 @@ function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, 
   const body = q ? m.text.slice(q[0].length) : m.text;
   // Saves mentioned with @ travel as [[id]] and show as their chips.
   const pieces = body.split(/(\[\[[0-9a-f]{16}\]\])/);
+  const files = m.context?.files ?? [];
   return (
     <div className="msg-user">
+      {files.length > 0 && (
+        <div className="msg-files">
+          {files.map((f) =>
+            f.picture ? (
+              <a key={f.id} className="msg-file-pic" href={`/api/chat-files/${f.id}`} target="_blank" rel="noreferrer" title={f.name}>
+                <img src={`/api/chat-files/${f.id}/view`} alt={f.name} />
+              </a>
+            ) : (
+              <a key={f.id} className="msg-about" href={`/api/chat-files/${f.id}`} target="_blank" rel="noreferrer" title={f.name}>
+                <Icon name="file" size={12} />
+                <span>{f.name}</span>
+              </a>
+            ),
+          )}
+        </div>
+      )}
       {about && (
         <button className="msg-about" onClick={() => onOpen(about.id)}>
           {about.thumb && <img src={about.thumb} alt="" />}
@@ -810,12 +830,15 @@ function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, 
           <span>{quoted}</span>
         </div>
       )}
-      <div className="msg-bubble">
-        {pieces.map((t, i) => {
-          const id = t.match(/^\[\[([0-9a-f]{16})\]\]$/)?.[1];
-          return id ? <RefChip key={i} id={id} ctx={{ cards, onOpen }} /> : t;
-        })}
-      </div>
+      {/* Only files sent, no words: no empty bubble under them. */}
+      {(body.trim() || !files.length) && (
+        <div className="msg-bubble">
+          {pieces.map((t, i) => {
+            const id = t.match(/^\[\[([0-9a-f]{16})\]\]$/)?.[1];
+            return id ? <RefChip key={i} id={id} ctx={{ cards, onOpen }} /> : t;
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -1287,12 +1310,17 @@ const labelFor = (c: RefCard) => {
   return t.length > 36 ? `${t.slice(0, 35).trimEnd()}…` : t || "Untitled";
 };
 
+/** A file in the composer: going up (no id yet), there (id), or turned away (failed). */
+type Attached = { key: string; name: string; picture: boolean; preview: string | null; id?: string; failed?: string };
+/** As many as the server takes with one message. */
+const MAX_ATTACHED = 10;
+
 function Composer(props: {
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   value: string;
   setValue: (v: string) => void;
   running: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, files: ChatFileNote[]) => void;
   onStop: () => void;
   context: Ref | null;
   onDropContext: () => void;
@@ -1319,6 +1347,47 @@ function Composer(props: {
   const [pick, setPick] = useState(0);
   // Esc closes the list until the next @.
   const dismissed = useRef<number | null>(null);
+
+  // Files attached to this message: pictures FRIDAY looks at, documents it reads. Each goes up
+  // as soon as it's added (so sending doesn't wait), and shows faded until it's there.
+  const [files, setFiles] = useState<Attached[]>([]);
+  const filePicker = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  // Taken out while still going up: removed from the server too once it arrives.
+  const takenOut = useRef(new Set<string>());
+  const attach = (list: File[]) => {
+    const room = MAX_ATTACHED - files.length;
+    if (!list.length || room <= 0) return;
+    const fresh = list.slice(0, room).map((file) => {
+      const pic = /^image\/(png|jpe?g|gif|webp|avif)$/.test(file.type);
+      return { file, a: { key: `f${Math.random().toString(36).slice(2)}`, name: file.name, picture: pic, preview: pic ? URL.createObjectURL(file) : null } as Attached };
+    });
+    setFiles((fs) => [...fs, ...fresh.map((x) => x.a)]);
+    for (const { file, a } of fresh) {
+      chatApi
+        .attach([file])
+        .then((r) => {
+          const got = r.added[0];
+          if (takenOut.current.has(a.key)) {
+            if (got) void chatApi.unattach(got.id).catch(() => {});
+            return;
+          }
+          setFiles((fs) => fs.map((x) => (x.key !== a.key ? x : got ? { ...x, id: got.id, name: got.name, picture: got.picture, preview: x.preview ?? got.thumb_url } : { ...x, failed: r.failed[0] ?? "Couldn't attach this." })));
+        })
+        .catch((e) => setFiles((fs) => fs.map((x) => (x.key === a.key ? { ...x, failed: (e as Error).message } : x))));
+    }
+    requestAnimationFrame(() => props.inputRef.current?.focus());
+  };
+  const takeOut = (key: string) => {
+    const f = files.find((x) => x.key === key);
+    if (!f) return;
+    if (f.preview?.startsWith("blob:")) URL.revokeObjectURL(f.preview);
+    if (f.id) void chatApi.unattach(f.id).catch(() => {});
+    else takenOut.current.add(key);
+    setFiles((fs) => fs.filter((x) => x.key !== key));
+  };
+  const goingUp = files.some((f) => !f.id && !f.failed);
+  const ready = files.filter((f) => f.id);
 
   // Grows with what you write, up to a point, then scrolls.
   useLayoutEffect(() => {
@@ -1466,21 +1535,43 @@ function Composer(props: {
   };
   const mentioned = [...mentions.current].filter(([label]) => value.includes(`@${label}`));
   const fontsMentioned = [...fontMentions.current].filter((f) => value.includes(`@${f}`));
+  const can = (!!value.trim() || ready.length > 0) && !goingUp;
   const send = () => {
-    if (running || !value.trim()) return;
+    if (running || !can) return;
     const text = resolve(value);
     mentions.current.clear();
     fontMentions.current.clear();
     setPicker(null);
-    props.onSend(text);
+    props.onSend(text, ready.map((f) => ({ id: f.id!, name: f.name, picture: f.picture })));
+    for (const f of files) if (f.preview?.startsWith("blob:")) URL.revokeObjectURL(f.preview);
+    setFiles([]);
   };
 
-  const can = !!value.trim();
   // Typing a command: "/" offers /compact (the one command FRIDAY takes), Tab or ↵ fills it in.
   const command = /^\/[a-z]*$/i.test(value) && "/compact".startsWith(value.toLowerCase()) && value.toLowerCase() !== "/compact";
   const thumb = context ? context.media[0]?.thumb_url ?? context.preview_url ?? context.avatar_url : null;
   return (
-    <div className={`composer ${running ? "working" : ""} ${can ? "has-text" : ""}`}>
+    <div
+      className={`composer ${running ? "working" : ""} ${can ? "has-text" : ""} ${dragging ? "dropping" : ""}`}
+      // Files dropped on the composer are attached (not saved to the library, not placed on the canvas).
+      onDragOver={(e) => {
+        if (!e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "copy";
+        setDragging(true);
+      }}
+      onDragLeave={(e) => {
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDragging(false);
+      }}
+      onDrop={(e) => {
+        if (!e.dataTransfer.files.length) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setDragging(false);
+        attach([...e.dataTransfer.files]);
+      }}
+    >
       {command && !open && (
         <div className="mention-pick" role="listbox" aria-label="Commands">
           <button
@@ -1596,6 +1687,32 @@ function Composer(props: {
           ))}
         </div>
       )}
+      {files.length > 0 && (
+        <div className="composer-files">
+          {files.map((f) => {
+            const pic = !!f.preview && !f.failed;
+            return (
+              <span
+                key={f.key}
+                className={`composer-file ${pic ? "pic" : ""} ${!f.id && !f.failed ? "going-up" : ""} ${f.failed ? "failed" : ""}`}
+                title={f.failed ?? f.name}
+              >
+                {pic ? (
+                  <img src={f.preview!} alt={f.name} />
+                ) : (
+                  <>
+                    <Icon name={f.failed ? "alert" : f.picture ? "image" : "file"} size={13} />
+                    <span>{f.failed ? `${f.name}: ${f.failed}` : f.name}</span>
+                  </>
+                )}
+                <button onClick={() => takeOut(f.key)} aria-label={`Remove ${f.name}`} title="Remove">
+                  <Icon name="x" size={10} />
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
       <div className="composer-row">
         <textarea
           ref={props.inputRef}
@@ -1609,6 +1726,13 @@ function Composer(props: {
           }}
           onSelect={(e) => look(e.currentTarget.value, e.currentTarget.selectionStart)}
           onBlur={() => setPicker(null)}
+          onPaste={(e) => {
+            // A screenshot or copied files: attached. Words paste as usual.
+            const pasted = [...e.clipboardData.files];
+            if (!pasted.length) return;
+            e.preventDefault();
+            attach(pasted.map((f) => (/^image\.\w+$/.test(f.name) ? new File([f], `Pasted picture.${f.name.split(".").pop()}`, { type: f.type }) : f)));
+          }}
           onKeyDown={(e) => {
             if (open) {
               const row = rows[pick] ?? rows[0];
@@ -1677,8 +1801,27 @@ function Composer(props: {
       </div>
       {/* Its own row under the words, so a narrow panel never squeezes what you're writing. */}
       <div className="composer-foot">
-        <ModelPicker use={props.use} running={running} onCompact={() => props.onSend("/compact")} />
+        <ModelPicker use={props.use} running={running} onCompact={() => props.onSend("/compact", [])} />
         <span className="composer-actions">
+          <button
+            className="composer-btn attach"
+            onClick={() => filePicker.current?.click()}
+            disabled={files.length >= MAX_ATTACHED}
+            aria-label="Attach pictures or files"
+            title="Attach pictures or files (or paste, or drop them here)"
+          >
+            <Icon name="paperclip" size={15} />
+          </button>
+          <input
+            ref={filePicker}
+            type="file"
+            multiple
+            hidden
+            onChange={(e) => {
+              attach([...(e.target.files ?? [])]);
+              e.target.value = "";
+            }}
+          />
           <MicButton value={value} setValue={props.setValue} inputRef={props.inputRef} />
           {running ? (
             <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
