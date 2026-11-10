@@ -3,10 +3,10 @@
 // you browse, knows what you have open, and keeps every conversation.
 
 import { createPortal } from "react-dom";
-import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
-import { api, chatApi, displayTitle, fontApi, type CanvasSelection, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
+import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
+import { api, chatApi, displayTitle, fontApi, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
-import { Icon } from "./Icon.tsx";
+import { Icon, type IconName } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
 import { Popover } from "./TagRow.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
@@ -17,7 +17,10 @@ export interface AssistantHandle {
   focus: () => void;
 }
 
+/** The one conversation older Panels remembered for everywhere; read once, by the library. */
 const LS_CHAT = "panel.ask.chat";
+/** The conversation last open in a place: a project (its id) or the library (null). */
+const chatKey = (place: string | null) => `${LS_CHAT}.${place ?? "library"}`;
 const store = {
   get: (k: string) => {
     try {
@@ -115,6 +118,10 @@ export function Assistant(props: {
   looking: Ref | null;
   /** The project open on the canvas, if any: Ask reads it when asked about "the project". */
   project?: string | null;
+  /** That project's name, for the conversations list. */
+  projectName?: string;
+  /** Go to a project (or the library, null), to carry on a conversation that belongs there. */
+  onGoTo?: (project: string | null) => void;
   /** What's selected on that canvas, if anything: what "this" and "these" mean there. */
   picked?: CanvasSelection | null;
   onOpenRef: (id: string) => void;
@@ -127,7 +134,13 @@ export function Assistant(props: {
   handle: ReactRef<AssistantHandle>;
 }) {
   const { open, looking } = props;
-  const [chatId, setChatId] = useState<string | null>(() => store.get(LS_CHAT));
+  // Each place, a project or the library, has its own conversations and remembers the last
+  // one open there. Going to another project brings up that project's conversation (or a new
+  // one), never the one from the project you left; an answer still going there keeps going.
+  const place = props.project ?? null;
+  const placeNow = useRef(place);
+  placeNow.current = place;
+  const [chatId, setChatId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [messages, setMessages] = useState<Msg[]>([]);
   const [cards, setCards] = useState<Map<string, RefCard>>(() => new Map());
@@ -227,9 +240,14 @@ export function Assistant(props: {
   const load = useCallback(
     async (id: string) => {
       follower.current?.abort();
+      const at = placeNow.current;
       try {
         const c = await chatApi.get(id);
+        if (placeNow.current !== at) return;
+        // A conversation from another place isn't continued here (see onGoTo).
+        if ((c.project ?? null) !== at) throw new Error("elsewhere");
         setChatId(c.id);
+        store.set(chatKey(at), c.id);
         setTitle(c.title);
         setUse(c.context);
         setMessages(c.messages);
@@ -241,19 +259,26 @@ export function Assistant(props: {
           follow(c.id, c.seq);
         } else setRunning(false);
       } catch {
+        if (placeNow.current !== at) return;
+        store.set(chatKey(at), null);
         setChatId(null);
         setMessages([]);
         setTitle("");
+        setUse(null);
+        setRunning(false);
       }
     },
     [addCards, follow],
   );
 
+  // Arriving at a place (and on first open): its last conversation, or a fresh start.
+  // The library also picks up the one conversation older Panels remembered for everywhere.
   useEffect(() => {
-    if (chatId) void load(chatId);
+    clear();
+    const id = store.get(chatKey(place)) ?? (place === null ? store.get(LS_CHAT) : null);
+    if (id) void load(id);
     return () => follower.current?.abort();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => store.set(LS_CHAT, chatId), [chatId]);
+  }, [place]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const send = useCallback(
     async (raw: string, about?: CanvasSelection) => {
@@ -280,8 +305,9 @@ export function Assistant(props: {
       if (!title) setTitle(text.replace(/\s+/g, " ").slice(0, 80));
       try {
         if (!id) {
-          id = (await chatApi.create()).id;
+          id = (await chatApi.create(place)).id;
           setChatId(id);
+          store.set(chatKey(place), id);
         }
         const res = await chatApi.send(id, text, ctx);
         runId.current = res.assistant.id;
@@ -292,14 +318,15 @@ export function Assistant(props: {
         setMessages((ms) => ms.map((m) => (m.id === "pending" ? { ...m, status: "error", error: (e as Error).message } : m)));
       }
     },
-    [chatId, contextNow, pickedNow, running, title, follow, addCards, cards, props.project],
+    [chatId, contextNow, pickedNow, running, title, follow, addCards, cards, props.project, place],
   );
 
   const stop = () => {
     if (chatId) void chatApi.stop(chatId).catch(() => {});
   };
 
-  const newChat = () => {
+  /** An empty panel. An answer still going in the conversation that was here carries on without it. */
+  const clear = () => {
     follower.current?.abort();
     setChatId(null);
     setMessages([]);
@@ -307,6 +334,10 @@ export function Assistant(props: {
     setUse(null);
     setRunning(false);
     runId.current = null;
+  };
+  const newChat = () => {
+    clear();
+    store.set(chatKey(place), null);
     setDraft("");
     requestAnimationFrame(() => inputRef.current?.focus());
   };
@@ -419,8 +450,37 @@ export function Assistant(props: {
 
   const openHistory = (e: React.MouseEvent) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    setHistory({ x: r.left - 180, y: r.bottom + 6 });
+    setHistory({ x: r.left - 220, y: r.bottom + 6 });
     chatApi.list().then(setChats).catch(() => {});
+  };
+
+  // The conversations list: where you are first (even when it has none yet), then every
+  // other project, and the library, each under its name, the most recently used first.
+  const groups = useMemo(() => {
+    const here: { place: string | null; name: string; chats: ChatSummary[] } = {
+      place, name: place ? props.projectName || "This project" : "Library", chats: [],
+    };
+    const by = new Map<string | null, typeof here>([[place, here]]);
+    for (const c of chats) {
+      const at = c.project ?? null;
+      let g = by.get(at);
+      if (!g) by.set(at, (g = { place: at, name: at ? c.project_name || "A project" : "Library", chats: [] }));
+      g.chats.push(c);
+    }
+    return [...by.values()];
+  }, [chats, place, props.projectName]);
+
+  // A conversation belongs where it was started. One from elsewhere takes you there, so
+  // FRIDAY and the canvas you see are about the same project.
+  const openChat = (c: ChatSummary) => {
+    setHistory(null);
+    const at = c.project ?? null;
+    if (at === place) {
+      if (c.id !== chatId) void load(c.id);
+      return;
+    }
+    store.set(chatKey(at), c.id);
+    props.onGoTo?.(at);
   };
 
   return (
@@ -541,34 +601,32 @@ export function Assistant(props: {
 
       {history && (
         <Popover x={history.x} y={history.y} onClose={() => setHistory(null)}>
-          <div className="menu-label">Conversations</div>
           <div className="ask-history">
-            {chats.length === 0 && <div className="ask-history-empty">Nothing yet</div>}
-            {chats.map((c) => (
-              <div key={c.id} className={`ask-history-row ${c.id === chatId ? "on" : ""}`}>
-                <button
-                  className="menu-item"
-                  onClick={() => {
-                    setHistory(null);
-                    if (c.id !== chatId) void load(c.id);
-                  }}
-                >
-                  <span className="ask-history-title">{c.title}</span>
-                  <span className="menu-count">{c.running ? "answering" : ago(c.updated_at)}</span>
-                </button>
-                <button
-                  className="ask-history-x"
-                  aria-label={`Delete “${c.title}”`}
-                  title="Delete"
-                  onClick={async () => {
-                    await chatApi.remove(c.id).catch(() => {});
-                    setChats((list) => list.filter((x) => x.id !== c.id));
-                    if (c.id === chatId) newChat();
-                  }}
-                >
-                  <Icon name="x" size={11} />
-                </button>
-              </div>
+            {groups.map((g) => (
+              <section key={g.place ?? "library"} className="ask-history-group">
+                <div className="menu-label">{g.name}</div>
+                {g.chats.length === 0 && <div className="ask-history-empty">Nothing here yet</div>}
+                {g.chats.map((c) => (
+                  <div key={c.id} className={`ask-history-row ${c.id === chatId ? "on" : ""}`}>
+                    <button className="menu-item" onClick={() => openChat(c)}>
+                      <span className="ask-history-title">{c.title}</span>
+                      <span className="menu-count">{c.running ? "answering" : ago(c.updated_at)}</span>
+                    </button>
+                    <button
+                      className="ask-history-x"
+                      aria-label={`Delete “${c.title}”`}
+                      title="Delete"
+                      onClick={async () => {
+                        await chatApi.remove(c.id).catch(() => {});
+                        setChats((list) => list.filter((x) => x.id !== c.id));
+                        if (c.id === chatId) newChat();
+                      }}
+                    >
+                      <Icon name="x" size={11} />
+                    </button>
+                  </div>
+                ))}
+              </section>
             ))}
           </div>
         </Popover>
@@ -1165,8 +1223,62 @@ function fontFamilies() {
   return fontNames.list;
 }
 
-/** A row in the @ list: one of the designer's fonts, or a save. */
-type Mentionable = { font: string } | { card: RefCard };
+/** The designer's collections that have something in them, asked for again at most every few seconds. */
+let collectionsNow: { at: number; list: Promise<Collection[]> } | null = null;
+function collectionList() {
+  if (!collectionsNow || Date.now() - collectionsNow.at > 5000)
+    collectionsNow = { at: Date.now(), list: api.collections().then((l) => l.filter((c) => c.n > 0)).catch(() => []) };
+  return collectionsNow.list;
+}
+
+/**
+ * Where the @ list is. It opens on the kinds of things you can mention (fonts, saves,
+ * websites…); choosing one opens its list. Collections open once more, onto their saves.
+ */
+type Shelf = "fonts" | "saves" | "sites" | "videos" | "favorites" | "collections" | { collection: string; name: string };
+const SHELVES: { shelf: Exclude<Shelf, object>; label: string; icon: IconName }[] = [
+  { shelf: "fonts", label: "Fonts", icon: "type" },
+  { shelf: "saves", label: "Saves", icon: "grid" },
+  { shelf: "sites", label: "Websites", icon: "monitor" },
+  { shelf: "videos", label: "Videos", icon: "play" },
+  { shelf: "favorites", label: "Favorites", icon: "heart" },
+  { shelf: "collections", label: "Collections", icon: "folder" },
+];
+const shelfKey = (s: Shelf | null) => (s === null ? "" : typeof s === "string" ? s : `c:${s.collection}`);
+const shelfName = (s: Shelf) => (typeof s === "string" ? SHELVES.find((x) => x.shelf === s)!.label : s.name);
+
+/** A shelf's saves: the newest first, or the best matches for what's typed. */
+function shelfSaves(s: Exclude<Shelf, "fonts" | "collections">, q: string) {
+  const f: Filters = { q: q || undefined, limit: 40 };
+  if (typeof s === "object") f.collection = s.collection;
+  else {
+    f.library = true;
+    if (s === "sites") f.site = true;
+    if (s === "videos") f.type = "video";
+    if (s === "favorites") f.favorite = true;
+  }
+  return api.refs(f);
+}
+
+/**
+ * A row in the @ list: a kind of thing to open, one of the designer's fonts, or a save.
+ * `group` names the run of rows it starts, when what's typed is looked for everywhere.
+ */
+type Mentionable = { group?: string } & (
+  | { shelf: Shelf; label: string; icon: IconName; count?: number; cover?: string | null }
+  | { font: string }
+  | { card: RefCard }
+);
+const collectionRow = (c: Collection, group?: string): Mentionable => ({
+  shelf: { collection: c.id, name: c.name },
+  label: c.name,
+  icon: "folder",
+  count: c.n,
+  cover: c.cover,
+  group,
+});
+const rowKey = (item: Mentionable) =>
+  "shelf" in item ? `shelf:${shelfKey(item.shelf)}` : "font" in item ? `font:${item.font}` : item.card.id;
 
 const MENTION_AT = /(?:^|\s)@((?:[^\s@]+ ?){0,4})$/;
 const labelFor = (c: RefCard) => {
@@ -1196,7 +1308,11 @@ function Composer(props: {
   // Saves mentioned with @, by the label written in the text ("@Swiss poster").
   const mentions = useRef(new Map<string, RefCard>());
   const [picker, setPicker] = useState<{ query: string; start: number } | null>(null);
+  const [shelf, setShelf] = useState<Shelf | null>(null);
   const [found, setFound] = useState<Mentionable[]>([]);
+  // Which shelf and words the rows in `found` are for, to tell "nothing here" from "still looking".
+  const [foundFor, setFoundFor] = useState<string | null>(null);
+  const listRef = useRef<HTMLDivElement>(null);
   // Fonts mentioned with @. They stay as "@Söhne" in what's sent: Panel knows its fonts by name.
   const fontMentions = useRef(new Set<string>());
   const [pick, setPick] = useState(0);
@@ -1224,31 +1340,93 @@ function Composer(props: {
     setPicker((p) => (p?.start === start && p.query === m[1] ? p : { query: m[1]!, start }));
   };
 
-  // The list: their fonts that match first, then saves (the newest with nothing typed yet, else the best matches).
+  // A new @ starts again from the kinds of things.
+  const startAt = picker?.start ?? null;
+  useEffect(() => setShelf(null), [startAt]);
+
+  // The rows. Nothing typed on the first page: the kinds of things. Something typed there: matching
+  // fonts, collections and saves, each under its name. Inside a kind: its own rows, narrowed by what's typed.
   const query = picker?.query.trim() ?? null;
+  const key = shelfKey(shelf);
+  const lookingFor = `${key}|${query ?? ""}`;
   useEffect(() => {
     if (query === null) return;
     let live = true;
+    const q = query.toLowerCase();
+    const has = (name: string) => !q || name.toLowerCase().includes(q);
+    const rowsFor = async (): Promise<Mentionable[]> => {
+      if (shelf === null && !q) {
+        const [fonts, cols] = await Promise.all([fontFamilies(), collectionList()]);
+        return SHELVES.filter((s) => (s.shelf !== "fonts" || fonts.length) && (s.shelf !== "collections" || cols.length)).map((s) => ({
+          ...s,
+          count: s.shelf === "fonts" ? fonts.length : s.shelf === "collections" ? cols.length : undefined,
+        }));
+      }
+      if (shelf === null) {
+        const [fonts, cols, saves] = await Promise.all([fontFamilies(), collectionList(), api.refs({ q: query, library: true, limit: 7 }).catch(() => [])]);
+        return [
+          ...fonts.filter(has).slice(0, 4).map((font) => ({ font, group: "Fonts" })),
+          ...cols.filter((c) => has(c.name)).slice(0, 3).map((c) => collectionRow(c, "Collections")),
+          ...saves.map((r) => ({ card: cardFromRef(r), group: "Saves" })),
+        ];
+      }
+      if (shelf === "fonts") return (await fontFamilies()).filter(has).map((font) => ({ font }));
+      if (shelf === "collections") return (await collectionList()).filter((c) => has(c.name)).map((c) => collectionRow(c));
+      return (await shelfSaves(shelf, query)).map((r) => ({ card: cardFromRef(r) }));
+    };
     const t = setTimeout(() => {
-      const q = query.toLowerCase();
-      Promise.all([api.refs({ q: query || undefined, library: true }).catch(() => []), fontFamilies()])
-        .then(([list, fonts]) => {
+      rowsFor()
+        .catch(() => [])
+        .then((rows) => {
           if (!live) return;
-          const fontRows = fonts.filter((f) => !q || f.toLowerCase().includes(q)).slice(0, q ? 4 : 3).map((font) => ({ font }));
-          setFound([...fontRows, ...list.slice(0, 7).map((r) => ({ card: cardFromRef(r) }))]);
+          setFound(rows);
+          setFoundFor(lookingFor);
           setPick(0);
-        })
-        .catch(() => live && setFound([]));
+        });
     }, query ? 110 : 0);
     return () => {
       live = false;
       clearTimeout(t);
     };
-  }, [query]);
-  const open = !!picker && found.length > 0;
+    // The shelf is followed by its key, which changes exactly when it does.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query, key]);
+  // Inside a kind the list stays open even when nothing's there, so the way back stays in reach.
+  const open = !!picker && (shelf !== null || found.length > 0);
+  // Rows from the page you just left aren't shown under the new page's name while its own load.
+  const rows = foundFor?.startsWith(`${key}|`) ? found : [];
+
+  // The row chosen with the arrows stays in view as the list scrolls.
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(".mention-row.on")?.scrollIntoView({ block: "nearest" });
+  }, [pick]);
+
+  /** Opens a kind of thing. What was typed was for the page before, so it goes. */
+  const enter = (s: Shelf) => {
+    if (!picker) return;
+    if (picker.query) {
+      const el = props.inputRef.current;
+      const caret = el?.selectionStart ?? value.length;
+      const at = picker.start + 1;
+      props.setValue(`${value.slice(0, at)}${value.slice(caret)}`);
+      setPicker({ query: "", start: picker.start });
+      requestAnimationFrame(() => {
+        el?.focus();
+        el?.setSelectionRange(at, at);
+      });
+    }
+    setShelf(s);
+    setPick(0);
+  };
+  /** One page back: from a collection to the collections, from anything else to the first page. */
+  const back = () => {
+    setShelf((s) => (s !== null && typeof s === "object" ? "collections" : null));
+    setPick(0);
+  };
 
   const choose = (item: Mentionable) => {
     if (!picker) return;
+    if ("shelf" in item) return enter(item.shelf);
     let label: string;
     if ("font" in item) {
       label = item.font;
@@ -1316,34 +1494,54 @@ function Composer(props: {
         </div>
       )}
       {open && (
-        <div className="mention-pick" role="listbox" aria-label="Mention a save">
-          <div className="mention-head">{picker!.query.trim() ? "Matching" : "Mention a font or a save"}</div>
-          {found.map((item, i) => (
-            <button
-              key={"font" in item ? `font:${item.font}` : item.card.id}
-              role="option"
-              aria-selected={i === pick}
-              className={`mention-row ${i === pick ? "on" : ""}`}
-              style={{ "--i": i } as React.CSSProperties}
-              onMouseEnter={() => setPick(i)}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => choose(item)}
-            >
-              {"font" in item ? (
-                <>
-                  <span className="mention-thumb mention-font" aria-hidden>Aa</span>
-                  <span className="mention-title">{item.font}</span>
-                  <span className="mention-type">font</span>
-                </>
-              ) : (
-                <>
-                  <span className="mention-thumb">{item.card.thumb && <img src={item.card.thumb} alt="" />}</span>
-                  <span className="mention-title">{item.card.title}</span>
-                  <span className="mention-type">{item.card.type}</span>
-                </>
-              )}
+        <div className="mention-pick" role="listbox" aria-label="Mention" ref={listRef}>
+          {shelf !== null ? (
+            <button className="mention-head mention-back" onMouseDown={(e) => e.preventDefault()} onClick={back}>
+              <Icon name="chevron-left" size={12} />
+              {shelfName(shelf)}
             </button>
+          ) : (
+            !query && <div className="mention-head">Mention</div>
+          )}
+          {rows.map((item, i) => (
+            <Fragment key={rowKey(item)}>
+              {item.group && item.group !== rows[i - 1]?.group && <div className="mention-head">{item.group}</div>}
+              <button
+                role="option"
+                aria-selected={i === pick}
+                className={`mention-row ${i === pick ? "on" : ""}`}
+                style={{ "--i": i } as React.CSSProperties}
+                onMouseEnter={() => setPick(i)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => choose(item)}
+              >
+                {"shelf" in item ? (
+                  <>
+                    <span className={`mention-thumb ${item.cover ? "" : "mention-glyph"}`}>
+                      {item.cover ? <img src={item.cover} alt="" /> : <Icon name={item.icon} size={15} />}
+                    </span>
+                    <span className="mention-title">{item.label}</span>
+                    {item.count !== undefined && <span className="mention-count">{item.count}</span>}
+                    <span className="mention-go" aria-hidden>
+                      <Icon name="chevron-right" size={13} />
+                    </span>
+                  </>
+                ) : "font" in item ? (
+                  <>
+                    <span className="mention-thumb mention-glyph mention-font" aria-hidden>Aa</span>
+                    <span className="mention-title">{item.font}</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="mention-thumb">{item.card.thumb && <img src={item.card.thumb} alt="" />}</span>
+                    <span className="mention-title">{item.card.title}</span>
+                    <span className="mention-type">{item.card.type}</span>
+                  </>
+                )}
+              </button>
+            </Fragment>
           ))}
+          {found.length === 0 && foundFor === lookingFor && <div className="mention-empty">{query ? "Nothing matches" : "Nothing here yet"}</div>}
         </div>
       )}
       {context && (
@@ -1412,19 +1610,33 @@ function Composer(props: {
           onBlur={() => setPicker(null)}
           onKeyDown={(e) => {
             if (open) {
+              const row = rows[pick] ?? rows[0];
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {
                 e.preventDefault();
-                setPick((i) => (i + (e.key === "ArrowDown" ? 1 : found.length - 1)) % found.length);
+                if (rows.length) setPick((i) => (i + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length);
                 return;
               }
               if ((e.key === "Enter" || e.key === "Tab") && !e.nativeEvent.isComposing) {
                 e.preventDefault();
-                choose(found[pick] ?? found[0]!);
+                if (row) choose(row);
                 return;
               }
+              // → opens the kind of thing chosen; ← or ⌫ with nothing typed goes back a page.
+              if (e.key === "ArrowRight" && row && "shelf" in row) {
+                e.preventDefault();
+                enter(row.shelf);
+                return;
+              }
+              if ((e.key === "ArrowLeft" || e.key === "Backspace") && shelf !== null && !picker!.query) {
+                e.preventDefault();
+                back();
+                return;
+              }
+              // Esc goes back a page, and closes the list from the first one.
               if (e.key === "Escape") {
                 e.preventDefault();
                 e.stopPropagation();
+                if (shelf !== null) return back();
                 dismissed.current = picker!.start;
                 setPicker(null);
                 return;

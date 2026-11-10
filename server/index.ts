@@ -436,7 +436,10 @@ async function handle(req: Request): Promise<Response> {
   // it: not another website (Origin) and not one reached by DNS tricks (Host).
   if ((path.startsWith("/api/chat") || path === "/api/cards") && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/chats" && m === "GET") return json(listChats());
-  if (path === "/api/chats" && m === "POST") return json(createChat());
+  if (path === "/api/chats" && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { project?: unknown };
+    return json(createChat(typeof b.project === "string" ? b.project : null));
+  }
   if (path === "/api/chat/settings" && m === "GET") return json(chatSettings.all());
   if (path === "/api/chat/settings" && m === "PATCH") {
     setChatSettings((await req.json().catch(() => ({}))) as Record<string, unknown>);

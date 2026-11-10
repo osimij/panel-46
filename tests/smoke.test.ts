@@ -186,3 +186,15 @@ describe("FRIDAY's /compact", () => {
     expect((await res.json()).error).toMatch(/nothing to summarize/);
   });
 });
+
+describe("FRIDAY's conversations belong to a place", () => {
+  test("one started on a project belongs to it; one started elsewhere to the library", async () => {
+    const project = await (await p.send("POST", "/api/projects", { name: "Conversations test" })).json();
+    const onProject = await (await p.send("POST", "/api/chats", { project: project.id })).json();
+    const inLibrary = await (await p.send("POST", "/api/chats")).json();
+    const gone = await (await p.send("POST", "/api/chats", { project: "0000000000000000" })).json();
+    expect((await (await p.send("GET", `/api/chats/${onProject.id}`)).json()).project).toBe(project.id);
+    expect((await (await p.send("GET", `/api/chats/${inLibrary.id}`)).json()).project).toBeNull();
+    expect((await (await p.send("GET", `/api/chats/${gone.id}`)).json()).project).toBeNull();
+  });
+});

@@ -49,6 +49,18 @@ if (!chatCols.includes("card_hash")) db.exec("ALTER TABLE chats ADD COLUMN card_
 // How full the conversation is after its last answer, and where Claude Code summarizes it.
 if (!chatCols.includes("context_tokens")) db.exec("ALTER TABLE chats ADD COLUMN context_tokens INTEGER");
 if (!chatCols.includes("context_limit")) db.exec("ALTER TABLE chats ADD COLUMN context_limit INTEGER");
+// Where the conversation belongs: the project it was started on, or '' for the library.
+// Each project keeps its own conversations, so going to another project doesn't carry
+// one conversation along. Empty (NULL) only for conversations from before this, until
+// the lines below work out where they belong.
+if (!chatCols.includes("project_id")) db.exec("ALTER TABLE chats ADD COLUMN project_id TEXT");
+// Older conversations: the project whose card FRIDAY was given, else the project of the
+// first thing the designer picked on a canvas, else the library. Only fills the empty column.
+db.run(`UPDATE chats SET project_id = COALESCE(
+  (SELECT p.id FROM projects p WHERE p.id = chats.card_project),
+  (SELECT n.project_id FROM chat_messages m JOIN board_nodes n ON n.id = json_extract(m.context, '$.nodes[0]')
+     WHERE m.chat_id = chats.id AND m.role = 'user' AND json_valid(m.context) ORDER BY m.created_at LIMIT 1),
+  '') WHERE project_id IS NULL`);
 // An answer that was streaming when Panel stopped won't finish now.
 db.run("UPDATE chat_messages SET status = 'stopped' WHERE status = 'streaming'");
 
@@ -195,25 +207,31 @@ export function cards(ids: string[]): Card[] {
 
 // ---------- Chats ----------
 
+/** Every conversation, newest first, each with the project it belongs to (null: the library). */
 export function listChats() {
   return db
-    .query<{ id: string; title: string; updated_at: string; n: number }, []>(
-      `SELECT c.id, c.title, c.updated_at, (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) n
-       FROM chats c ORDER BY c.updated_at DESC LIMIT 200`,
+    .query<{ id: string; title: string; updated_at: string; n: number; project: string | null; project_name: string | null }, []>(
+      `SELECT c.id, c.title, c.updated_at, (SELECT COUNT(*) FROM chat_messages m WHERE m.chat_id = c.id) n,
+              p.id project, p.name project_name
+       FROM chats c LEFT JOIN projects p ON p.id = c.project_id ORDER BY c.updated_at DESC LIMIT 300`,
     )
     .all()
     .filter((c) => c.n > 0)
-    .map((c) => ({ id: c.id, title: c.title || "New conversation", updated_at: c.updated_at, running: runs.has(c.id) }));
+    .map((c) => ({ id: c.id, title: c.title || "New conversation", updated_at: c.updated_at, running: runs.has(c.id), project: c.project, project_name: c.project_name }));
 }
 
-export function createChat() {
+/** A new conversation, on a project (its id) or in the library (nothing). */
+export function createChat(project?: string | null) {
   const id = newId();
-  db.run("INSERT INTO chats (id, title, created_at, updated_at) VALUES (?, '', ?, ?)", [id, now(), now()]);
+  const p = project ? findProject(project) : null;
+  db.run("INSERT INTO chats (id, title, created_at, updated_at, project_id) VALUES (?, '', ?, ?, ?)", [id, now(), now(), p?.id ?? ""]);
   return { id };
 }
 
 export function getChat(id: string) {
-  const chat = db.query<{ id: string; title: string; context_tokens: number | null; context_limit: number | null }, [string]>("SELECT id, title, context_tokens, context_limit FROM chats WHERE id = ?").get(id);
+  const chat = db.query<{ id: string; title: string; context_tokens: number | null; context_limit: number | null; project: string | null }, [string]>(
+    "SELECT c.id, c.title, c.context_tokens, c.context_limit, p.id project FROM chats c LEFT JOIN projects p ON p.id = c.project_id WHERE c.id = ?",
+  ).get(id);
   if (!chat) return null;
   const rows = db.query<Row, [string]>("SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY created_at, rowid").all(id).map(out);
   const run = runs.get(id);
@@ -226,7 +244,7 @@ export function getChat(id: string) {
     if (m.context?.open) ids.add(m.context.open);
   }
   return {
-    id: chat.id, title: chat.title, messages: rows, cards: cards([...ids]), running: !!run, seq: run?.events.length ?? 0,
+    id: chat.id, title: chat.title, project: chat.project, messages: rows, cards: cards([...ids]), running: !!run, seq: run?.events.length ?? 0,
     context: chat.context_tokens && chat.context_limit ? { used: chat.context_tokens, limit: chat.context_limit } : null,
   };
 }
@@ -391,6 +409,8 @@ export async function send(chatId: string, text: string, context: SendContext = 
   const chat = db.query<{ id: string; title: string; session_id: string | null }, [string]>("SELECT id, title, session_id FROM chats WHERE id = ?").get(chatId);
   if (!chat) throw new Error("That conversation is gone.");
   if (runs.has(chatId)) throw new Error("Still answering the last message.");
+  // A conversation started by an older Panel has no place yet: it takes the one it's used in.
+  db.run("UPDATE chats SET project_id = ? WHERE id = ? AND project_id IS NULL", [(context.project && findProject(context.project)?.id) || "", chatId]);
   const clean = text.trim();
   if (!clean) throw new Error("Write something first.");
   // "/compact" (optionally with what to keep: "/compact keep the type decisions") is Claude

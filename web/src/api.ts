@@ -180,6 +180,8 @@ export interface Filters {
   ids?: string[];
   tags?: string[];
   tagMode?: "all" | "any";
+  /** At most this many (the server's own cap otherwise). */
+  limit?: number;
 }
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -244,6 +246,7 @@ function filterParams(f: Filters) {
   if (f.ids?.length) p.set("ids", f.ids.join(","));
   f.tags?.forEach((t) => p.append("tag", t));
   if (f.tagMode === "any") p.set("tagMode", "any");
+  if (f.limit) p.set("limit", String(f.limit));
   return p;
 }
 
@@ -602,10 +605,11 @@ export interface ChatMessage {
   created_at: string;
 }
 
-export interface ChatSummary { id: string; title: string; updated_at: string; running: boolean }
+/** project: the project the conversation belongs to, null for the library. */
+export interface ChatSummary { id: string; title: string; updated_at: string; running: boolean; project: string | null; project_name: string | null }
 /** How full a conversation is, in tokens, and where it gets summarized to make room. */
 export interface ContextUse { used: number; limit: number }
-export interface ChatFull { id: string; title: string; messages: ChatMessage[]; cards: RefCard[]; running: boolean; seq: number; context: ContextUse | null }
+export interface ChatFull { id: string; title: string; project: string | null; messages: ChatMessage[]; cards: RefCard[]; running: boolean; seq: number; context: ContextUse | null }
 
 export type ChatEvent =
   | { t: "start"; message: ChatMessage }
@@ -637,7 +641,7 @@ export interface ChatSettings {
 
 export const chatApi = {
   list: () => call<ChatSummary[]>("/api/chats"),
-  create: () => call<{ id: string }>("/api/chats", { method: "POST" }),
+  create: (project?: string | null) => call<{ id: string }>("/api/chats", { method: "POST", body: body({ project: project ?? null }) }),
   get: (id: string) => call<ChatFull>(`/api/chats/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/chats/${id}`, { method: "DELETE" }),
   send: (id: string, text: string, context: { open?: string; project?: string; nodes?: string[]; label?: string; thumbs?: string[]; point?: SketchPoint; fan?: number }) =>

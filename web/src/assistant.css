@@ -383,27 +383,41 @@
 .composer-context button { width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; color: var(--faint); flex: none; }
 .composer-context button:hover { background: var(--fill); color: var(--text); }
 
-/* ---- @ mentions: a list of saves above the composer, and the ones mentioned ---- */
+/* ---- @ mentions: a list above the composer (kinds of things, then each one's rows), and the ones mentioned ---- */
+/* Solid, so the conversation behind never shows through the names. */
 .mention-pick {
   position: absolute; left: 0; right: 0; bottom: calc(100% + 8px); z-index: 4; padding: 5px;
-  display: flex; flex-direction: column; gap: 1px; max-height: 340px; overflow-y: auto;
-  background: color-mix(in oklch, var(--raised) 94%, transparent);
-  -webkit-backdrop-filter: blur(24px) saturate(1.8); backdrop-filter: blur(24px) saturate(1.8);
+  display: flex; flex-direction: column; gap: 1px; max-height: 340px; overflow-y: auto; scroll-padding: 5px;
+  background: var(--raised);
   border-radius: calc(16px * var(--smooth)); corner-shape: var(--corner);
   box-shadow: inset 0 0 0 1px var(--line), 0 20px 50px -18px oklch(0 0 0 / 0.45);
   transform-origin: 30% 100%; animation: mention-in 0.32s var(--spring);
 }
 @keyframes mention-in { from { opacity: 0; transform: translateY(6px) scale(0.97); filter: blur(3px); } }
-.mention-head { padding: 5px 9px 4px; font-size: 11.5px; color: var(--faint); }
+.mention-head { flex: none; padding: 5px 9px 4px; font-size: 11.5px; color: var(--faint); }
+.mention-row + .mention-head { margin-top: 5px; }
+.mention-back {
+  display: inline-flex; align-items: center; gap: 3px; align-self: flex-start; padding-left: 5px; padding-right: 8px;
+  color: var(--muted); border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+}
+.mention-back:hover { color: var(--text); background: var(--fill); }
 .mention-row {
-  display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 9px 0 5px; text-align: left;
+  display: flex; align-items: center; gap: 10px; height: 44px; flex: none; padding: 0 9px 0 5px; text-align: left;
   border-radius: calc(11px * var(--smooth)); corner-shape: var(--corner);
   animation: rise-in 0.35s var(--ease) backwards; animation-delay: calc(var(--i, 0) * 22ms);
 }
 .mention-row.on { background: var(--fill); }
-.mention-thumb { width: 34px; height: 34px; flex: none; overflow: hidden; background: var(--card); border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); }
+/* 5px from the row's edge on every side, with corners that follow the row's (11 − 5). */
+.mention-thumb { width: 34px; height: 34px; flex: none; overflow: hidden; background: var(--card); border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner); }
 .mention-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.mention-font { display: grid; place-items: center; font-size: 14px; font-weight: 600; color: var(--muted); }
+/* An icon instead of a picture: a see-through tile, so it reads the same chosen or not. */
+.mention-glyph { display: grid; place-items: center; background: var(--fill); color: var(--muted); transition: color 0.15s var(--ease); }
+.mention-row.on .mention-glyph { color: var(--text); }
+.mention-font { font-size: 14px; font-weight: 600; }
+.mention-count { flex: none; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.mention-go { flex: none; display: grid; margin-right: -3px; color: var(--faint); }
+.mention-row.on .mention-go { color: var(--muted); }
+.mention-empty { padding: 10px 9px 12px; font-size: 12.5px; color: var(--faint); }
 .mention-title { flex: 1; min-width: 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mention-type { flex: none; font-size: 11px; color: var(--faint); text-transform: capitalize; }
 .composer-mentions { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 2px -8px; }
@@ -451,7 +465,8 @@
 .msg-about > .icon { flex: none; margin-left: 3px; color: var(--faint); }
 
 /* ---- History ---- */
-.ask-history { max-height: 340px; overflow-y: auto; width: 250px; }
+.ask-history { max-height: 420px; overflow-y: auto; width: 280px; }
+.ask-history-group + .ask-history-group { margin-top: 6px; }
 .ask-history-row { position: relative; }
 .ask-history-row .menu-item { width: 100%; padding-right: 30px; }
 .ask-history-row.on .menu-item { background: var(--fill); }

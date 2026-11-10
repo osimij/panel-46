@@ -1031,6 +1031,8 @@ export function App() {
         onClose={() => setAskOpen(false)}
         looking={open}
         project={scope.kind === "project" ? scope.id : null}
+        projectName={scope.kind === "project" ? projects.find((p) => p.id === scope.id)?.name : undefined}
+        onGoTo={(p) => setScope(p ? { kind: "project", id: p } : { kind: "all" })}
         picked={scope.kind === "project" && canvasPick?.project === scope.id ? canvasPick : null}
         onOpenRef={openFromAsk}
         onShowInGrid={showPicked}
