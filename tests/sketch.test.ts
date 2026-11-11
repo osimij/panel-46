@@ -141,3 +141,29 @@ withChrome("a part's look and a part taken out are saved with the words as one v
   const info = await (await p.send("GET", `/api/projects/${project}/sketches/${id}`)).json();
   expect(info.versions.at(-1).what).toBe("Changed the words to “Last” and the look of 1 part, removed 1 part");
 }, 60_000);
+
+withChrome("taking out a part the page's script needs is refused, or said after the save when it couldn't be seen coming", async () => {
+  // The script reaches "hub" by its id in plain sight, and "dot1" through a list of names.
+  const made = await tool("make_sketch", {
+    project,
+    title: "Drawn to",
+    html: PAGE("", `<main><div class="n" id="hub">Hub</div><div class="n" id="dot1">Dot</div><p>Words</p></main><script>document.getElementById("hub").dataset.seen = "1"; for (const id of ["dot1"]) document.getElementById(id).dataset.seen = "1";</script>`),
+  });
+  const id = made.first.sketch ?? made.first.id;
+  const at = (n: number, tag: string) => `body > main:nth-child(1) > ${tag}:nth-child(${n})`;
+  const url = `/api/projects/${project}/sketches/${id}/changes`;
+  // In plain sight: refused before anything is written, also when only asked whether it fits.
+  for (const check of [true, false]) {
+    const no = await p.send("POST", url, { removes: [{ path: at(1, "div"), cls: "n", id: "hub", text: "Hub" }], from_version: 1, check });
+    expect(no.status).toBe(400);
+    expect((await no.json()).error).toBe("The page's script uses this part, so taking it out by hand would break the page. Ask FRIDAY to remove it.");
+  }
+  // Not in plain sight: it saves, and the answer says the page now has an error it didn't have.
+  const res = await (await p.send("POST", url, { removes: [{ path: at(2, "div"), cls: "n", id: "dot1", text: "Dot" }], from_version: 1 })).json();
+  expect(res.version).toBe(2);
+  expect(res.new_errors).toBe(1);
+  // A save that breaks nothing says none.
+  const fine = await (await p.send("POST", url, { removes: [{ path: at(3, "p"), text: "Words" }], from_version: 1 })).json();
+  expect(fine.version).toBe(3);
+  expect(fine.new_errors).toBe(0);
+}, 90_000);

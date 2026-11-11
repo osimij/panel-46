@@ -19,13 +19,15 @@
 // part" changes its own look only (its size, weight, color…, written on the part itself), then
 // the knobs that reach it (which change it everywhere they're used), then all the knobs, folded.
 // A part's own sizes are written so they keep scaling with the page (decks size everything in
-// container units): font size in em of the part around it, letter spacing and corners in em
-// of its own size, line height as a plain number. The bars still read in px.
+// container units): font size as the page's own rule for it times a number (partsize.ts),
+// letter spacing and corners in em of its own size, line height as a plain number. The bars
+// still read in px.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fontApi } from "./api.ts";
 import { Icon } from "./Icon.tsx";
+import { sizeFor, sizeOf } from "./partsize.ts";
 import type { PartLook } from "./Studio.tsx";
 
 export interface PageVar {
@@ -980,13 +982,8 @@ export function Knobs(props: {
   const own = part?.props ?? {};
   const round = (n: number, d = 2) => Number(n.toFixed(d));
   const pxOf = (n: number | null | undefined) => `${round(n ?? 0)}px`;
-  /** The part's font size now, in px: changed (in em of the part around it) or as the page makes it. */
-  const sizeNow = (() => {
-    const em = numOf(own["font-size"] ?? "");
-    if (em && em.unit === "em" && look?.parentSize) return em.n * look.parentSize;
-    if (em && em.unit === "px") return em.n;
-    return look?.size ?? 16;
-  })();
+  /** The part's font size now, in px: changed by hand, or as the page makes it. */
+  const sizeNow = (look && own["font-size"] ? sizeOf(own["font-size"], look) : null) ?? look?.size ?? 16;
   const partKnob = (name: string, value: string, role: Role, label: string, kind: Kind = "length"): Knob => ({ name, value, role, label, kind, stem: "" });
   /** A bar for one of the part's numbers: shown in px (or plain), written the way that keeps scaling. */
   const partScrub = (k: Knob, current: string, toCss: (n: Num) => Record<string, string | null>) => (
@@ -1047,7 +1044,7 @@ export function Knobs(props: {
             onShow={() => {}}
           />
           <div className="kn-grid">
-            {look.size != null && partScrub(partKnob("font-size", pxOf(look.size), "size", "Size"), pxOf(sizeNow), (n) => ({ "font-size": n.unit === "px" && look.parentSize ? `${round(n.n / look.parentSize, 4)}em` : `${n.n}${n.unit}` }))}
+            {look.size != null && partScrub(partKnob("font-size", pxOf(look.size), "size", "Size"), pxOf(sizeNow), (n) => ({ "font-size": n.unit === "px" ? sizeFor(n.n, look) : `${n.n}${n.unit}` }))}
             {look.weight != null &&
               partScrub(
                 partKnob("font-weight", String(look.weight), "weight", "Weight", "number"),

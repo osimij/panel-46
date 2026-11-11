@@ -10,6 +10,9 @@
 //     page's script added as it ran doesn't count against it), and so must the words, unless a
 //     word edit waiting in the same save is inside the part or around it.
 //   - Anything less certain is refused in plain words: the part is the page script's own.
+//   - A part the page's script reaches by its id (getElementById("hub"), "#hub") isn't taken
+//     out either: the script would stop where it looks for it, and everything it draws after
+//     that would be missing from the saved page, though the live page still looked whole.
 //
 // The trap: places shift when a part is taken out (the next one becomes nth-child(2)). So
 // every change found by its place (words, looks, removals) is made in ONE pass over the file
@@ -37,6 +40,7 @@ export type PartRemove = PartSeen;
 export const STYLEABLE = new Set(["font-family", "font-size", "font-weight", "font-variation-settings", "line-height", "letter-spacing", "color", "background-color", "border-radius", "opacity"]);
 
 export const NOT_HERE = "This part is drawn by the page's script, so it can't be changed by hand here. Ask FRIDAY to change it.";
+export const SCRIPT_USES = "The page's script uses this part, so taking it out by hand would break the page. Ask FRIDAY to remove it.";
 const PATH = /^body( > [a-z][a-z0-9-]*:nth-child\(\d{1,4}\)){1,40}$/;
 
 /** A value that can go into a style attribute: short, and nothing that could end the rule or load anything. */
@@ -73,6 +77,25 @@ function split(decl: string): [string, string] {
   return at < 0 ? [decl.trim(), ""] : [decl.slice(0, at).trim(), decl.slice(at + 1).trim()];
 }
 
+/**
+ * The page's script reaches for this id: getElementById("hub"), or "#hub" in a selector, or a
+ * name it puts together from the id's beginning ("#dot" + i, getElementById(`dot${i}`)). Only these ways
+ * count, so a plain word that happens to be an id ("top") doesn't.
+ */
+export function scriptNames(script: string, id: string) {
+  if (!id) return false;
+  let at = -1;
+  while ((at = script.indexOf(id, at + 1)) >= 0) {
+    const after = script[at + id.length] ?? "";
+    if (/[\w-]/.test(after)) continue;
+    if (script[at - 1] === "#") return true;
+    if (/getElementById\(\s*["'`]$/.test(script.slice(Math.max(0, at - 24), at))) return true;
+  }
+  // "#dot" + i and `#dot${i}`: a beginning of two letters or more, then something added to it.
+  for (const m of script.matchAll(/(?:#|getElementById\(\s*["'`])([A-Za-z][\w-]+)(?:\$\{|["'`]\s*\+)/g)) if (id.length > m[1]!.length && id.startsWith(m[1]!)) return true;
+  return false;
+}
+
 const words300 = (s: string) => squash(s).slice(0, 300);
 /** The file's classes are all on the live part (its script may have added more as it ran). */
 const sameClass = (file: string, seen: string) => {
@@ -97,8 +120,24 @@ export function withParts(html: string, changes: { words?: TextEdit[]; styles?: 
   // What the file has at each place: how many elements, the first one's class, id and words.
   const paths = [...new Set([...styles.map((s) => s.path), ...removes.map((r) => r.path), ...words.filter((w) => PATH.test(w.path)).map((w) => w.path)])];
   const found = new Map<string, { count: number; cls: string; id: string; text: string }>();
+  // For parts to take out: every id on them or inside them, and the page's own script.
+  const idsIn = new Map<string, string[]>();
+  let script = "";
   if (paths.length) {
     const rw = new HTMLRewriter();
+    if (removes.length) {
+      rw.on("script", { text: (t) => void (script += t.text) });
+      for (const path of new Set(removes.map((r) => r.path))) {
+        const ids: string[] = [];
+        idsIn.set(path, ids);
+        const keep = (el: HTMLRewriterTypes.Element) => {
+          const id = el.getAttribute("id");
+          if (id) ids.push(id);
+        };
+        rw.on(path, { element: keep });
+        rw.on(`${path} [id]`, { element: keep });
+      }
+    }
     for (const path of paths) {
       const f = { count: 0, cls: "", id: "", text: "" };
       found.set(path, f);
@@ -129,6 +168,7 @@ export function withParts(html: string, changes: { words?: TextEdit[]; styles?: 
     return true;
   };
   for (const p of [...styles, ...removes]) if (!sure(p)) throw new Error(NOT_HERE);
+  for (const r of removes) if ((idsIn.get(r.path) ?? []).some((id) => scriptNames(script, id))) throw new Error(SCRIPT_USES);
 
   // Word edits that are certain by their place go in the one pass; the rest come after it.
   const placed = new Map<string, TextEdit>();

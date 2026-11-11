@@ -377,7 +377,7 @@ export async function setSketchText(projectId: string, sketchId: string, edit: T
   if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
   const before = readSketch(b.p.id, node.id, base);
   const html = withText(before, edit);
-  if (html === before) return { version: base, rules: [], errors: 0 };
+  if (html === before) return { version: base, rules: [], errors: 0, new_errors: 0 };
   const words = edit.afterText.replace(/\s+/g, " ").trim();
   const said = words.length > 40 ? `${words.slice(0, 39)}…` : words;
   const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "you", what: `Changed the words to “${said}”` });
@@ -416,7 +416,7 @@ export async function saveSketchChanges(
   let html = withParts(before, { words: edits, styles, removes });
   if (Object.keys(vars).length) html = withVars(html, vars);
   if (check) return { ok: true };
-  if (html === before) return { version: base, rules: [], errors: 0 };
+  if (html === before) return { version: base, rules: [], errors: 0, new_errors: 0 };
   const n = Object.keys(vars).length;
   const parts: string[] = [];
   if (edits.length === 1) {
@@ -431,7 +431,10 @@ export async function saveSketchChanges(
   const what = said ? said.charAt(0).toUpperCase() + said.slice(1) : "Changed the page";
   const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "you", what });
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `${what} in ${sketchName(node)} (version ${version})` });
-  return { version, rules: render.rules ?? [], errors: render.errors.length };
+  // Errors the page didn't report before this save: the studio says so, since the live page
+  // (whose script had already run) may have looked whole right up to Save.
+  const had = new Set(renderOf(b.p.id, node.id, base).errors);
+  return { version, rules: render.rules ?? [], errors: render.errors.length, new_errors: render.errors.filter((e) => !had.has(e)).length };
 }
 
 /**

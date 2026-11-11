@@ -2,7 +2,7 @@
 // (pageparts.ts): only where it's certain, and with every place counted in the file as it was.
 
 import { expect, test } from "bun:test";
-import { NOT_HERE, withParts, withStyle, withoutPart } from "../server/pageparts.ts";
+import { NOT_HERE, SCRIPT_USES, scriptNames, withParts, withStyle, withoutPart } from "../server/pageparts.ts";
 
 const PAGE = `<!doctype html><html><head><style>:root{--muted:#6b6f76}</style></head><body><main><h1 class="title">Заголовок</h1><p class="lead" style="margin: 0">Подзаголовок</p><div class="cards"><div class="card">A</div><div class="card">A</div><div class="card">A</div><div class="card">A</div></div></main></body></html>`;
 const card = (n: number) => `body > main:nth-child(1) > div:nth-child(3) > div:nth-child(${n})`;
@@ -69,4 +69,39 @@ test("a value with a semicolon in it is refused", () => {
   const h1 = { path: "body > main:nth-child(1) > h1:nth-child(1)", cls: "title", text: "Заголовок" };
   expect(() => withStyle(PAGE, { ...h1, props: { color: "red; position: fixed" } })).toThrow("That value can't be used here.");
   expect(() => withStyle(PAGE, { ...h1, props: { "background-color": "url(x)" } })).toThrow("That value can't be used here.");
+});
+
+// The page's script reaches some parts by their id. The live page keeps looking whole after
+// one is hidden (the script already ran), but the saved file would stop its script.
+const DRAWN = `<!doctype html><html><body><main><div class="node" id="hub">Hub</div><div class="wrap"><span id="tip">Tip</span></div><p id="top">Top</p><p id="free">Free</p></main><script>
+const c = at("#hub"); document.getElementById("tip").textContent = "x"; const side = "top";
+</script></body></html>`;
+const child = (n: number) => `body > main:nth-child(1) > ${n === 2 ? "div" : n === 1 ? "div" : "p"}:nth-child(${n})`;
+
+test("a part the page's script reaches by its id isn't taken out", () => {
+  expect(() => withoutPart(DRAWN, { path: child(1), cls: "node", id: "hub", text: "Hub" })).toThrow(SCRIPT_USES);
+  // Also when the id is on something inside the part.
+  expect(() => withoutPart(DRAWN, { path: child(2), cls: "wrap", text: "Tip" })).toThrow(SCRIPT_USES);
+  // A plain word in the script that happens to be an id doesn't count, and nor does no mention.
+  expect(withoutPart(DRAWN, { path: child(3), id: "top", text: "Top" })).not.toContain(`id="top"`);
+  expect(withoutPart(DRAWN, { path: child(4), id: "free", text: "Free" })).not.toContain(`id="free"`);
+  // Its look can still be changed: only taking it out is refused.
+  expect(withStyle(DRAWN, { path: child(1), cls: "node", id: "hub", text: "Hub", props: { color: "#111111" } })).toContain(`id="hub" style="color: #111111"`);
+});
+
+test("only getElementById and #id count as the script naming an id", () => {
+  expect(scriptNames(`at(pg,"#cv-team","r")`, "cv-team")).toBe(true);
+  expect(scriptNames(`document.getElementById( 'qr' ).innerHTML = x`, "qr")).toBe(true);
+  expect(scriptNames(`q("#cv-team-2")`, "cv-team")).toBe(false);
+  expect(scriptNames(`if (side === "top") go()`, "top")).toBe(false);
+  expect(scriptNames(`anything`, "")).toBe(false);
+  // A name put together from the id's beginning counts too.
+  expect(scriptNames("at(pg, `#cv-p${i + 1}`)", "cv-p3")).toBe(true);
+  expect(scriptNames(`q("#dot" + n)`, "dot12")).toBe(true);
+  expect(scriptNames(`document.getElementById("dot" + n)`, "dot12")).toBe(true);
+  expect(scriptNames("at(pg, `#cv-p${i + 1}`)", "cv-team")).toBe(false);
+});
+
+test("a page with a part to take out and no script at all is fine", () => {
+  expect(withoutPart(PAGE.replace(`class="title"`, `class="title" id="hub"`), { path: "body > main:nth-child(1) > h1:nth-child(1)", cls: "title", id: "hub", text: "Заголовок" })).not.toContain("Заголовок");
 });

@@ -875,7 +875,7 @@ export interface PartStyleEdit extends PartSeen { props: Record<string, string> 
  * Compare, so a copy a browser kept from before the kit last changed (sketches.ts) is never
  * used. Bump it whenever the kit changes.
  */
-export const STUDIO_PAGE = "studio=6";
+export const STUDIO_PAGE = "studio=7";
 
 export const studioApi = {
   sketch: (project: string, sketch: string) => call<SketchInfo>(`/api/projects/${project}/sketches/${sketch}`),
@@ -903,7 +903,7 @@ export const studioApi = {
   ) => {
     const seen = (x: PartSeen) => ({ path: x.path, cls: x.cls, id: x.id, text: x.text });
     const sent = { edits: changes.edits, vars: changes.vars, styles: (changes.styles ?? []).map((x) => ({ ...seen(x), props: x.props })), removes: (changes.removes ?? []).map(seen) };
-    return call<{ version?: number; ok?: boolean }>(`/api/projects/${project}/sketches/${sketch}/changes`, { method: "POST", body: body({ ...sent, from_version, check }) });
+    return call<{ version?: number; ok?: boolean; new_errors?: number }>(`/api/projects/${project}/sketches/${sketch}/changes`, { method: "POST", body: body({ ...sent, from_version, check }) });
   },
   /** Bring an older version back: its file becomes the newest version, and the sketch shows it. */
   restore: (project: string, sketch: string, version: number) =>

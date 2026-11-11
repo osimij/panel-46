@@ -108,6 +108,8 @@ export interface PartLook {
   opacity: number | null;
   /** The font size of the part around it, for sizes that keep scaling with the page. */
   parentSize: number | null;
+  /** How the page itself writes this part's size (3cqw, clamp(…)); null when it only inherits one. */
+  sizeRule?: string | null;
   /** It has words of its own. */
   words: boolean;
 }
@@ -554,6 +556,15 @@ export function Studio(props: {
         setHand(NONE, from);
         // Nothing changed in the file after all: show the page as it really is.
         if (res.version === sketch.version) setReload((n) => n + 1);
+      }
+      // The live page looked whole (its script had already run), but the saved one has to
+      // run it again. If that now fails, say so and say how to get back.
+      if (res.new_errors && res.version && res.version !== sketch.version) {
+        props.onError(
+          h.removes.length
+            ? `Saved as version ${res.version}, but the page's own script now stops: it needed a part you deleted. Press ‹ to go back to v${sketch.version}.`
+            : `Saved as version ${res.version}, but the page now reports an error it didn't before. Press ‹ to go back to v${sketch.version}.`,
+        );
       }
     } catch (e) {
       props.onError((e as Error).message);

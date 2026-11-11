@@ -181,6 +181,30 @@ const KIT = `<script data-panel-kit>(() => {
   const remember = (el, p) => { let m = before.get(el); if (!m) before.set(el, (m = {})); if (!(p in m)) m[p] = [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)]; };
   const putBack = (el, p) => { const m = before.get(el), was = m && m[p]; if (was && was[0]) el.style.setProperty(p, was[0], was[1]); else el.style.removeProperty(p); };
   const byPath = (p) => { if (typeof p !== "string" || !/^body( > [a-z][a-z0-9-]*:nth-child\\(\\d{1,4}\\)){0,40}$/.test(p)) return null; try { return document.querySelector(p); } catch (e) { return null; } };
+  // How the page itself writes this part's font size (3cqw, clamp(…), var(--size-title)): the
+  // rule that, written on the part, gives exactly the size it has now. A change by hand is
+  // then that rule times a number, so the part keeps scaling as the page meant. Null when the
+  // part only takes its size from the text around it. Every font-size the page's styles give
+  // a rule matching the part is tried, last written first; one counts if the size comes out the same.
+  const sizeRule = (el, px) => {
+    const tries = [], add = (v) => { v = (v || "").trim(); if (v && v.length <= 120 && tries.indexOf(v) < 0) tries.push(v); };
+    const walk = (list) => { for (const r of list) { try {
+      if (r.style && r.selectorText) { const v = r.style.getPropertyValue("font-size"); if (v && el.matches(r.selectorText)) add(v); }
+      if (r.cssRules && r.cssRules.length) walk(r.cssRules);
+    } catch (e) {} } };
+    for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
+    const mine = el.style.getPropertyValue("font-size"), pri = el.style.getPropertyPriority("font-size");
+    add(mine);
+    let hit = null;
+    for (let i = tries.length - 1; i >= 0 && !hit; i--) {
+      const v = tries[i];
+      if (!CSS.supports("font-size", "calc((" + v + ") * 1.5)")) continue;
+      el.style.setProperty("font-size", v, "important");
+      if (Math.abs(parseFloat(getComputedStyle(el).fontSize) - px) < 0.02) hit = v;
+    }
+    if (mine) el.style.setProperty("font-size", mine, pri); else el.style.removeProperty("font-size");
+    return hit;
+  };
   // The part's look as the page itself makes it, without the changes being tried on it.
   const own = (el) => {
     const m = before.get(el), now = {};
@@ -193,6 +217,7 @@ const KIT = `<script data-panel-kit>(() => {
     const out = { family: cs.fontFamily, size: num(cs.fontSize), weight: axis ? Number(axis[1]) : num(cs.fontWeight), wght: !!axis, fvs, lineHeight: cs.lineHeight === "normal" ? null : num(cs.lineHeight),
       letterSpacing: cs.letterSpacing === "normal" ? 0 : num(cs.letterSpacing), color: cs.color, background: cs.backgroundColor,
       radius: corners.every((c) => c === corners[0]) && !/ /.test(corners[0]) ? num(corners[0]) : null, opacity: num(cs.opacity), parentSize: num(getComputedStyle(el.parentElement || el).fontSize), words };
+    out.sizeRule = out.size == null ? null : sizeRule(el, out.size);
     if (m) for (const p in now) { if (now[p][0]) el.style.setProperty(p, now[p][0], now[p][1]); else el.style.removeProperty(p); }
     return out;
   };
