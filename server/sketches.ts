@@ -125,6 +125,9 @@ const KIT = `<script data-panel-kit>(() => {
   const place = (el) => {
     const r = el.getBoundingClientRect();
     Object.assign(box.style, { display: "block", left: r.left + "px", top: r.top + "px", width: r.width + "px", height: r.height + "px" });
+    // The name shows while the pointer is looking for a part. Once one is selected it has the
+    // outline only: the name sat on the line above it, and the studio says it by the message box.
+    if (el === hold) { tag.style.display = "none"; return; }
     tag.textContent = name(el);
     Object.assign(tag.style, { display: "block", left: Math.max(4, r.left) + "px", top: (r.top > 26 ? r.top - 22 : r.bottom + 4) + "px" });
   };

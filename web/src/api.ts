@@ -875,7 +875,7 @@ export interface PartStyleEdit extends PartSeen { props: Record<string, string> 
  * Compare, so a copy a browser kept from before the kit last changed (sketches.ts) is never
  * used. Bump it whenever the kit changes.
  */
-export const STUDIO_PAGE = "studio=7";
+export const STUDIO_PAGE = "studio=8";
 
 export const studioApi = {
   sketch: (project: string, sketch: string) => call<SketchInfo>(`/api/projects/${project}/sketches/${sketch}`),

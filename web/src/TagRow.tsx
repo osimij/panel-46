@@ -481,12 +481,18 @@ export function Popover({ x, y, onClose, children, className }: { x: number; y: 
   }, [x, y]);
   useEffect(() => {
     const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && onClose();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Escape closes this menu only, not what's behind it (FRIDAY's panel, the studio): it is
+    // caught here before anything else hears it.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
     addEventListener("mousedown", onDown);
-    addEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, true);
     return () => {
       removeEventListener("mousedown", onDown);
-      removeEventListener("keydown", onKey);
+      document.removeEventListener("keydown", onKey, true);
     };
   }, [onClose]);
   // Portal to <body>: the header's backdrop blur would otherwise become the

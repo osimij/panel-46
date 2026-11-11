@@ -924,7 +924,17 @@ export function Studio(props: {
   const chosen = sketch.state === "chosen", ruledOut = sketch.state === "ruled_out";
 
   return (
-    <div className={`studio ${closing ? "closing" : ""}`} role="dialog" aria-label={sketch.title}>
+    <div
+      className={`studio ${closing ? "closing" : ""}`}
+      role="dialog"
+      aria-label={sketch.title}
+      // An icon clicked with the mouse lets go of the keyboard: otherwise the next key pressed
+      // (K, D, V…) makes the browser treat it as reached by keyboard, and its name pops up
+      // under it and stays there, over the column that just opened. Tab still shows names.
+      onClick={(e) => {
+        if (e.detail > 0) (e.target as HTMLElement).closest?.<HTMLElement>("[data-tip]")?.blur();
+      }}
+    >
       <header className="st-head">
         {/* What this is */}
         <button className="st-icon tip-start" onClick={close} aria-label="Back to the canvas" data-tip="Back to the canvas (Esc)"><Icon name="arrow-left" size={15} /></button>
