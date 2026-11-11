@@ -1,12 +1,14 @@
 // What the designer set for each of their skills (skills.ts reads the files): whether FRIDAY
 // uses it, and when. Kept in its own table, one row per skill they have touched; a skill
 // with no row is off. Also who leads each subject when two skills that are on speak to it
-// (skillleads.ts): the designer's picks, one row per subject. The tables are only ever added to
-// the library, never changed in place, so a Panel still on older code works beside them.
+// (skillleads.ts): the designer's picks, one row per subject. A lead takes nothing away: FRIDAY
+// gets every skill whole, with the list of leads beside them. The designer's note on a skill
+// (refs.note, "When to use it") goes with it. The tables are only ever added to the library,
+// never changed in place, so a Panel still on older code works beside them.
 
 import { db, now } from "./db.ts";
 import { skillFilesOf, skillFileText } from "./skillpacks.ts";
-import { applyLeads, pickLeads, type Lead } from "./skillleads.ts";
+import { pickLeads, type Lead } from "./skillleads.ts";
 import { autoReads, notReadYet, readsNow, readStateOf, readSummaries } from "./skillreads.ts";
 import { hasOwnParts, isLeadSubject, readEditParts, readLines, withRead, type SkillRead } from "./skillread.ts";
 import {
@@ -35,12 +37,13 @@ CREATE TABLE IF NOT EXISTS skill_leads (
   updated_at TEXT NOT NULL
 );
 `);
-// When a skill was last turned on, for the last tie-break of Panel's pick. Added in place: empty
-// on older rows, which fall back to when the row last changed.
+// When a skill was last turned on. Added in place by part 4 for a tie-break Panel's pick no longer
+// uses (a tie went to whichever skill was turned on a few milliseconds earlier); kept, as the
+// library only ever gains columns.
 if (!db.query<{ name: string }, []>("PRAGMA table_info(skill_use)").all().some((c) => c.name === "turned_on_at"))
   db.exec("ALTER TABLE skill_use ADD COLUMN turned_on_at TEXT");
 
-interface Row { id: string; title: string | null; text: string | null; turned_on: number | null; used_when: string | null; applies_to: string | null; set: string | null; pack: string | null }
+interface Row { id: string; title: string | null; text: string | null; note: string | null; turned_on: number | null; used_when: string | null; applies_to: string | null; set: string | null; pack: string | null }
 
 /**
  * A skill as Panel works from it. Its parts come from its own Decide / Build / Check headings
@@ -56,6 +59,7 @@ const toSkill = (r: Row, reads: ReturnType<typeof readsNow>): Skill => {
     parsed: withRead(own, used, read?.edits ?? null), text,
     ...(used ? { forUse: used.for } : {}),
     ...(r.pack ? { pack: r.pack } : {}),
+    ...(r.note?.trim() ? { note: r.note } : {}),
   };
 };
 
@@ -64,7 +68,7 @@ export function allSkills(id?: string): Skill[] {
   const reads = readsNow();
   return db
     .query<Row, string[]>(
-      `SELECT r.id, r.title, r.text, u.turned_on, u.used_when, u.applies_to, u.ref_id AS "set", p.name AS pack FROM refs r
+      `SELECT r.id, r.title, r.text, r.note, u.turned_on, u.used_when, u.applies_to, u.ref_id AS "set", p.name AS pack FROM refs r
        LEFT JOIN skill_use u ON u.ref_id = r.id
        LEFT JOIN skill_pack_skills ps ON ps.ref_id = r.id LEFT JOIN skill_packs p ON p.id = ps.pack_id
        WHERE r.kind = 'skill' AND r.status != 'pending' AND r.text IS NOT NULL ${id ? "AND r.id = ?" : ""} ORDER BY r.created_at DESC`,
@@ -85,23 +89,16 @@ export function skillsOn(): Skill[] {
 /** Every subject two skills that are on speak to, with its lead (skillleads.ts). */
 export function leadsNow(all: Skill[] = allSkills()): Lead[] {
   const picks = new Map(db.query<{ subject: string; ref_id: string }, []>("SELECT subject, ref_id FROM skill_leads").all().map((r) => [r.subject, r.ref_id]));
-  const since = new Map(
-    db.query<{ ref_id: string; at: string }, []>("SELECT ref_id, COALESCE(turned_on_at, updated_at) AS at FROM skill_use WHERE turned_on = 1").all().map((r) => [r.ref_id, r.at]),
-  );
-  return pickLeads(all, picks, since);
+  return pickLeads(all, picks);
 }
 
-/** Skills with each subject's lead applied: what FRIDAY really gets. */
-export function withLeads(all: Skill[]): Skill[] {
-  return applyLeads(all, leadsNow(all));
-}
-
-/** The skills that are on, with leads applied, for FRIDAY and for apps outside Panel. */
-function skillsForFriday(): Skill[] {
+/** The skills that are on, and who leads each subject they share, for FRIDAY and for apps outside Panel. */
+function skillsForFriday(): { skills: Skill[]; leads: Lead[] } {
   try {
-    return withLeads(allSkills()).filter((s) => s.on);
+    const all = allSkills();
+    return { skills: all.filter((s) => s.on), leads: leadsNow(all) };
   } catch {
-    return [];
+    return { skills: [], leads: [] };
   }
 }
 
@@ -143,7 +140,7 @@ export function setSkillUse(id: string, patch: { on?: unknown; when?: unknown; a
 
 /** One skill as the Skills page shows it. */
 export function describeOne(id: string) {
-  const all = withLeads(allSkills());
+  const all = allSkills();
   const s = all.find((x) => x.id === id);
   if (!s) throw new Error("That skill is gone.");
   return describeSkill(s, fitBudget(all.filter((x) => x.on)));
@@ -156,7 +153,7 @@ export function describeOne(id: string) {
 export function skillsPageNow() {
   const all = allSkills();
   const leads = leadsNow(all);
-  const page = skillsPage(applyLeads(all, leads));
+  const page = skillsPage(all);
   const reads = readSummaries();
   return {
     ...page,
@@ -182,7 +179,8 @@ export function readView(id: string) {
   // As the designer edits them: each line with its subject in front.
   const carries = a ? readEditParts(a, st.edits) : null;
   const panel = a ? readEditParts(a, null) : null;
-  // Line by line, with the ones another skill's lead leaves out (only while this one is on).
+  // Line by line, each noting another skill that leads its subject (only while this one is on):
+  // the line still reaches FRIDAY, and that skill wins where the two say different things.
   const leads = new Map(leadsNow(all).map((l) => [l.subject as string, l]));
   const lineView = (ls: { subject: string; text: string }[]) =>
     ls.map((l) => {
@@ -191,7 +189,7 @@ export function readView(id: string) {
     });
   const lines = a ? readLines(a, st.edits) : null;
   const shown = lines ? { decide: lineView(lines.decide), build: lineView(lines.build) } : null;
-  const reach = shown ? [...shown.decide, ...shown.build].filter((l) => !l.led_by) : [];
+  const reach = shown ? [...shown.decide, ...shown.build] : [];
   const find = (name: string) => {
     const n = name.toLowerCase().replace(/^.*\//, "");
     return all.find((x) => x.parsed.name.toLowerCase() === n || x.id === n);
@@ -204,7 +202,7 @@ export function readView(id: string) {
     panel,
     edited: !!st.edits && Object.keys(st.edits).length > 0,
     lines: shown,
-    /** Rough tokens of what really reaches FRIDAY: without the lines another skill leads. */
+    /** Rough tokens of what reaches FRIDAY: all its lines. */
     tokens: shown ? tokensOf(reach.reduce((n, l) => n + l.text.length + 3, 0)) : 0,
     points_to: (a?.points_to ?? []).map((name) => {
       const x = find(name);
@@ -214,10 +212,16 @@ export function readView(id: string) {
 }
 
 /** FRIDAY's <designer-skills> block right now, for one reader ("" with none on). */
-export const designerSkills = (reader: Reader) => skillsBlock(reader, skillsForFriday());
+export const designerSkills = (reader: Reader) => {
+  const f = skillsForFriday();
+  return skillsBlock(reader, f.skills, f.leads);
+};
 
-/** The Always skills' parts for AI apps outside Panel. */
-export const outsideSkills = (part: "decide+build" | "build") => skillsForOutside(skillsForFriday(), part);
+/** The Always skills' parts for AI apps outside Panel, and the list of leads to give once before them. */
+export const outsideSkills = (part: "decide+build" | "build") => {
+  const f = skillsForFriday();
+  return skillsForOutside(f.skills, part, f.leads);
+};
 
 /** What to measure in a page right now (skillcheck.ts). */
 export const checkPlanNow = () => checkPlan(skillsOn());
@@ -235,4 +239,7 @@ export function skillsChecked(apply: { name: string }[] | undefined): string[] {
 }
 
 /** get_skill: one skill that's on, its short version or as written (or one of its other files), or the list of them. */
-export const getSkill = (name?: string, file?: string) => readSkillFor(skillsForFriday(), name, file, { list: skillFilesOf, read: skillFileText });
+export const getSkill = (name?: string, file?: string) => {
+  const f = skillsForFriday();
+  return readSkillFor(f.skills, name, file, { list: skillFilesOf, read: skillFileText }, f.leads);
+};

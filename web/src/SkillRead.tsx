@@ -2,8 +2,8 @@
 //
 // Not read: one line on what a read gives, and "Read this skill". Reading: says so, and can be
 // stopped. Read: what the skill is for and who it is for, what FRIDAY carries (Decide and Build,
-// line by line with each line's subject; lines another skill's lead leaves out are shown muted,
-// with why), which the designer can edit (each line keeps its subject in front) and put back;
+// line by line with each line's subject; a line on a subject another skill leads says so in small
+// type, as that skill wins where the two differ), which the designer can edit (each line keeps its subject in front) and put back;
 // what Panel checks and could check later, where it disagrees with the designer's rules, the
 // skills it points to, and "Read again".
 //
@@ -80,10 +80,13 @@ export function SkillReadPanel({ id }: { id: string }) {
   );
 }
 
-/** One line of Decide or Build: its subject, its text, and, muted, why FRIDAY doesn't get it. */
+/**
+ * One line of Decide or Build: its subject, its text, and, in small type, the skill that leads its
+ * subject. FRIDAY gets the line either way; the lead wins only where the two say different things.
+ */
 function Line({ l }: { l: SkillLine }) {
   return (
-    <li className={l.led_by ? "skill-line led" : "skill-line"}>
+    <li className="skill-line">
       <span className="skill-line-subject">{l.subject}</span>
       <span className="skill-line-text">
         {l.text}
@@ -119,7 +122,6 @@ function ReadDone({ id, v, checks, onChanged, onError, busy }: {
   };
   const sketchable = a.for === "sketches" || a.for === "both";
   const lines = v.lines;
-  const led = lines ? [...lines.decide, ...lines.build].filter((l) => l.led_by).length : 0;
   const auto = useSyncExternalStore(skillStore.subscribe, () => !!skillStore.get()?.auto);
   return (
     <>
@@ -149,7 +151,6 @@ function ReadDone({ id, v, checks, onChanged, onError, busy }: {
           <div className="skill-use-row">
             <span className="skill-use-label">
               {sketchable ? "What FRIDAY carries" : "What Claude Code gets when it builds for real"}, about {v.tokens.toLocaleString("en")} tokens
-              {led > 0 && `, without ${led === 1 ? "1 line" : `${led} lines`} another skill leads`}
             </span>
             {!editing && !v.own_parts && <button className="text-btn inline" onClick={() => setEditing(true)}>Edit</button>}
           </div>

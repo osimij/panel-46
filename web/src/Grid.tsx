@@ -515,9 +515,15 @@ export function PersonAvatar({ r, size }: { r: Ref; size: number }) {
   return <Avatar r={r} size={size} />;
 }
 
-/** A skill file on the card: its name and what it's for, like a page of a manual. */
+/**
+ * A skill file on the card: its name and what it's for, like a page of a manual. What it's for is
+ * its read's one line once Panel has read it (some authors write a paragraph of trigger words as
+ * their description); until then the author's description, held to three lines.
+ */
 function SkillFace({ r }: { r: Ref }) {
-  const { description } = skillParts(r.text ?? "");
+  const own = skillParts(r.text ?? "").description;
+  const oneLine = useSyncExternalStore(skillStore.subscribe, () => skillStore.get()?.skills.find((s) => s.id === r.id)?.read?.one_line ?? null);
+  const description = oneLine ?? own;
   // A small mark when FRIDAY uses it.
   const on = useSyncExternalStore(skillStore.subscribe, () => !!skillStore.get()?.skills.some((s) => s.id === r.id && s.on));
   // A small mark once Panel has read it (skillread.ts).
@@ -536,7 +542,7 @@ function SkillFace({ r }: { r: Ref }) {
         {read && <span className="skill-label" title="Panel has read this skill">Read</span>}
       </span>
       <div className="skill-name">{displayTitle(r)}</div>
-      {description && <p className="skill-desc">{description}</p>}
+      {description && <p className={oneLine ? "skill-desc" : "skill-desc unread"}>{description}</p>}
       {main && (
         <span className="skill-subjects">
           <span className="skill-subject-main">{main}</span>

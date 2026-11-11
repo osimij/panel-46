@@ -147,8 +147,9 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     }, async () => {
       const rules = designRules();
       // The Always skills' Decide and Build follow the rules, under their own heading.
-      const skills = outsideSkills("decide+build");
-      const skillText = skills.length ? `\n\n${skillsHeading}\n\n${skills.map((x) => `### ${x.name}\n\n${x.text}`).join("\n\n")}` : "";
+      // Who leads each subject two skills share, once, before the skills.
+      const { leads, skills } = outsideSkills("decide+build");
+      const skillText = skills.length ? `\n\n${skillsHeading}\n\n${leads ? `${leads}\n\n` : ""}${skills.map((x) => `### ${x.name}\n\n${x.text}`).join("\n\n")}` : "";
       return { content: [{ type: "text" as const, text: (rules ? `${rulesHeading}\n\n${rules}` : "The designer hasn't written any rules yet (unugly.md is missing).") + skillText }] };
     });
   }

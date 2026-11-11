@@ -871,9 +871,11 @@ function Info({
   const isPost = r.kind === "x" || r.kind === "instagram" || r.kind === "pinterest";
   const restLines = r.text?.split("\n").slice(1).join("\n").trim();
   const plainPost = isPost && !r.title && !restLines;
+  // A read skill shows its read's one line, as its card does; until it is read, its author's description.
+  const skillLine = useSyncExternalStore(skillStore.subscribe, () => (r.kind === "skill" ? skillStore.get()?.skills.find((x) => x.id === r.id)?.read?.one_line ?? null : null));
   const body =
     plainPost ? r.text :
-    r.kind === "skill" ? skillParts(r.text ?? "").description
+    r.kind === "skill" ? skillLine ?? skillParts(r.text ?? "").description
     : r.kind === "account" ? null
     : r.title ? r.text : r.text?.split("\n").slice(1).join("\n").trim();
   const archived = r.media.filter((m) => m.status === "archived");
@@ -1043,7 +1045,8 @@ function Info({
         />
       </section>
 
-      <section className="field">
+      {/* A skill's subjects, from its read, say what it is used for better than tags. */}
+      {r.kind !== "skill" && <section className="field">
         <div className="field-label">{ui.tagsLabel}</div>
         <div className="tag-editor">
           {r.tags.map((t) => (
@@ -1143,7 +1146,7 @@ function Info({
             ))}
           </div>
         )}
-      </section>
+      </section>}
 
       {readable(r) && <DesignReadField r={r} reload={reload} />}
 

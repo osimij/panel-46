@@ -5,9 +5,12 @@
 //   more; nothing is ever turned on by reading;
 // - with it off: nothing is read by itself, and the Skills page says how many aren't read yet;
 // - get_skill: the short version of a read skill, the file as written with file "SKILL.md";
-// - leads: only the lead's lines on a subject reach FRIDAY's three readers, get_skill,
-//   get_design_rules and a build's HANDOFF.md, with a "follow …" line; a skill left with nothing
-//   isn't listed; Panel's pick and its tie-breaks; the designer's pick; the lead turned off;
+// - leads (skill fixes): every line of every skill that is on reaches FRIDAY's three readers,
+//   get_skill, get_design_rules and a build's HANDOFF.md; the list of leads is given once, the
+//   same for every reader, with a hint only for a lead not already in the instructions; Panel's
+//   pick and its tie-breaks (a tie is marked; the order of turning on changes nothing); the
+//   designer's pick; the lead turned off; the designer's note on a skill goes with it;
+// - a read that another running Panel put in line is left alone at start; a dead one's isn't;
 // - edits keep their subjects; a check without its number is dropped; the routes refuse callers
 //   that aren't Panel; with every skill off, FRIDAY's instructions are as with no skills at all.
 //
@@ -323,75 +326,96 @@ describe("with read automatically off", () => {
 
 // ---------- 2 and 3. Leads ----------
 
-describe("one skill leads each subject", () => {
-  test("only the lead's lines on a subject reach the three readers; the others say whom to follow; a skill left with nothing isn't listed", async () => {
+const RULE = "Where two skills say different things about the same thing, the lead of that subject wins. Where they don't disagree, follow both.";
+/** How many times `part` is in `text`. */
+const count = (text: string, part: string) => text.split(part).length - 1;
+/** The list of leads in a text: the rule and its lines. */
+const listIn = (text: string) => text.slice(text.indexOf(RULE)).split("\n\n")[0]!;
+let handoff = { project: "", sketch: "" };
+
+describe("a lead decides only where skills disagree", () => {
+  test("every line of every skill that is on reaches the three readers; the list names the lead once, the same for each", async () => {
     await set(off, ids.emil, { on: true, when: "applies", about: ["motion"] });
     await set(off, ids.ui, { on: true, when: "always" });
     await set(off, ids.extra, { on: true, when: "always" });
     const pg = await page(off);
     expect(pg.leads.length).toBe(1);
     expect(pg.leads[0]).toMatchObject({ subject: "motion", id: ids.emil, name: "emil", by: "panel", panel: ids.emil });
-    expect(pg.leads[0].speakers.length).toBe(3);
+    // emil and motion-extra are both mainly motion, but emil has more lines: not a tie.
+    expect(pg.leads[0].tie).toBeUndefined();
     expect(pg.leads[0].speakers).toEqual(expect.arrayContaining([
       { id: ids.emil, name: "emil", lines: 2 }, { id: ids.ui, name: "better-ui", lines: 2 }, { id: ids.extra, name: "motion-extra", lines: 1 },
     ]));
     const pr = await prompts(off);
-    const follow = "On motion, follow emil (read it with get_skill when the page moves).";
+    const list = `${RULE}\n- motion: emil (read it with get_skill when the page moves)`;
     for (const k of ["solo", "planner", "builder"] as const) {
-      expect(pr[k]).not.toContain("U-MOTION");
-      expect(pr[k]).not.toContain("X-MOTION-ONLY");
-      expect(pr[k]).not.toContain("motion-extra");
+      expect(count(pr[k], RULE)).toBe(1);
+      expect(listIn(pr[k])).toBe(list);
+      // Right after the block's opening lines.
+      expect(pr[k]).toContain(`then any reference.\n\n${list}\n\n`);
       expect(pr[k]).toContain("- emil: emil, read. (when the page moves)");
+      expect(pr[k]).not.toContain("follow emil");
+      expect(pr[k]).not.toContain("one leads it");
+    }
+    for (const line of ["U-SURF-BUILD", "U-MOTION-1", "U-MOTION-2", "X-MOTION-ONLY"]) {
+      expect(pr.solo).toContain(line);
+      expect(pr.builder).toContain(line);
     }
     expect(pr.solo).toContain("U-SURF-DECIDE");
-    expect(pr.solo).toContain("U-SURF-BUILD");
-    expect(pr.solo).toContain(follow);
-    expect(pr.builder).toContain(follow);
-    // The planner gets Decide only, and better-ui's motion lines were all in Build.
     expect(pr.planner).toContain("U-SURF-DECIDE");
-    expect(pr.planner).not.toContain(follow);
-    // The Skills page and the detail view say so.
-    const ui = pg.skills.find((s: any) => s.id === ids.ui);
-    expect(ui.cut).toEqual([{ subject: "motion", lead: ids.emil, leadName: "emil", lines: 2 }]);
-    expect(pg.skills.find((s: any) => s.id === ids.extra).given).toBe("led");
+    // The Skills page and the detail view: nothing is cut or muted, the lead is only noted.
+    expect(pg.skills.find((s: any) => s.id === ids.extra).given).toBe("every");
+    expect(pg.skills.some((s: any) => "cut" in s || "emptied" in s)).toBe(false);
     const v = await view(off, ids.ui);
     expect(v.lines.build.map((l: any) => l.led_by)).toEqual([null, "emil", "emil"]);
-    // What really reaches FRIDAY: without the two lines emil leads.
-    expect(v.tokens).toBe(Math.round(("U-SURF-DECIDE".length + 3 + "U-SURF-BUILD".length + 3) / 4));
+    expect(v.tokens).toBe(Math.round(["U-SURF-DECIDE", "U-SURF-BUILD", "U-MOTION-1", "U-MOTION-2"].reduce((n, t) => n + t.length + 3, 0) / 4));
   });
 
-  test("get_skill, get_design_rules and a build's HANDOFF.md carry the lead's lines only", async () => {
+  test("get_skill, get_design_rules and a build's HANDOFF.md carry every line, with whose word wins", async () => {
     const ui = await call(off, "get_skill", { name: "better-ui" });
     expect(ui.text).toContain("U-SURF-BUILD");
-    expect(ui.text).not.toContain("U-MOTION");
-    expect(ui.text).toContain("On motion, follow emil (read it with get_skill when the page moves).");
+    expect(ui.text).toContain("- U-MOTION-1\n- U-MOTION-2");
+    expect(ui.text).toContain("On motion, emil leads: where it says something different, follow emil (read it with get_skill when the page moves).");
+    const extra = await call(off, "get_skill", { name: "motion-extra" });
+    expect(extra.text).toContain("X-MOTION-ONLY");
+    expect(extra.text).toContain("On motion, emil leads:");
+    // The lead itself has no such line.
     const emil = await call(off, "get_skill", { name: "emil" });
     expect(emil.text).toContain("E-MOTION-BUILD");
-    expect(emil.text).not.toContain("follow");
+    expect(emil.text).not.toContain("leads:");
+    const outside = `${RULE}\n- motion: emil (read it with get_skill)`;
     const rules = await call(off, "get_design_rules", {});
     expect(rules.text).toContain("### better-ui");
-    expect(rules.text).not.toContain("U-MOTION");
-    expect(rules.text).toContain("On motion, follow emil (read it with get_skill).");
-    expect(rules.text).not.toContain("motion-extra");
+    expect(rules.text).toContain("U-MOTION-1");
+    expect(rules.text).toContain("### motion-extra");
+    expect(rules.text).toContain("X-MOTION-ONLY");
+    expect(count(rules.text, RULE)).toBe(1);
+    expect(listIn(rules.text)).toBe(outside);
+    // Once, before the skills.
+    expect(rules.text.indexOf(RULE)).toBeLessThan(rules.text.indexOf("### better-ui"));
     const project = ((await (await off.send("POST", "/api/projects", { name: "Leads", brief: "A test." })).json()) as any).id;
     const made = await call(off, "make_sketch", { project, title: "Hand-off", html: "<!doctype html><html><body><h1>Hello there, a page</h1></body></html>" });
     expect(made.isError).toBe(false);
-    const h = await call(off, "get_handoff", { project, sketch: made.first.sketch });
+    handoff = { project, sketch: made.first.sketch };
+    const h = await call(off, "get_handoff", handoff);
     expect(h.first.handoff).toContain("U-SURF-BUILD");
-    expect(h.first.handoff).not.toContain("U-MOTION");
-    expect(h.first.handoff).toContain("On motion, follow emil (read it with get_skill).");
-    expect(h.first.handoff).not.toContain("X-MOTION-ONLY");
+    expect(h.first.handoff).toContain("U-MOTION-1");
+    expect(h.first.handoff).toContain("X-MOTION-ONLY");
+    expect(count(h.first.handoff, RULE)).toBe(1);
+    expect(listIn(h.first.handoff)).toBe(outside);
+    expect(h.first.handoff.indexOf(RULE)).toBeLessThan(h.first.handoff.indexOf("### better-ui"));
   }, 60_000);
 
-  test("the designer picks the lead; turned off, Panel's pick takes over until it is back", async () => {
+  test("the designer picks the lead (no hint for one already in the instructions); turned off, Panel's pick takes over until it is back", async () => {
     let pg = (await (await off.send("PUT", "/api/skills/leads", { subject: "motion", id: ids.ui })).json()) as any;
     expect(pg.leads[0]).toMatchObject({ subject: "motion", id: ids.ui, by: "designer", panel: ids.emil });
     let pr = await prompts(off);
+    for (const k of ["solo", "planner", "builder"] as const) expect(listIn(pr[k])).toBe(`${RULE}\n- motion: better-ui`);
     expect(pr.builder).toContain("U-MOTION-1");
     const emil = await call(off, "get_skill", { name: "emil" });
-    expect(emil.text).not.toContain("E-MOTION");
+    expect(emil.text).toContain("E-MOTION-BUILD");
     expect(emil.text).toContain("E-GESTURE-BUILD");
-    expect(emil.text).toContain("On motion, follow better-ui.");
+    expect(emil.text).toContain("On motion, better-ui leads: where it says something different, follow better-ui.");
     // Turned off: Panel's pick, while the designer's stays kept.
     await set(off, ids.ui, { on: false });
     pg = await page(off);
@@ -403,9 +427,43 @@ describe("one skill leads each subject", () => {
     pg = (await (await off.send("PUT", "/api/skills/leads", { subject: "motion", id: null })).json()) as any;
     expect(pg.leads[0]).toMatchObject({ id: ids.emil, by: "panel" });
     pr = await prompts(off);
-    expect(pr.builder).not.toContain("U-MOTION-1");
+    expect(listIn(pr.builder)).toBe(`${RULE}\n- motion: emil (read it with get_skill when the page moves)`);
     expect((await off.send("PUT", "/api/skills/leads", { subject: "review", id: ids.ui })).status).toBe(400);
   });
+
+  test("the designer's note on a skill goes with it everywhere; a long one is cut; an empty one changes nothing", async () => {
+    const note = (id: string, text: string) => off.send("PATCH", `/api/refs/${id}`, { note: text });
+    const pr0 = await prompts(off);
+    const rules0 = (await call(off, "get_design_rules", {})).text;
+    await note(ids.ui, "Use it for dashboards, not for posters.");
+    await note(ids.emil, "Only when something really moves.");
+    const pr = await prompts(off);
+    // In the skill's block, after its line; and under its line in the list of skills to read.
+    expect(pr.solo).toContain(`<skill name="better-ui">\nbetter-ui, read.\nThe designer's note: Use it for dashboards, not for posters.\n\n`);
+    expect(pr.builder).toContain("The designer's note: Use it for dashboards, not for posters.");
+    for (const k of ["solo", "planner", "builder"] as const)
+      expect(pr[k]).toContain("- emil: emil, read. (when the page moves)\n  The designer's note: Only when something really moves.");
+    const list = await call(off, "get_skill", {});
+    expect(list.text).toContain("The designer's note: Use it for dashboards, not for posters.");
+    expect(list.text).toContain("The designer's note: Only when something really moves.");
+    expect((await call(off, "get_skill", { name: "better-ui" })).text).toContain("better-ui, read.\nThe designer's note: Use it for dashboards, not for posters.");
+    expect((await call(off, "get_skill", { name: "emil" })).text).toContain("The designer's note: Only when something really moves.");
+    expect((await call(off, "get_design_rules", {})).text).toContain("### better-ui\n\nThe designer's note: Use it for dashboards, not for posters.\n\n");
+    expect((await call(off, "get_handoff", handoff)).first.handoff).toContain("The designer's note: Use it for dashboards, not for posters.");
+    // At most 300 characters, cut at a word.
+    const long = Array.from({ length: 80 }, (_, i) => `word${i}`).join(" ");
+    await note(ids.ui, long);
+    const cut = (await prompts(off)).solo.match(/The designer's note: (.*)\n/)![1]!;
+    expect(cut.length).toBeLessThanOrEqual(300);
+    expect(cut.endsWith("…")).toBe(true);
+    expect(long.startsWith(cut.slice(0, -1))).toBe(true);
+    expect(long[cut.length - 1]).toBe(" ");
+    // Empty notes: everything as it was before them.
+    await note(ids.ui, "");
+    await note(ids.emil, "   ");
+    expect(await prompts(off)).toEqual(pr0);
+    expect((await call(off, "get_design_rules", {})).text).toBe(rules0);
+  }, 30_000);
 
   test("edits keep their subjects; a line without one takes the skill's main subject; part 3's plain edits still work", async () => {
     const v = (await (await off.send("PATCH", `/api/skills/${ids.ui}/read`, { build: "- motion: MY-MOTION-EDIT\n- MY-PLAIN-EDIT" })).json()) as any;
@@ -415,8 +473,7 @@ describe("one skill leads each subject", () => {
       { subject: "surfaces", text: "MY-PLAIN-EDIT", led_by: null },
     ]);
     const pr = await prompts(off);
-    expect(pr.builder).toContain("- MY-PLAIN-EDIT");
-    expect(pr.builder).not.toContain("MY-MOTION-EDIT");
+    expect(pr.builder).toContain("- MY-MOTION-EDIT\n- MY-PLAIN-EDIT");
     // An edit as part 3 kept it: plain text, no subjects.
     off.db.run("UPDATE skill_reads SET edits = ? WHERE ref_id = ?", [JSON.stringify({ build: "- OLD-PLAIN-EDIT\n- ANOTHER-OLD-ONE" }), ids.ui]);
     const old = await view(off, ids.ui);
@@ -437,27 +494,102 @@ describe("one skill leads each subject", () => {
     expect(off.db.query("SELECT COUNT(*) n FROM skill_leads").get()).toEqual({ n: 1 });
     expect(await prompts(off)).toEqual(before);
   });
+
+  test("with one skill on, or none sharing a subject, there is no list", async () => {
+    await set(off, ids.ui, { on: true, when: "always" });
+    expect((await prompts(off)).solo).not.toContain(RULE);
+    await set(off, ids.ui, { on: false });
+  });
 });
 
 describe("Panel's pick", () => {
-  const skill = (id: string, read: SkillRead): Skill => ({ id, on: true, when: "always", about: [], parsed: withRead(parseSkill(md(id, "x.")), read, null), text: "", forUse: read.for });
+  const skill = (id: string, read: SkillRead, when: Skill["when"] = "always"): Skill => ({ id, on: true, when, about: [], parsed: withRead(parseSkill(md(id, "x.")), read, null), text: "", forUse: read.for });
   const motion = (n: number) => Array.from({ length: n }, (_, i) => L("motion", `m${i}`));
+  const mainly = (id: string, n: number, when: Skill["when"] = "always") => skill(id, readOf(id, ["motion"], [], motion(n)), when);
   test("the skill whose main subject it is, before one with more lines on it", () => {
-    const leads = pickLeads([skill("b", readOf("b", ["surfaces"], [], motion(5))), skill("a", readOf("a", ["motion"], [], motion(1)))], new Map(), new Map());
+    const leads = pickLeads([skill("b", readOf("b", ["surfaces"], [], motion(5))), mainly("a", 1)], new Map());
     expect(leads[0]).toMatchObject({ subject: "motion", id: "a", by: "panel" });
+    expect(leads[0]!.tie).toBeUndefined();
   });
   test("between several, the one with more lines on it", () => {
-    const leads = pickLeads([skill("a", readOf("a", ["motion"], [], motion(2))), skill("b", readOf("b", ["motion"], motion(1), motion(2)))], new Map(), new Map());
+    const leads = pickLeads([mainly("a", 2), skill("b", readOf("b", ["motion"], motion(1), motion(2)))], new Map());
     expect(leads[0]!.id).toBe("b");
+    expect(leads[0]!.tie).toBeUndefined();
   });
-  test("then the one turned on first", () => {
-    const both = [skill("a", readOf("a", ["motion"], [], motion(2))), skill("b", readOf("b", ["motion"], [], motion(2)))];
-    expect(pickLeads(both, new Map(), new Map([["a", "2026-11-02"], ["b", "2026-11-01"]]))[0]!.id).toBe("b");
-    expect(pickLeads(both, new Map(), new Map([["a", "2026-11-01"], ["b", "2026-11-02"]]))[0]!.id).toBe("a");
+  test("then Always, before When it applies, before When asked; a tie names the other skill", () => {
+    const a = pickLeads([mainly("a", 2, "applies"), mainly("b", 2, "always")], new Map());
+    expect(a[0]).toMatchObject({ id: "b", tie: "a" });
+    const b = pickLeads([mainly("a", 2, "asked"), mainly("b", 2, "applies")], new Map());
+    expect(b[0]).toMatchObject({ id: "b", tie: "a" });
+  });
+  test("then by name, A to Z; the order of turning on changes nothing", () => {
+    const both = [mainly("beta", 2), mainly("alpha", 2)];
+    expect(pickLeads(both, new Map())[0]).toMatchObject({ id: "alpha", tie: "beta" });
+    expect(pickLeads([...both].reverse(), new Map())[0]).toMatchObject({ id: "alpha", tie: "beta" });
+  });
+  test("the designer's pick is not a tie", () => {
+    const leads = pickLeads([mainly("beta", 2), mainly("alpha", 2)], new Map([["motion", "beta"]]));
+    expect(leads[0]).toMatchObject({ id: "beta", by: "designer", panel: "alpha" });
+    expect(leads[0]!.tie).toBeUndefined();
   });
   test("one skill alone on a subject has no lead; a skill only for real builds takes no part", () => {
-    expect(pickLeads([skill("a", readOf("a", ["motion"], [], motion(2)))], new Map(), new Map())).toEqual([]);
-    expect(pickLeads([skill("a", readOf("a", ["motion"], [], motion(2))), skill("b", readOf("b", ["motion"], [], motion(3), { for: "builds" }))], new Map(), new Map())).toEqual([]);
+    expect(pickLeads([mainly("a", 2)], new Map())).toEqual([]);
+    expect(pickLeads([mainly("a", 2), skill("b", readOf("b", ["motion"], [], motion(3), { for: "builds" }))], new Map())).toEqual([]);
+  });
+});
+
+// ---------- A read another running Panel put in line ----------
+
+describe("two Panels on one library", () => {
+  /** A process id that is no longer running. */
+  const deadPid = async () => {
+    const p = Bun.spawn(["true"]);
+    await p.exited;
+    return p.pid;
+  };
+  const addSkill = (p: TestPanel, id: string, name: string) =>
+    p.db.run("INSERT INTO refs (id, kind, title, text, note, status, created_at, updated_at) VALUES (?, 'skill', ?, ?, '', 'archived', ?, ?)", [id, name, md(name, `${name}.`), at, at]);
+  const row = (p: TestPanel, id: string) => p.db.query<{ state: string; pid: number | null; error: string | null }, [string]>("SELECT state, pid, error FROM skill_reads WHERE ref_id = ?").get(id);
+  const forget = (p: TestPanel, ...xs: string[]) => {
+    for (const id of xs) {
+      p.db.run("DELETE FROM skill_reads WHERE ref_id = ?", [id]);
+      p.db.run("DELETE FROM refs WHERE id = ?", [id]);
+    }
+  };
+
+  test("with read automatically off: another running Panel's reads are left alone at start; a dead one's are handled as before", async () => {
+    addSkill(off, "5f000000000000b1", "Theirs");
+    addSkill(off, "5f000000000000b2", "Gone");
+    // This test's own process stands for the other Panel: it is running, and it isn't the companion.
+    off.db.run("INSERT INTO skill_reads (ref_id, state, queued_at, updated_at, pid) VALUES ('5f000000000000b1', 'reading', ?, ?, ?)", [at, at, process.pid]);
+    off.db.run("INSERT INTO skill_reads (ref_id, state, queued_at, updated_at, pid) VALUES ('5f000000000000b2', 'reading', ?, ?, ?)", [at, at, await deadPid()]);
+    await off.restart();
+    expect(row(off, "5f000000000000b1")).toEqual({ state: "reading", pid: process.pid, error: null });
+    expect(row(off, "5f000000000000b2")!.state).toBe("failed");
+    expect(row(off, "5f000000000000b2")!.error).toContain("Panel was restarted before this read finished");
+    forget(off, "5f000000000000b1", "5f000000000000b2");
+  }, 30_000);
+
+  test("with it on: another running Panel's waiting read isn't taken; a dead one's read goes back in line and is read", async () => {
+    addSkill(on, "5f000000000000b3", "TheirsWaiting");
+    addSkill(on, "5f000000000000b4", "GoneReading");
+    on.db.run("INSERT INTO skill_reads (ref_id, state, queued_at, updated_at, pid) VALUES ('5f000000000000b3', 'waiting', ?, ?, ?)", [at, at, process.pid]);
+    on.db.run("INSERT INTO skill_reads (ref_id, state, queued_at, updated_at, pid) VALUES ('5f000000000000b4', 'reading', ?, ?, ?)", [at, at, await deadPid()]);
+    await on.restart();
+    for (let i = 0; i < 100 && row(on, "5f000000000000b4")!.state !== "done"; i++) await Bun.sleep(100);
+    expect(row(on, "5f000000000000b4")!.state).toBe("done");
+    expect(timesRead("GoneReading")).toBe(1);
+    expect(row(on, "5f000000000000b3")).toEqual({ state: "waiting", pid: process.pid, error: null });
+    expect(timesRead("TheirsWaiting")).toBe(0);
+    forget(on, "5f000000000000b3", "5f000000000000b4");
+  }, 30_000);
+
+  test("a read put in line keeps the process id of the Panel that put it there", async () => {
+    await upload(on, "mine.md", md("Mine", "Mine."));
+    await settle(on);
+    const pid = row(on, idOf(on, "Mine"))!.pid;
+    expect(typeof pid).toBe("number");
+    expect(pid).not.toBe(process.pid);
   });
 });
 

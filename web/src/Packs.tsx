@@ -436,7 +436,8 @@ function LeadPicker({ lead, onError }: { lead: SkillLead; onError: (t: string) =
       >
         {lead.name}
       </button>
-      {lead.by === "panel" && <span className="skill-lead-by"> · Panel's pick</span>}
+      {/* A tie: Panel's pick was level with another skill on main subject and lines. */}
+      {lead.by === "panel" && <span className="skill-lead-by"> · Panel's pick{lead.tie ? `, level with ${lead.tie}` : ""}</span>}
       {at && (
         <Popover x={at.x} y={at.y} onClose={() => setAt(null)}>
           <div className="menu-label">FRIDAY follows on {lead.subject}</div>

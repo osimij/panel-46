@@ -1054,8 +1054,8 @@ export interface SkillUse {
   /** Check lines Panel can't measure yet. */
   unknown: string[];
   tokens: number;
-  /** off · every (in every message) · listed (read when needed) · dropped (too long for every message) · led (other skills lead all it says) */
-  given: "off" | "every" | "listed" | "dropped" | "led";
+  /** off · every (in every message) · listed (read when needed) · dropped (too long for every message) */
+  given: "off" | "every" | "listed" | "dropped";
   /** In plain words, what FRIDAY gets from it. */
   gets: string;
   /** Who it is for, from its read (null: not read, or its own headings come first). */
@@ -1063,13 +1063,9 @@ export interface SkillUse {
   /** The pack it came from. */
   pack: string | null;
   /** Where its read stands. older: read with Panel's older instructions, so it counts as not read yet. */
-  read: { state: SkillReadState; changed: boolean; older: boolean; cost: number; for: SkillFor | null; subjects: string[] } | null;
+  read: { state: SkillReadState; changed: boolean; older: boolean; cost: number; for: SkillFor | null; subjects: string[]; one_line: string | null } | null;
   /** From its read: its subjects, the main one first ([] with no read in use). */
   subjects: string[];
-  /** Lines another skill's lead leaves out. */
-  cut: { subject: string; lead: string; leadName: string; lines: number }[];
-  /** Other skills lead everything it says. */
-  emptied: boolean;
 }
 /** Who leads a subject two or more skills that are on speak to (server/skillleads.ts). */
 export interface SkillLead {
@@ -1079,6 +1075,8 @@ export interface SkillLead {
   by: "designer" | "panel";
   /** Panel's own pick. */
   panel: string;
+  /** Panel's pick was level with this skill on main subject and lines (decided by when each is used, then by name). */
+  tie?: string;
   speakers: { id: string; name: string; lines: number }[];
 }
 export interface SkillsPage {
@@ -1262,7 +1260,7 @@ export interface SkillReadView {
   carries: { decide: string; build: string } | null;
   panel: { decide: string; build: string } | null;
   edited: boolean;
-  /** Line by line, each with its subject; led_by names the skill whose lead leaves it out. */
+  /** Line by line, each with its subject; led_by names the skill that leads that subject (it wins where the two differ). */
   lines: { decide: SkillLine[]; build: SkillLine[] } | null;
   /** Rough tokens of what really reaches FRIDAY. */
   tokens: number;

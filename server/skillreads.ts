@@ -18,6 +18,11 @@
 // subscription read. A failed read is tried once more by itself, then stays failed with its
 // reason. The line can be stopped. Reading a skill never turns it on.
 //
+// Each waiting or running read keeps the process id of the Panel that put it in line or is
+// running it (pid). A test copy can have two Panels on one library; at start, and when picking
+// the next read, a Panel leaves alone the reads of another Panel that is still running, so it
+// never marks them failed or reads them twice. The real library has one Panel that reads.
+//
 // The table is only ever added to the library; a Panel still on older code works beside it.
 
 import { createHash } from "node:crypto";
@@ -51,17 +56,19 @@ CREATE TABLE IF NOT EXISTS skill_reads (
 );
 `);
 // Added in place (empty on older rows). version: of the read's instructions the answer was made
-// with (empty: part 3's, version 1). tries: failed attempts since it was last put in line.
+// with (empty: part 3's, version 1). tries: failed attempts since it was last put in line. pid:
+// the process of the Panel that put it in line or is reading it.
 {
   const cols = db.query<{ name: string }, []>("PRAGMA table_info(skill_reads)").all().map((c) => c.name);
   if (!cols.includes("version")) db.exec("ALTER TABLE skill_reads ADD COLUMN version INTEGER");
   if (!cols.includes("tries")) db.exec("ALTER TABLE skill_reads ADD COLUMN tries INTEGER NOT NULL DEFAULT 0");
+  if (!cols.includes("pid")) db.exec("ALTER TABLE skill_reads ADD COLUMN pid INTEGER");
 }
 
 interface ReadRow {
   ref_id: string; state: "waiting" | "reading" | "done" | "failed"; error: string | null; model: string | null; effort: string | null;
   fingerprint: string | null; answer: string | null; edits: string | null; queued_at: string | null; read_at: string | null;
-  version: number | null; tries: number;
+  version: number | null; tries: number; pid: number | null;
 }
 
 /** Skills are read by themselves: the "read automatically" setting saves have (read.ts settings.auto). */
@@ -153,7 +160,7 @@ export function readStateOf(id: string): ReadState {
 /** Every skill's read state in short, for the cards and the pack headings. */
 export function readSummaries() {
   const rows = new Map(db.query<ReadRow, []>("SELECT * FROM skill_reads").all().map((r) => [r.ref_id, r]));
-  const out = new Map<string, { state: ReadState["state"]; changed: boolean; older: boolean; cost: number; for: SkillRead["for"] | null; subjects: string[] }>();
+  const out = new Map<string, { state: ReadState["state"]; changed: boolean; older: boolean; cost: number; for: SkillRead["for"] | null; subjects: string[]; one_line: string | null }>();
   for (const r of db.query<{ id: string }, []>("SELECT id FROM refs WHERE kind = 'skill' AND text IS NOT NULL").all()) {
     const m = materialOf(r.id);
     if (!m) continue;
@@ -167,6 +174,8 @@ export function readSummaries() {
       for: answer?.for ?? null,
       // Where the Skills page puts it, also for a file whose own headings come before its read.
       subjects: answer?.subjects ?? [],
+      // What it is for, in the read's own short words: the card shows this, not the author's description.
+      one_line: answer?.one_line || null,
     });
   }
   return out;
@@ -186,6 +195,29 @@ export function setReadEdits(id: string, patch: { decide?: unknown; build?: unkn
 }
 
 // ---------- Running reads, a few at a time ----------
+
+/** Whether a process is still running (one we may not signal is running too). */
+function alive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as { code?: string }).code === "EPERM";
+  }
+}
+
+/**
+ * The waiting and running reads that belong to another Panel still running on this library: left
+ * exactly as they are. As SQL to add to a WHERE, with its values.
+ */
+function notOthers() {
+  const theirs = db
+    .query<{ ref_id: string; pid: number }, [number]>("SELECT ref_id, pid FROM skill_reads WHERE state IN ('waiting', 'reading') AND pid IS NOT NULL AND pid != ?")
+    .all(process.pid)
+    .filter((r) => alive(r.pid))
+    .map((r) => r.ref_id);
+  return { sql: theirs.length ? `AND ref_id NOT IN (${theirs.map(() => "?").join(", ")})` : "", args: theirs };
+}
 
 /**
  * How many skills are read at the same time. A pack of fifteen is read in a third of the time;
@@ -209,9 +241,9 @@ export function queueReads(ids: string[]) {
     const row = db.query<{ state: string }, [string]>("SELECT state FROM skill_reads WHERE ref_id = ?").get(id);
     if (row?.state === "waiting" || row?.state === "reading") continue;
     db.run(
-      `INSERT INTO skill_reads (ref_id, state, queued_at, updated_at, tries) VALUES (?, 'waiting', ?, ?, 0)
-       ON CONFLICT(ref_id) DO UPDATE SET state = 'waiting', error = NULL, tries = 0, queued_at = excluded.queued_at, updated_at = excluded.updated_at`,
-      [id, ts, ts],
+      `INSERT INTO skill_reads (ref_id, state, queued_at, updated_at, tries, pid) VALUES (?, 'waiting', ?, ?, 0, ?)
+       ON CONFLICT(ref_id) DO UPDATE SET state = 'waiting', error = NULL, tries = 0, queued_at = excluded.queued_at, updated_at = excluded.updated_at, pid = excluded.pid`,
+      [id, ts, ts, process.pid],
     );
     queued.push(id);
   }
@@ -290,20 +322,23 @@ export function stopReads() {
  * in line too. Off, reads that were waiting or under way don't start again by themselves.
  */
 export function startSkillReads() {
+  // Another Panel still running on this library keeps its own line.
+  const o = notOthers();
   if (autoReads()) {
-    db.run("UPDATE skill_reads SET state = 'waiting' WHERE state = 'reading'");
+    db.run(`UPDATE skill_reads SET state = 'waiting' WHERE state = 'reading' ${o.sql}`, o.args);
     readIfAuto();
     drain();
     return;
   }
-  db.run("UPDATE skill_reads SET state = 'done', error = NULL WHERE state IN ('waiting', 'reading') AND answer IS NOT NULL");
-  db.run("UPDATE skill_reads SET state = 'failed', error = 'Panel was restarted before this read finished. Read it again.' WHERE state IN ('waiting', 'reading') AND answer IS NULL");
+  db.run(`UPDATE skill_reads SET state = 'done', error = NULL WHERE state IN ('waiting', 'reading') AND answer IS NOT NULL ${o.sql}`, o.args);
+  db.run(`UPDATE skill_reads SET state = 'failed', error = 'Panel was restarted before this read finished. Read it again.' WHERE state IN ('waiting', 'reading') AND answer IS NULL ${o.sql}`, o.args);
 }
 
 /** Start reads from the front of the line until READS_AT_ONCE are under way; each one done starts the next. */
 function drain() {
   while (running.size < READS_AT_ONCE) {
-    const busy = [...running.keys()];
+    // Not one already under way here, nor one another running Panel put in line.
+    const busy = [...running.keys(), ...notOthers().args];
     const next = db
       .query<{ ref_id: string }, string[]>(
         `SELECT ref_id FROM skill_reads WHERE state = 'waiting' ${busy.length ? `AND ref_id NOT IN (${busy.map(() => "?").join(", ")})` : ""} ORDER BY queued_at, ref_id LIMIT 1`,
@@ -312,7 +347,7 @@ function drain() {
     if (!next) break;
     const run = { id: next.ref_id, proc: null as { kill: () => void } | null, stopped: false };
     running.set(run.id, run);
-    db.run("UPDATE skill_reads SET state = 'reading', updated_at = ? WHERE ref_id = ?", [now(), run.id]);
+    db.run("UPDATE skill_reads SET state = 'reading', pid = ?, updated_at = ? WHERE ref_id = ?", [process.pid, now(), run.id]);
     void readOne(run).finally(() => {
       running.delete(run.id);
       drain();

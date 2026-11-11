@@ -565,6 +565,8 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
   margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--muted);
   display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; word-break: break-word;
 }
+/* A skill not read yet shows its author's description, which can be a paragraph: three lines at most. */
+.skill-desc.unread { -webkit-line-clamp: 3; }
 
 /* ============ Empty ============ */
 
@@ -968,8 +970,8 @@ a.cover-btn { text-decoration: none; }
 .skill-lines ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 5px; }
 .skill-line { display: grid; grid-template-columns: 92px 1fr; gap: 10px; line-height: 1.5; }
 .skill-line-subject { color: var(--faint); font-size: 11.5px; padding-top: 1px; }
-.skill-line.led .skill-line-text { color: var(--faint); }
-.skill-line-why { color: var(--muted); }
+/* "· emil-design-eng leads motion": in the same quiet type as the subject; the line itself isn't muted. */
+.skill-line-why { color: var(--faint); font-size: 11.5px; }
 /* The Skills page by subject (Packs.tsx): a quiet switch, then a section per subject with its lead. */
 .skill-view-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 18px; font-size: 13px; }
 .skill-view-row .seg button { height: 24px; padding: 0 10px; }

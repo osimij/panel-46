@@ -17,13 +17,16 @@
 // the page (it moves, it's for a phone, it has a form), or only when asked for.
 //
 // Order of authority, said wherever skills are given: the designer's rules, then a project's
-// locked decisions, then skills, then references.
+// locked decisions, then skills, then references. Where two skills that are on say different
+// things about one subject, its lead wins (skillleads.ts); where they don't disagree, both are
+// followed. The designer's own note on a skill ("When to use it") goes with it wherever it is given.
 //
 // This file only reads and writes text: reading a skill, FRIDAY's skills block, the budget,
 // what to measure. It never opens the library, so it can be tested on its own. What the
 // designer set for each skill, and the table it's kept in, are in skilluse.ts.
 
-import type { For, LeadSubject, ReadLine, Subject } from "./skillread.ts";
+import type { Lead } from "./skillleads.ts";
+import type { For, ReadLine, Subject } from "./skillread.ts";
 
 // ---------- Reading a skill ----------
 
@@ -185,37 +188,28 @@ export interface Skill {
   forUse?: For;
   /** The pack it came from (skillpacks.ts), to tell two skills with one name apart. */
   pack?: string;
-  /** Lines left out because another skill leads their subject (skillleads.ts). */
-  cut?: Cut[];
-  /** Every line it had was left out for a lead: FRIDAY isn't given it at all. */
-  emptied?: boolean;
+  /** The designer's own note on it ("When to use it" in its detail view): goes with it wherever it is given. */
+  note?: string;
 }
 
-/** What a lead left out of one skill: the subject, who leads it, and how many lines from each part. */
-export interface Cut { subject: LeadSubject; lead: string; leadName: string; decide: number; build: number }
+/** The longest designer's note given with a skill; a longer one is cut at a word. */
+export const NOTE_LIMIT = 300;
 
-/** "motion", "motion and gestures", "typography, color and layout". */
-export const andList = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : xs[0] ?? "");
-
-/**
- * The "follow" lines for one skill whose lines a lead left out: "On motion, follow
- * emil-design-eng (read it with get_skill when the page moves)." One line per lead, its
- * subjects together. `part`: only the subjects cut from that part (the planner gets Decide, the
- * builder Build). `hint`: how to read the lead, or "" when it is already in front of the reader.
- */
-export function followLines(s: Pick<Skill, "cut">, part: "decide" | "build" | "both", hint: (leadId: string) => string): string[] {
-  const groups = new Map<string, { name: string; subjects: string[] }>();
-  for (const c of s.cut ?? []) {
-    if (part === "decide" ? !c.decide : part === "build" ? !c.build : !(c.decide + c.build)) continue;
-    const g = groups.get(c.lead) ?? { name: c.leadName, subjects: [] };
-    g.subjects.push(c.subject);
-    groups.set(c.lead, g);
-  }
-  return [...groups].map(([id, g]) => {
-    const h = hint(id);
-    return `On ${andList(g.subjects)}, follow ${g.name}${h ? ` (${h})` : ""}.`;
-  });
+/** "The designer's note: …" for a skill, or "" when it has none. */
+export function noteLine(s: Pick<Skill, "note">): string {
+  const n = (s.note ?? "").replace(/\s+/g, " ").trim();
+  if (!n) return "";
+  if (n.length <= NOTE_LIMIT) return `The designer's note: ${n}`;
+  const cut = n.slice(0, NOTE_LIMIT - 1);
+  const at = cut.lastIndexOf(" ");
+  return `The designer's note: ${(at > NOTE_LIMIT / 2 ? cut.slice(0, at) : cut).replace(/[\s,;:.–—-]+$/, "")}…`;
 }
+
+/** A skill's line in a list ("- name: line (when)"), with the designer's note under it when there is one. */
+const listItem = (s: Skill, after = "") => {
+  const note = noteLine(s);
+  return `- ${s.parsed.name}${s.parsed.line ? `: ${s.parsed.line}` : ""}${after}${note ? `\n  ${note}` : ""}`;
+};
 
 /** A skill that is on but, by its read, not for sketches: listed for FRIDAY, carried to real builds instead. */
 export const notForSketches = (s: Pick<Skill, "forUse">) => s.forUse === "builds" || s.forUse === "neither";
@@ -252,8 +246,8 @@ const everyTime = (p: ParsedSkill) => (p.whole ? p.body : [p.decide, p.build].fi
  * get_skill when needed) until the rest fit. Decided on the one-model size, so the planner
  * and the builder drop the same skills.
  */
-export function fitBudget(skills: Pick<Skill, "id" | "on" | "when" | "parsed" | "forUse" | "emptied">[], budget = SKILL_BUDGET) {
-  const always = skills.filter((s) => s.on && s.when === "always" && !notForSketches(s) && !s.emptied);
+export function fitBudget(skills: Pick<Skill, "id" | "on" | "when" | "parsed" | "forUse">[], budget = SKILL_BUDGET) {
+  const always = skills.filter((s) => s.on && s.when === "always" && !notForSketches(s));
   const size = new Map(always.map((s) => [s.id, everyTime(s.parsed).length]));
   let total = [...size.values()].reduce((a, b) => a + b, 0);
   const dropped = new Set<string>();
@@ -269,8 +263,8 @@ const ABOUT_WORDS: Record<About, string> = { motion: "the page moves", phone: "i
 export const aboutWords = (about: About[]) => (about.length ? about.map((a) => ABOUT_WORDS[a]).join(", or ") : "");
 
 /**
- * How a skill that leads a subject can be read, said beside "follow …" ("" when its lines are
- * already in front of the reader, in FRIDAY's instructions).
+ * How a skill that leads a subject can be read, said beside its name in the list of leads (""
+ * when its lines are already in front of the reader, in FRIDAY's instructions).
  */
 function leadHint(lead: Skill | undefined, dropped: Set<string>) {
   if (!lead) return "read it with get_skill";
@@ -280,44 +274,58 @@ function leadHint(lead: Skill | undefined, dropped: Set<string>) {
   return "";
 }
 
+/** The leads as a skill's leads list takes them: the subject, and the lead's id and name. */
+export type LeadOf = Pick<Lead, "subject" | "id" | "name">;
+
+/**
+ * The rule for skills that share a subject, and who leads each one, one line per subject in the
+ * subjects' usual order: "- motion: emil-design-eng (read it with get_skill when the page moves)".
+ * `hint`: how to reach a lead that isn't already in front of the reader ("" when it is). "" with
+ * no leads.
+ */
+export function leadsList(leads: LeadOf[], hint: (leadId: string) => string): string {
+  if (!leads.length) return "";
+  const lines = leads.map((l) => {
+    const h = hint(l.id);
+    return `- ${l.subject}: ${l.name}${h ? ` (${h})` : ""}`;
+  });
+  return `Where two skills say different things about the same thing, the lead of that subject wins. Where they don't disagree, follow both.\n${lines.join("\n")}`;
+}
+
 /**
  * The <designer-skills> block of FRIDAY's instructions, for one reader. Empty with no skill on,
- * so the instructions are then exactly what they were before skills existed. Skills come with
- * their leads applied (skillleads.ts): a skill left with nothing by them isn't listed.
+ * so the instructions are then exactly what they were before skills existed. Every skill that is
+ * on keeps all its lines; `leads` (skillleads.ts) are listed once, after the opening lines, the
+ * same for every reader.
  */
-export function skillsBlock(reader: Reader, skills: Skill[]): string {
+export function skillsBlock(reader: Reader, skills: Skill[], leads: LeadOf[] = []): string {
   const on = skills.filter((s) => s.on);
   if (!on.length) return "";
   const { dropped } = fitBudget(on);
   const byId = new Map(on.map((s) => [s.id, s]));
-  const hint = (id: string) => leadHint(byId.get(id), dropped);
   const given: string[] = [];
   const listed: string[] = [];
-  const say = (s: Skill, why: string) => listed.push(`- ${s.parsed.name}${s.parsed.line ? `: ${s.parsed.line}` : ""} (${why})`);
+  const say = (s: Skill, why: string) => listed.push(listItem(s, ` (${why})`));
   for (const s of on) {
     const p = s.parsed;
-    if (s.emptied) continue;
     if (notForSketches(s)) { say(s, s.forUse === "builds" ? "only for building real code, not for sketches: read it with get_skill when you build for real" : "not for sketches"); continue; }
     if (s.when === "asked") { say(s, "when the designer asks for it, or when you judge you need it"); continue; }
     if (s.when === "applies") { say(s, s.about.length ? `when ${aboutWords(s.about)}` : "when it applies to what you make"); continue; }
     if (dropped.has(s.id)) { say(s, "for everything you make, but too long to give every time: read it before you make anything"); continue; }
     const decide = reader !== "builder" && !p.whole ? p.decide : "";
     const build = reader !== "planner" ? (p.whole ? p.body : p.build) : "";
-    const follow = followLines(s, reader === "planner" ? "decide" : reader === "builder" ? "build" : "both", hint);
     if (!decide && !build) {
       // The planner's share of a skill that is all Build: it should still know the builder follows it.
-      if (reader === "planner" && !follow.length) say(s, "the builder follows it as written; read it if you need to");
-      if (!follow.length) continue;
+      if (reader === "planner") say(s, "the builder follows it as written; read it if you need to");
+      continue;
     }
-    const parts = [
-      decide ? (p.whole ? decide : `Decide:\n${decide}`) : "",
-      build ? (p.whole ? build : `Build:\n${build}`) : "",
-      follow.join("\n"),
-    ].filter(Boolean);
-    given.push(`<skill name="${p.name.replace(/"/g, "'")}">\n${p.line ? `${p.line}\n\n` : ""}${parts.join("\n\n")}\n</skill>`);
+    const parts = [decide ? (p.whole ? decide : `Decide:\n${decide}`) : "", build ? (p.whole ? build : `Build:\n${build}`) : ""].filter(Boolean);
+    const head = [p.line, noteLine(s)].filter(Boolean).join("\n");
+    given.push(`<skill name="${p.name.replace(/"/g, "'")}">\n${head ? `${head}\n\n` : ""}${parts.join("\n\n")}\n</skill>`);
   }
   const lines = [
-    "Skills are craft knowledge the designer chose for you: how to do one kind of thing well. Where anything disagrees, the designer's rules come first, then a project's locked decisions, then these skills, then any reference. Where two skills speak to one subject, one leads it: follow that one on it.",
+    "Skills are craft knowledge the designer chose for you: how to do one kind of thing well. Where anything disagrees, the designer's rules come first, then a project's locked decisions, then these skills, then any reference.",
+    leadsList(leads, (id) => leadHint(byId.get(id), dropped)),
     ...given,
     listed.length ? `Skills to read with get_skill when they're needed (read each one once in a conversation):\n${listed.join("\n")}` : "",
   ].filter(Boolean);
@@ -327,20 +335,19 @@ export function skillsBlock(reader: Reader, skills: Skill[]): string {
 /**
  * For AI apps outside Panel (get_design_rules, a build's HANDOFF.md): the Always skills' parts,
  * under the budget, then the skills whose read says they are for real builds, whenever they are
- * on. With leads applied, as FRIDAY gets them: a skill left with nothing isn't given.
+ * on. `leads`: the same list FRIDAY gets, to give once before the skills ("" with none).
  */
-export function skillsForOutside(skills: Skill[], part: "decide+build" | "build"): { name: string; text: string }[] {
+export function skillsForOutside(skills: Skill[], part: "decide+build" | "build", leads: LeadOf[] = []): { leads: string; skills: { name: string; text: string }[] } {
   const on = skills.filter((s) => s.on);
   const { dropped } = fitBudget(on);
-  const given = on.filter((s) => !s.emptied && (notForSketches(s) || (s.when === "always" && !dropped.has(s.id))));
+  const given = on.filter((s) => notForSketches(s) || (s.when === "always" && !dropped.has(s.id)));
   const here = new Set(given.map((s) => s.id));
-  return given.flatMap((s) => {
+  const out = given.flatMap((s) => {
     const p = s.parsed;
     const text = p.whole ? p.body : part === "build" ? p.build : [p.decide && `Decide:\n${p.decide}`, p.build && `Build:\n${p.build}`].filter(Boolean).join("\n\n");
-    const follow = followLines(s, part === "build" ? "build" : "both", (id) => (here.has(id) ? "" : "read it with get_skill"));
-    const all = [text, follow.join("\n")].filter(Boolean).join("\n\n");
-    return all ? [{ name: p.name, text: all }] : [];
+    return text ? [{ name: p.name, text: [noteLine(s), text].filter(Boolean).join("\n\n") }] : [];
   });
+  return { leads: out.length ? leadsList(leads, (id) => (here.has(id) ? "" : "read it with get_skill")) : "", skills: out };
 }
 
 // ---------- What Panel measures (skillcheck.ts) ----------
@@ -370,8 +377,6 @@ export function describeSkill(s: Skill, fit: ReturnType<typeof fitBudget>) {
   // In plain words, what FRIDAY gets from it.
   const gets = !s.on
     ? "Off: FRIDAY doesn't use it."
-    : s.emptied
-      ? `Other skills lead everything it says (${andList((s.cut ?? []).map((c) => `${c.subject}: ${c.leadName}`))}), so FRIDAY isn't given it. Its checks still run.`
     : notForSketches(s)
       ? s.forUse === "builds"
         ? "For real builds: FRIDAY won't carry it in sketches. Claude Code gets its Build part when it builds for real."
@@ -398,15 +403,12 @@ export function describeSkill(s: Skill, fit: ReturnType<typeof fitBudget>) {
     unknown: p.unknown,
     /** Rough tokens it adds to every message when on and Always. */
     tokens: tokensOf(every),
-    given: !s.on ? "off" : s.emptied ? "led" : notForSketches(s) ? "listed" : s.when === "always" ? (dropped ? "dropped" : "every") : "listed",
+    given: !s.on ? "off" : notForSketches(s) ? "listed" : s.when === "always" ? (dropped ? "dropped" : "every") : "listed",
     gets,
     forUse: s.forUse ?? null,
     pack: s.pack ?? null,
     /** From its read: its subjects, the main one first ([] when it has no read in use). */
     subjects: p.subjects ?? [],
-    /** Lines another skill's lead left out. */
-    cut: (s.cut ?? []).map((c) => ({ subject: c.subject, lead: c.lead, leadName: c.leadName, lines: c.decide + c.build })),
-    emptied: !!s.emptied,
   };
 }
 
@@ -431,14 +433,15 @@ const fileSize = (b: number) => (b < 1024 ? `${b} bytes` : `${Math.max(1, Math.r
  * Panel has read (or one with its own Decide / Build headings) answers with its short version
  * (its line, Decide, Build, what Panel checks, then its files); `file: "SKILL.md"` gives the file
  * as its author wrote it, and another `file` one of its other files. A skill with neither
- * answers with its whole file, as written. `skills` come with their leads applied.
+ * answers with its whole file, as written. The short version ends with a line for each subject
+ * it speaks to that another skill leads (`leads`): whose word wins where the two differ.
  */
-export function readSkillFor(skills: Skill[], name?: string, file?: string, files?: SkillFiles) {
+export function readSkillFor(skills: Skill[], name?: string, file?: string, files?: SkillFiles, leads: LeadOf[] = []) {
   const on = skills.filter((s) => s.on);
   const when = (s: Skill) => (s.when === "always" ? "for everything you make" : s.when === "applies" ? (s.about.length ? `when ${aboutWords(s.about)}` : "when it applies") : "when the designer asks, or when you judge it's needed");
   if (!name?.trim()) {
     if (!on.length) return "The designer hasn't turned on any skills.";
-    return `The designer's skills that are on. They come after the designer's rules and a project's locked decisions, and before any reference.\n${on.map((s) => `- ${s.parsed.name}${s.parsed.line ? `: ${s.parsed.line}` : ""} (${when(s)})`).join("\n")}`;
+    return `The designer's skills that are on. They come after the designer's rules and a project's locked decisions, and before any reference.\n${on.map((s) => listItem(s, ` (${when(s)})`)).join("\n")}`;
   }
   const want = name.trim().toLowerCase();
   // "pack/name" picks one of two skills that share a name: the pack's full name, or its last part.
@@ -458,6 +461,7 @@ export function readSkillFor(skills: Skill[], name?: string, file?: string, file
     [...(withMain ? [`- SKILL.md (${mainSize}), the skill as its author wrote it`] : []), ...others.map((f) => `- ${f.path} (${fileSize(f.bytes)})`)].join("\n");
   const want2 = file?.trim().replace(/^\.?\//, "");
   const head = `The designer's skill “${s.parsed.name}”, used ${when(s)}. It comes after the designer's rules and a project's locked decisions, and before any reference.`;
+  const note = noteLine(s);
   if (want2 && !/^skill\.md$/i.test(want2)) {
     const lower = want2.toLowerCase();
     const hit = others.find((f) => f.path.toLowerCase() === lower) ?? (() => {
@@ -476,19 +480,23 @@ export function readSkillFor(skills: Skill[], name?: string, file?: string, file
   if (!p.whole && !want2) {
     const dropped = fitBudget(skills.filter((x) => x.on)).dropped;
     const byId = new Map(skills.map((x) => [x.id, x]));
-    const follow = followLines(s, "both", (id) => leadHint(byId.get(id), dropped));
+    // Each subject it speaks to that another skill leads: whose word wins where the two differ.
+    const speaks = new Set([...(p.lines?.decide ?? []), ...(p.lines?.build ?? [])].map((l) => l.subject as string));
+    const ledBy = leads.filter((l) => l.id !== s.id && speaks.has(l.subject)).map((l) => {
+      const h = leadHint(byId.get(l.id), dropped);
+      return `On ${l.subject}, ${l.name} leads: where it says something different, follow ${l.name}${h ? ` (${h})` : ""}.`;
+    });
     const checks = p.checks.map((c) => `- ${CHECKS[c.name]!.plain(c)}${c.level === "breaks" ? " (must be fixed)" : ""}`);
     return [
       `${head} ${p.lines ? "This is its short version, as Panel read it for sketches." : "This is its short version: the Decide, Build and Check parts of its file."}`,
-      p.line,
+      [p.line, note].filter(Boolean).join("\n"),
       p.decide && `Decide:\n${p.decide}`,
       p.build && `Build:\n${p.build}`,
-      follow.join("\n"),
-      s.emptied && !follow.length ? "Other skills lead everything it says." : "",
+      ledBy.join("\n"),
       checks.length ? `Panel checks every sketch for:\n${checks.join("\n")}` : "",
       `Its files. Read one with get_skill, its name and file (file "SKILL.md" for the whole skill as written):\n${listOf(true)}`,
     ].filter(Boolean).join("\n\n");
   }
   const more = others.length ? `\n\nThis skill has more files. Read one with get_skill, its name and file:\n${listOf()}` : "";
-  return `${head}\n\n${s.text.trim()}${more}`;
+  return `${head}${note ? `\n${note}` : ""}\n\n${s.text.trim()}${more}`;
 }
