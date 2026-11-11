@@ -279,3 +279,37 @@ withChrome("edit_sketch adds an icon by its tag, and the icons already there sta
   expect(texts(wrong).join("")).toContain("There is no icon called “trashcan”");
   expect(existsSync(sketchFile(sketch, 3))).toBe(false);
 }, 90_000);
+
+withChrome("a sketch is told when a part is styled by its tag's name, added by a script, or in a second weight", async () => {
+  await aProject();
+  const found = async (title: string, html: string) => {
+    const made = await tool("make_sketch", { project, title, html });
+    expect(made.isError).toBeFalsy();
+    const checks = (JSON.parse(texts(made)[0]!).rule_checks ?? []) as { rule: string; level: string; what: string; where?: string[] }[];
+    return checks.filter((c) => c.rule === "Ready-made parts");
+  };
+
+  // As it should be: a class on the tag, one weight with fill for what's active. Words like these in a class, an id or a mark are fine.
+  expect(await found("Parts, fine", UPLOAD.replace("</style>", `.late{--ld-size:20px}.panel-icon-row{gap:4px}#panel-loading{margin:0}[data-panel-icon]{flex:none}</style>`))).toEqual([]);
+
+  const wrong = UPLOAD
+    .replace("</style>", `li panel-loading{--ld-size:13px}panel-icon.big,.x{font-size:2em}@media (min-width:1px){button > panel-icon{color:red}}</style>`)
+    .replace(`<panel-icon name="file-image"></panel-icon>`, `<panel-icon name="file-image" weight="bold"></panel-icon>`)
+    .replace("</main>", `</main><script>document.querySelector("ul").insertAdjacentHTML("beforeend", '<li><panel-icon name="trash"></panel-icon> Added</li>')</script>`);
+  const checks = await found("Parts, wrong", wrong);
+
+  const css = checks.find((c) => c.what.includes("by its tag's name"))!;
+  expect(css.level).toBe("breaks");
+  expect(css.what).toStartWith("3 CSS rules style");
+  expect(css.where).toEqual(["li panel-loading", "panel-icon.big, .x", "button > panel-icon"]);
+
+  const script = checks.find((c) => c.what.includes("added by a script"))!;
+  expect(script.level).toBe("breaks");
+  expect(script.where).toEqual([`<panel-icon name="trash">`]);
+
+  const weights = checks.find((c) => c.what.includes("weights"))!;
+  expect(weights.level).toBe("check");
+  expect(weights.what).toStartWith("Icons are in 2 weights (2 regular, 1 bold)");
+  expect(weights.where).toEqual(["file-image (bold)"]);
+  expect(checks).toHaveLength(3);
+}, 90_000);

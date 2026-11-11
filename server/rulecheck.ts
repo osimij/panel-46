@@ -6,6 +6,11 @@
 //
 // A check runs only while unugly.md still talks about it: delete a rule there and its check
 // goes quiet. Rules that take an eye (does the paper look real?) stay with whoever is looking.
+//
+// One group is Panel's own and always runs: ready-made parts (parts.ts). A sketch names an icon
+// or a loading animation with a tag and Panel puts the drawing in, so a few mistakes can be seen
+// in the page itself: CSS that styles a part by its tag's name (it does nothing once the tag is
+// replaced), a tag a script added (never filled, so it shows nothing), and icons in two weights.
 
 import { designRules } from "./rules.ts";
 import { evaluate, glyphCoverage, TAJIK_LETTERS } from "./site.ts";
@@ -217,10 +222,83 @@ function measure(on: ReturnType<typeof wanted>): { found: RuleFinding[]; type: {
 }
 
 /**
- * Check the page that's open against the rules as they are right now. Never throws: a
- * check that can't run just finds nothing.
+ * Runs inside the page: Panel's ready-made parts (parts.ts), checked whatever unugly.md says.
+ * Kept as one function so it can be sent to Chrome as text.
+ */
+function measureParts(): RuleFinding[] {
+  const out: RuleFinding[] = [];
+  const some = (list: string[], n = 4) => {
+    const u = [...new Set(list)];
+    return u.length > n ? [...u.slice(0, n), `and ${u.length - n} more`] : u;
+  };
+
+  // CSS that selects a part by its tag's name. The tag was replaced by the drawing when the page
+  // was saved, so such a rule matches nothing (a class or an id with the same word is fine).
+  const byTag: string[] = [];
+  const walk = (rules: CSSRuleList) => {
+    for (const r of [...rules] as (CSSRule & { selectorText?: string; cssRules?: CSSRuleList })[]) {
+      if (r.selectorText && /(^|[\s>+~,(])panel-(icon|loading)(?![\w-])/i.test(r.selectorText)) byTag.push(r.selectorText.slice(0, 60));
+      if (r.cssRules) walk(r.cssRules);
+    }
+  };
+  for (const sheet of [...document.styleSheets]) {
+    try {
+      walk(sheet.cssRules);
+    } catch {
+      // A stylesheet from another site can't be read; it isn't the sketch's own.
+    }
+  }
+  if (byTag.length)
+    out.push({
+      rule: "Ready-made parts",
+      level: "breaks",
+      what: `${byTag.length} CSS ${byTag.length === 1 ? "rule styles" : "rules style"} a ready-made part by its tag's name. Panel replaces the tag with the drawing, so ${byTag.length === 1 ? "it does" : "they do"} nothing. Put a class on the tag and style that.`,
+      where: some(byTag),
+    });
+
+  // A tag still in the page: a script added it, and Panel only fills tags written in the HTML.
+  const left = [...document.querySelectorAll("panel-icon, panel-loading")];
+  if (left.length)
+    out.push({
+      rule: "Ready-made parts",
+      level: "breaks",
+      what: `${left.length} ready-made ${left.length === 1 ? "part was" : "parts were"} added by a script, so ${left.length === 1 ? "it shows" : "they show"} nothing: Panel only fills tags written in the page's HTML. Put the part in a <template> (or hidden in the HTML) for the script to copy.`,
+      where: some(left.map((el) => `<${el.tagName.toLowerCase()} name="${el.getAttribute("name") ?? ""}">`)),
+    });
+
+  // One weight on a page; fill is the exception, it marks what's active.
+  const byWeight = new Map<string, string[]>();
+  for (const el of [...document.querySelectorAll("svg[data-panel-icon]")]) {
+    const w = el.getAttribute("data-panel-weight") || "regular";
+    if (w === "fill") continue;
+    byWeight.set(w, [...(byWeight.get(w) ?? []), el.getAttribute("data-panel-icon") ?? ""]);
+  }
+  if (byWeight.size > 1) {
+    // Most used first: the others are the odd ones out.
+    const weights = [...byWeight].sort((a, b) => b[1].length - a[1].length);
+    out.push({
+      rule: "Ready-made parts",
+      level: "check",
+      what: `Icons are in ${weights.length} weights (${weights.map(([w, names]) => `${names.length} ${w}`).join(", ")}). Keep one weight on a page, with fill only to mark what is active, unless the designer or a skill says otherwise.`,
+      where: some(weights.slice(1).flatMap(([w, names]) => names.map((n) => `${n} (${w})`))),
+    });
+  }
+  return out;
+}
+
+/**
+ * Check the page that's open against the rules as they are right now, and its ready-made
+ * parts. Never throws: a check that can't run just finds nothing.
  */
 export async function checkRules(s: <T = unknown>(m: string, p?: object) => Promise<T>): Promise<RuleFinding[] | undefined> {
+  // Panel's own, whatever the rules file says. They come first: they are quick to fix.
+  const parts = await evaluate<RuleFinding[]>(s, `(${measureParts.toString()})()`, 3000).catch(() => [] as RuleFinding[]);
+  const found = await checkDesignRules(s).catch(() => undefined);
+  return parts.length ? [...parts, ...(found ?? [])] : found;
+}
+
+/** The designer's rules (unugly.md), where a machine can check them. */
+async function checkDesignRules(s: <T = unknown>(m: string, p?: object) => Promise<T>): Promise<RuleFinding[] | undefined> {
   const rules = designRules();
   if (!rules) return undefined;
   const on = wanted(rules);

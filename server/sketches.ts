@@ -688,6 +688,7 @@ async function shoot(url: string, device: Device, fileOf: ((i: number) => string
       net.stop();
     }
     // The designer's rules, where they can be measured: corners, the wordmark, fonts' letters…
+    // and Panel's ready-made parts: styled by a class, filled in, in one weight (rulecheck.ts).
     const rules = await checkRules(s);
     // The designer's skills that are on: line length, contrast, motion turned down… (skillcheck.ts)
     const skills = await checkSkills(s, device === "phone");
