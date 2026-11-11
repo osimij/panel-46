@@ -4,13 +4,14 @@
 // it did. Placement is worked out here: under a topic in rows of three, a new topic to the
 // right of the one it follows, a note beside what it's about.
 
-import { newId } from "./db.ts";
+import { db, newId } from "./db.ts";
 import { load } from "./library.ts";
 import { apply, findProject, getProject, removedUnder, TOPIC_FACETS, type BoardNode, type Op, type RefState, type TopicFacet } from "./projects.ts";
 import { PORT } from "./config.ts";
-import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionsOf, writeVersion, type Device, type Render } from "./sketches.ts";
+import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionNote, versionsOf, writeVersion, type Device, type Render, type VersionNote } from "./sketches.ts";
 import { withVars } from "./pagevars.ts";
 import { withText, type TextEdit } from "./pagetext.ts";
+import { withParts, type PartRemove, type PartStyle } from "./pageparts.ts";
 import { rememberedFrame } from "./figma.ts";
 import { shortParts } from "./parts.ts";
 
@@ -292,7 +293,7 @@ export async function makeSketch(o: { project: string; title: string; tries?: st
   const id = newId();
   const title = o.title.trim().slice(0, 120) || "Untitled sketch";
   const device = o.device && o.device !== "desktop" ? o.device : undefined;
-  const { version, render } = await writeVersion(first.p.id, id, o.html, device);
+  const { version, render } = await writeVersion(first.p.id, id, o.html, device, { by: "friday", what: o.tries ?? "" });
   // Rendering takes a few seconds; place it on the canvas as it is now.
   const b = board(o.project);
   const from = o.from ? findSource(b, o.from) : undefined;
@@ -344,7 +345,7 @@ export async function editSketch(o: { project: string; sketch: string; html?: st
     const v = Number(node.data.version) || 1;
     return { project: b.p.id, id: node.id, title, version: v, render: renderOf(b.p.id, node.id, v) };
   }
-  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "friday", what: o.tries ?? "" });
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { ...meta, version } }], "assistant", { label: `Changed ${title} (version ${version})` });
   return { project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`) };
 }
@@ -361,8 +362,8 @@ export async function setSketchVars(projectId: string, sketchId: string, vars: R
   const base = fromVersion ?? (Number(node.data.version) || 1);
   if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
   const html = withVars(readSketch(b.p.id, node.id, base), vars);
-  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
   const n = Object.keys(vars).length;
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "you", what: `Changed ${n} ${n === 1 ? "value" : "values"}` });
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed ${n} ${n === 1 ? "value" : "values"} in ${sketchName(node)} (version ${version})` });
   return { version, rules: render.rules ?? [], errors: render.errors.length };
 }
@@ -377,17 +378,17 @@ export async function setSketchText(projectId: string, sketchId: string, edit: T
   const before = readSketch(b.p.id, node.id, base);
   const html = withText(before, edit);
   if (html === before) return { version: base, rules: [], errors: 0 };
-  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
   const words = edit.afterText.replace(/\s+/g, " ").trim();
   const said = words.length > 40 ? `${words.slice(0, 39)}…` : words;
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "you", what: `Changed the words to “${said}”` });
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed the words to “${said}” in ${sketchName(node)} (version ${version})` });
   return { version, rules: render.rules ?? [], errors: render.errors.length };
 }
 
 /**
  * The studio's Save: everything the designer changed by hand on one version (words edited in
- * place, knobs moved), written as ONE new version, no AI involved. Five word changes and a
- * color are one save, not six versions.
+ * place, knobs moved, a part's own look, parts deleted), written as ONE new version, no AI
+ * involved. Five word changes and a color are one save, not six versions.
  *
  * With check, nothing is written: it only says whether every change still fits the page. The
  * studio asks this as each word edit is made, so one that can't be kept is turned down while
@@ -396,7 +397,7 @@ export async function setSketchText(projectId: string, sketchId: string, edit: T
 export async function saveSketchChanges(
   projectId: string,
   sketchId: string,
-  changes: { edits?: TextEdit[]; vars?: Record<string, string> },
+  changes: { edits?: TextEdit[]; vars?: Record<string, string>; styles?: PartStyle[]; removes?: PartRemove[] },
   fromVersion?: number,
   check = false,
 ) {
@@ -407,14 +408,15 @@ export async function saveSketchChanges(
   if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
   const edits = (changes.edits ?? []).slice(0, 200);
   const vars = changes.vars ?? {};
+  const styles = (changes.styles ?? []).slice(0, 200);
+  const removes = (changes.removes ?? []).slice(0, 200);
   const before = readSketch(b.p.id, node.id, base);
-  // One after another, each on the page as the ones before it left it.
-  let html = before;
-  for (const e of edits) html = withText(html, e);
+  // Everything found by its place in the page in one pass over the file as it was (a part
+  // taken out moves the places after it), then the rest (pageparts.ts), then the knobs.
+  let html = withParts(before, { words: edits, styles, removes });
   if (Object.keys(vars).length) html = withVars(html, vars);
   if (check) return { ok: true };
   if (html === before) return { version: base, rules: [], errors: 0 };
-  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
   const n = Object.keys(vars).length;
   const parts: string[] = [];
   if (edits.length === 1) {
@@ -422,8 +424,30 @@ export async function saveSketchChanges(
     parts.push(`the words to “${words.length > 40 ? `${words.slice(0, 39)}…` : words}”`);
   } else if (edits.length > 1) parts.push(`the words in ${edits.length} places`);
   if (n) parts.push(`${n} ${n === 1 ? "value" : "values"}`);
-  apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed ${parts.join(" and ") || "the page"} in ${sketchName(node)} (version ${version})` });
+  const looked = new Set(styles.map((x) => x.path)).size;
+  if (looked) parts.push(`the look of ${looked} ${looked === 1 ? "part" : "parts"}`);
+  const list = (xs: string[]) => (xs.length > 1 ? `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}` : xs[0] ?? "");
+  const said = [parts.length ? `Changed ${list(parts)}` : "", removes.length ? `removed ${removes.length} ${removes.length === 1 ? "part" : "parts"}` : ""].filter(Boolean).join(", ");
+  const what = said ? said.charAt(0).toUpperCase() + said.slice(1) : "Changed the page";
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "you", what });
+  apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `${what} in ${sketchName(node)} (version ${version})` });
   return { version, rules: render.rules ?? [], errors: render.errors.length };
+}
+
+/**
+ * Bring an older version back: its file, exactly as it was, becomes the newest version (so it
+ * is rendered and checked like any other) and the sketch shows it. Nothing is deleted or
+ * rewritten, so the versions after it stay there to go back to.
+ */
+export async function restoreVersion(projectId: string, sketchId: string, v: number) {
+  const b = board(projectId);
+  const node = findSketch(b, sketchId);
+  if (!node) throw new Error("That sketch is gone.");
+  if (!Number.isInteger(v) || !versionsOf(b.p.id, node.id).includes(v)) throw new Error(`That sketch has no version ${v} to bring back.`);
+  const html = readSketch(b.p.id, node.id, v);
+  const { version } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "you", what: `Brought back v${v}` }, true);
+  apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Brought back version ${v} of ${sketchName(node)} (version ${version})` });
+  return { version };
 }
 
 export async function getSketch(o: { project: string; sketch: string; version?: number; device?: Device; state?: string }) {
@@ -491,11 +515,55 @@ export function sketchFamily(projectId: string, sketchId: string) {
   return out;
 }
 
-/** What the studio needs about one sketch: its versions, with what each render saw, and its states. */
+/**
+ * Who made each version of a sketch and what it changed, from the canvas's history, for the
+ * versions made before that was written beside them. The first change that set the sketch to
+ * version N made it: the designer's (a knob, words) or anyone else's (FRIDAY, Claude Code).
+ * Read once for all of a sketch's versions.
+ */
+function versionsFromHistory(projectId: string, sketchId: string, title: string) {
+  const out = new Map<number, VersionNote>();
+  const rows = db
+    .query<{ actor: string; ops: string; label: string | null }, [string, string]>(
+      "SELECT actor, ops, label FROM project_events WHERE project_id = ? AND undo_of IS NULL AND ops LIKE ? ORDER BY seq",
+    )
+    .all(projectId, `%${sketchId}%`);
+  for (const r of rows) {
+    let ops: Op[];
+    try {
+      ops = JSON.parse(r.ops);
+    } catch {
+      continue;
+    }
+    for (const o of ops) {
+      const data = o.op === "update_node" && o.id === sketchId ? o.data : o.op === "add_node" && o.node.id === sketchId ? o.node.data : null;
+      const v = Number(data?.version ?? (o.op === "add_node" && data ? 1 : NaN));
+      if (!data || !Number.isInteger(v) || out.has(v)) continue;
+      if (r.actor === "designer") {
+        // "Changed the words to “NavCRM” in Print deck (version 12)" → "Changed the words to “NavCRM”"
+        let what = (r.label ?? "").replace(/\s*\(version \d+\)\s*$/, "");
+        const tail = ` in ${title}`;
+        what = what.endsWith(tail) ? what.slice(0, -tail.length) : what.replace(/ in [^]*$/, "");
+        out.set(v, { by: "you", what });
+      } else out.set(v, { by: "friday", what: typeof data.tries === "string" ? data.tries : "" });
+    }
+  }
+  return out;
+}
+
+/** What the studio needs about one sketch: its versions, with what each render saw and who made it, and its states. */
 export function sketchInfo(projectId: string, sketchId: string) {
+  const node = getProject(projectId)?.nodes.find((n) => n.id === sketchId);
+  let history: Map<number, VersionNote> | null = null;
   const versions = versionsOf(projectId, sketchId).map((v) => {
     const r = renderOf(projectId, sketchId, v);
-    return { v, errors: r.errors.length, height: r.height, rules: r.rules ?? [] };
+    const note = versionNote(projectId, sketchId, v);
+    if (!note.by) {
+      history ??= versionsFromHistory(projectId, sketchId, node ? sketchName(node) : "");
+      const h = history.get(v);
+      if (h) Object.assign(note, { by: h.by, what: note.what || h.what });
+    }
+    return { v, errors: r.errors.length, height: r.height, rules: r.rules ?? [], at: note.at ?? "", by: note.by, what: note.what ?? "" };
   });
   const last = versions.at(-1)?.v;
   const states = last ? statesOf(readSketch(projectId, sketchId, last)) : [];

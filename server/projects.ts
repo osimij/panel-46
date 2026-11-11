@@ -71,6 +71,11 @@ if (!eventCols.includes("label")) db.exec("ALTER TABLE project_events ADD COLUMN
 if (!eventCols.includes("undo_of")) db.exec("ALTER TABLE project_events ADD COLUMN undo_of INTEGER");
 if (!eventCols.includes("undone")) db.exec("ALTER TABLE project_events ADD COLUMN undone INTEGER NOT NULL DEFAULT 0");
 
+// A finished project can be archived: it leaves the sidebar's main list but keeps everything,
+// and comes back with one click. Empty means it is in use.
+const projectCols = db.query<{ name: string }, []>("PRAGMA table_info(projects)").all().map((c) => c.name);
+if (!projectCols.includes("archived_at")) db.exec("ALTER TABLE projects ADD COLUMN archived_at TEXT");
+
 // What the designer took off a canvas: a suggestion they never judged, or a save or sketch
 // they had ruled out. The card is gone, so this is the only trace that they said no. A
 // removed suggestion is a quiet "no": FRIDAY must not bring it back to that topic, and must
@@ -133,7 +138,7 @@ export type Op =
   | { op: "update_project"; name?: string; brief?: string };
 
 interface NodeRow { id: string; project_id: string; kind: BoardNode["kind"]; ref_id: string | null; data: string; x: number; y: number; origin: string; created_at: string }
-interface ProjectRow { id: string; name: string; brief: string; seq: number; created_at: string; updated_at: string }
+interface ProjectRow { id: string; name: string; brief: string; seq: number; created_at: string; updated_at: string; archived_at: string | null }
 
 const parse = (s: string) => {
   try {
@@ -174,6 +179,13 @@ export function createProject(name: string, brief = "") {
   const id = newId();
   db.run("INSERT INTO projects (id, name, brief, created_at, updated_at) VALUES (?, ?, ?, ?, ?)", [id, clean, brief.trim(), now(), now()]);
   return { id, name: clean, brief: brief.trim() };
+}
+
+/** Archive a project (put it away, everything kept) or bring it back. Its "last worked on" stays as it was. */
+export function setArchived(id: string, archived: boolean) {
+  if (!rowOf(id)) throw new Error("That project is gone.");
+  db.run("UPDATE projects SET archived_at = ? WHERE id = ?", [archived ? now() : null, id]);
+  return { id, archived_at: rowOf(id)!.archived_at };
 }
 
 export function deleteProject(id: string) {

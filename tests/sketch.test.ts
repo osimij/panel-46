@@ -88,3 +88,56 @@ withChrome("several word changes and a knob are saved as one version", async () 
   for (const w of ["<h1>One</h1>", "<p>Two</p>", "<p>Three</p>", "#e2372b"]) expect(page).toContain(w);
   expect((await (await p.send("GET", `/api/projects/${project}/sketches/${id}`)).json()).versions.length).toBe(2);
 }, 60_000);
+
+withChrome("an older version is brought back as a new one, byte for byte, and every version says when, who and what", async () => {
+  const made = await tool("make_sketch", { project, title: "Bring back", tries: "A first try", html: PAGE("", `<main><h1>Первый</h1></main>`) });
+  const id = made.first.sketch ?? made.first.id;
+  const words = await p.send("POST", `/api/projects/${project}/sketches/${id}/changes`, {
+    edits: [{ path: "body > main:nth-child(1) > h1:nth-child(1)", before: "Первый", after: "Второй", before_text: "Первый", after_text: "Второй" }], from_version: 1,
+  });
+  expect((await words.json()).version).toBe(2);
+  const res = await p.send("POST", `/api/projects/${project}/sketches/${id}/restore`, { version: 1 });
+  expect(res.status).toBe(200);
+  expect((await res.json()).version).toBe(3);
+  const file = (v: number) => fetch(`${p.url}/sketches/${project}/${id}/v${v}.html`).then((r) => r.arrayBuffer()).then((b) => Buffer.from(b));
+  // Served pages carry the kit, so compare the files on disk.
+  const { readFileSync } = await import("node:fs");
+  const onDisk = (v: number) => readFileSync(`${p.dir}/projects/${project}/sketches/${id}/v${v}.html`);
+  expect(onDisk(3).equals(onDisk(1))).toBe(true);
+  expect((await file(3)).length).toBeGreaterThan(0);
+  const info = await (await p.send("GET", `/api/projects/${project}/sketches/${id}`)).json();
+  expect(info.versions.length).toBe(3);
+  for (const v of info.versions) expect(Number.isNaN(Date.parse(v.at))).toBe(false);
+  expect(info.versions.map((v: any) => v.by)).toEqual(["friday", "you", "you"]);
+  expect(info.versions.map((v: any) => v.what)).toEqual(["A first try", "Changed the words to “Второй”", "Brought back v1"]);
+  // The canvas shows the new one.
+  expect((await p.get(`/api/projects/${project}`)).nodes.find((n: any) => n.id === id).data.version).toBe(3);
+  // A version that isn't there is refused, in plain words.
+  const none = await p.send("POST", `/api/projects/${project}/sketches/${id}/restore`, { version: 9 });
+  expect(none.status).toBe(400);
+  expect((await none.json()).error).toBe("That sketch has no version 9 to bring back.");
+}, 90_000);
+
+withChrome("a part's look and a part taken out are saved with the words as one version", async () => {
+  const made = await tool("make_sketch", { project, title: "Parts", html: PAGE("", `<main><h1 class="t">Заголовок</h1><p class="m">Серые слова</p><div class="c">Лишнее</div><p>Последний</p></main>`) });
+  const id = made.first.sketch ?? made.first.id;
+  const at = (n: number, tag: string) => `body > main:nth-child(1) > ${tag}:nth-child(${n})`;
+  const changes = {
+    styles: [{ path: at(2, "p"), cls: "m", id: "", text: "Серые слова", props: { "font-weight": "300", color: "#6b6f76" } }],
+    removes: [{ path: at(3, "div"), cls: "c", id: "", text: "Лишнее" }],
+    edits: [{ path: at(4, "p"), before: "Последний", after: "Last", before_text: "Последний", after_text: "Last" }],
+    from_version: 1,
+  };
+  // A part the file doesn't have there is turned down, in plain words, and nothing is written.
+  const wrong = await p.send("POST", `/api/projects/${project}/sketches/${id}/changes`, { ...changes, removes: [{ path: at(3, "div"), cls: "other", text: "Лишнее" }], check: true });
+  expect(wrong.status).toBe(400);
+  expect((await wrong.json()).error).toContain("drawn by the page's script");
+  const res = await p.send("POST", `/api/projects/${project}/sketches/${id}/changes`, changes);
+  expect((await res.json()).version).toBe(2);
+  const page = await (await fetch(`${p.url}/sketches/${project}/${id}/v2.html`)).text();
+  expect(page).toContain(`<p class="m" style="font-weight: 300; color: #6b6f76">Серые слова</p>`);
+  expect(page).not.toContain("Лишнее");
+  expect(page).toContain("<p>Last</p>");
+  const info = await (await p.send("GET", `/api/projects/${project}/sketches/${id}`)).json();
+  expect(info.versions.at(-1).what).toBe("Changed the words to “Last” and the look of 1 part, removed 1 part");
+}, 60_000);

@@ -336,11 +336,12 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("list_projects", {
     title: "List projects",
-    description: "The designer's projects, most recently worked on first: each is a canvas of design decisions for one piece of work (a site, an app, a brand), with how many topics it has and how many are locked.",
+    description: "The designer's projects, most recently worked on first: each is a canvas of design decisions for one piece of work (a site, an app, a brand), with how many topics it has and how many are locked. An archived project is one the designer has put away as finished.",
     inputSchema: {},
     annotations: readOnly,
   }, safe(() => listProjects().map((p) => ({
     id: p.id, name: p.name, brief: p.brief || undefined, topics: p.topics, locked: p.locked, saves: p.refs, updated_at: p.updated_at,
+    archived: p.archived_at ? true : undefined,
   }))));
 
   server.registerTool("get_project", {

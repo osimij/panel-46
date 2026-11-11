@@ -4,13 +4,14 @@
 //
 // A sketch keeps every version as its own file, never overwritten:
 //   <library>/projects/<project>/sketches/<sketch>/v1.html, v1.jpg (first screen),
-//   v1-2.jpg, v1-3.jpg (the screens below), v1.json (page height, errors the page threw)
+//   v1-2.jpg, v1-3.jpg (the screens below), v1.json (page height, errors the page threw,
+//   and for the studio's list of versions: when it was made, by whom, and what it changed)
 // The canvas card only says which version it shows, so undo is just going back a number.
 //
 // The pages are served with a sandbox (no same-origin), so a sketch runs its scripts but
 // can't reach Panel's library or API, in the canvas or in its own tab.
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST, LIBRARY_DIR, PORT } from "./config.ts";
@@ -79,6 +80,13 @@ export function sketchFile(raw: string): { file: string; html: boolean; figma?: 
  * In the studio it lets the designer point at a part of the page, says which states the page
  * has, and switches between them. It talks only to the window around it, and does nothing
  * until that window asks; opened on its own, the page is just the page.
+ *
+ * For a part pointed at it also says where the part sits (counted the way the server reads
+ * the file), its own look as the browser computed it, and which of the page's knobs reach it;
+ * and it changes a part's own look or hides it while the designer tries things by hand. A
+ * part is only ever hidden, never taken out, so every other part keeps its place in the count.
+ * While a part is selected it passes the studio's keys up (Delete, Enter, ⌘Z, a letter…).
+ * When the kit changes, bump STUDIO_PAGE in web/src/api.ts.
  */
 const KIT = `<script data-panel-kit>(() => {
   if (window.parent === window) return;
@@ -163,8 +171,53 @@ const KIT = `<script data-panel-kit>(() => {
     post({ t: "picked", label: name(el), selector: path(el), text: (el.innerText || "").replace(/\\s+/g, " ").trim().slice(0, 300),
       html: html.length > 1600 ? html.slice(0, 1600) + "…" : html,
       style: { font: cs.fontFamily.split(",")[0].replace(/["']/g, "") + " " + cs.fontWeight + " " + cs.fontSize, color: cs.color, background: cs.backgroundColor, radius: cs.borderRadius, padding: cs.padding, size: Math.round(r.width) + "×" + Math.round(r.height) },
-      rect: { x: r.left, y: r.top, w: r.width, h: r.height }, viewport: { w: innerWidth, h: innerHeight }, state: state(), editable: canEdit(el) });
+      rect: { x: r.left, y: r.top, w: r.width, h: r.height }, viewport: { w: innerWidth, h: innerHeight }, state: state(), editable: canEdit(el),
+      path: strict(el), own: own(el), vars: reaching(el), cls: el.getAttribute("class") || "", id: el.getAttribute("id") || "", words: (el.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 300) });
   };
+  // Changing a part by hand: its own look (inline style), or hiding it. What the part had in its
+  // own style before is kept, so taking a change away puts that back, not nothing.
+  const STYLEABLE = /^(font-family|font-size|font-weight|font-variation-settings|line-height|letter-spacing|color|background-color|border-radius|opacity)$/;
+  const before = new WeakMap();
+  const remember = (el, p) => { let m = before.get(el); if (!m) before.set(el, (m = {})); if (!(p in m)) m[p] = [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)]; };
+  const putBack = (el, p) => { const m = before.get(el), was = m && m[p]; if (was && was[0]) el.style.setProperty(p, was[0], was[1]); else el.style.removeProperty(p); };
+  const byPath = (p) => { if (typeof p !== "string" || !/^body( > [a-z][a-z0-9-]*:nth-child\\(\\d{1,4}\\)){0,40}$/.test(p)) return null; try { return document.querySelector(p); } catch (e) { return null; } };
+  // The part's look as the page itself makes it, without the changes being tried on it.
+  const own = (el) => {
+    const m = before.get(el), now = {};
+    if (m) for (const p in m) { now[p] = [el.style.getPropertyValue(p), el.style.getPropertyPriority(p)]; putBack(el, p); }
+    const cs = getComputedStyle(el), num = (v) => { const n = parseFloat(v); return isFinite(n) ? n : null; };
+    const fvs = cs.fontVariationSettings && cs.fontVariationSettings !== "normal" ? cs.fontVariationSettings : "";
+    const axis = fvs.match(/["']wght["']\\s+(-?[\\d.]+)/);
+    const corners = [cs.borderTopLeftRadius, cs.borderTopRightRadius, cs.borderBottomRightRadius, cs.borderBottomLeftRadius];
+    const words = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()) || (canEdit(el) && (el.textContent || "").trim().length > 0);
+    const out = { family: cs.fontFamily, size: num(cs.fontSize), weight: axis ? Number(axis[1]) : num(cs.fontWeight), wght: !!axis, fvs, lineHeight: cs.lineHeight === "normal" ? null : num(cs.lineHeight),
+      letterSpacing: cs.letterSpacing === "normal" ? 0 : num(cs.letterSpacing), color: cs.color, background: cs.backgroundColor,
+      radius: corners.every((c) => c === corners[0]) && !/ /.test(corners[0]) ? num(corners[0]) : null, opacity: num(cs.opacity), parentSize: num(getComputedStyle(el.parentElement || el).fontSize), words };
+    if (m) for (const p in now) { if (now[p][0]) el.style.setProperty(p, now[p][0], now[p][1]); else el.style.removeProperty(p); }
+    return out;
+  };
+  // Which of the page's knobs (its :root variables) reach this part: read, or read through a
+  // variable set from them (up to two steps), in a rule on the part or around it, or in the
+  // style of either. Rules on *, :root, html and body alone don't count: they reach everything.
+  const reaching = (el) => {
+    if (!rootNames.size) vars();
+    const out = [];
+    const chain = (n) => { const all = new Set([n]); let ring = [n]; for (let i = 0; i < 2 && ring.length; i++) { const next = []; for (const x of ring) for (const y of usage.via[x] || []) if (!all.has(y)) { all.add(y); next.push(y); } ring = next; } return all; };
+    const around = []; for (let x = el; x && x !== document.documentElement; x = x.parentElement) around.push(x);
+    for (const n of rootNames) {
+      let hit = false;
+      for (const x of chain(n)) {
+        for (const sel of usage.rules[x] || []) { if (/^\\s*(\\*|:root|html|body)\\s*$/.test(sel)) continue; try { if (el.closest(sel)) { hit = true; break; } } catch (e) {} }
+        if (!hit && around.some((a) => (a.getAttribute("style") || "").includes("var(" + x))) hit = true;
+        if (hit) break;
+      }
+      if (hit) out.push(n);
+    }
+    return out.slice(0, 40);
+  };
+  const where = (el) => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
+  let moving = 0;
+  const tellWhere = () => { cancelAnimationFrame(moving); moving = requestAnimationFrame(() => { if (hold && picking && !editing) post({ t: "moved", rect: where(hold) }); }); };
   const stopEvent = (e) => { if (picking && !(editing && editing.contains(e.target))) { e.preventDefault(); e.stopPropagation(); } };
   addEventListener("mousemove", move, true);
   addEventListener("click", click, true);
@@ -185,12 +238,20 @@ const KIT = `<script data-panel-kit>(() => {
       else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); endEdit(true); }
       return;
     }
-    if (picking && e.key === "Escape") post({ t: "cancel" });
+    if (picking && e.key === "Escape") { post({ t: "cancel" }); return; }
+    // The studio's keys, while pointing (the page itself is held still then): Delete and Enter
+    // for the part selected, undo and redo, save, and letters (a shortcut, or the start of a
+    // message about the part).
+    const k = e.key, mod = e.metaKey || e.ctrlKey;
+    const pass = mod ? /^[zs]$/i.test(k) && !e.altKey : picking && !e.altKey && (k === "Delete" || k === "Backspace" || k === "Enter" || /^[\\p{L}\\p{N}]$/u.test(k));
+    if (!pass || e.isComposing) return;
+    e.preventDefault(); e.stopPropagation();
+    post({ t: "key", key: k, mod, shift: e.shiftKey, held: !!hold });
   }, true);
   // Escape on the page (after a click on it, the keys go here, not to the studio) steps back
   // in the studio too, unless the page used it itself, to close its own menu say.
   addEventListener("keydown", (e) => { if (e.key === "Escape" && !picking && !e.defaultPrevented) post({ t: "cancel" }); });
-  addEventListener("scroll", () => { if (editing) return; if (hold) place(hold); else if (over && picking) place(over); }, true);
+  addEventListener("scroll", () => { if (editing) return; if (hold) { place(hold); tellWhere(); } else if (over && picking) place(over); }, true);
   addEventListener("message", (e) => {
     if (e.source !== parent || !e.data || !e.data.panel) return;
     const m = e.data;
@@ -205,6 +266,14 @@ const KIT = `<script data-panel-kit>(() => {
     if (m.t === "hello") hello();
     if (m.t === "vars") document.fonts.ready.then(() => { const v = vars(); post({ t: "vars", vars: v, fonts: found(v) }); });
     if (m.t === "show") show(m.name);
+    if (m.t === "style" && m.props && typeof m.props === "object") {
+      const el = byPath(m.path);
+      if (el) { for (const p in m.props) { if (!STYLEABLE.test(p)) continue; const v = m.props[p]; remember(el, p); if (v == null) putBack(el, p); else if (typeof v === "string" && v.length <= 200 && !/[;{}<>]|url\\(/i.test(v)) el.style.setProperty(p, v); } if (hold === el && picking) { place(el); tellWhere(); } }
+    }
+    if (m.t === "remove") {
+      const el = byPath(m.path);
+      if (el) { remember(el, "display"); if (m.on) { el.style.setProperty("display", "none", "important"); if (hold === el) { hold = null; if (box) { box.style.display = "none"; tag.style.display = "none"; } } } else putBack(el, "display"); }
+    }
     if (m.t === "set") { const root = document.documentElement.style; for (const k in m.vars) { if (!/^--[A-Za-z0-9_-]+$/.test(k)) continue; if (m.vars[k] == null) root.removeProperty(k); else root.setProperty(k, String(m.vars[k])); } }
     if (m.t === "scroll") { quiet = true; scrollTo(0, m.y); requestAnimationFrame(() => requestAnimationFrame(() => { quiet = false; })); }
     if (m.t === "follow") following = !!m.on;
@@ -215,12 +284,13 @@ const KIT = `<script data-panel-kit>(() => {
   // :root (a blank line or a comment line starts a new group), and where the page uses it
   // (font-size, a "wght" axis, padding, the page's own script), so a weight gets a weight's
   // range and lands under Type whatever it's called.
-  let usage = { rules: {}, via: {} };
+  let usage = { rules: {}, via: {} }, rootNames = new Set();
   const vars = () => {
     const out = [], seen = new Set();
     const walk = (rules) => { for (const r of rules) { if (r.cssRules && !r.selectorText) { walk(r.cssRules); continue; } if (r.style && /^(:root|html)$/.test((r.selectorText || "").trim())) for (const n of r.style) if (n.startsWith("--") && !seen.has(n)) { seen.add(n); out.push({ name: n, value: r.style.getPropertyValue(n).trim() }); } } };
     for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
     const list = out.slice(0, 80), about = notes(), used = uses();
+    rootNames = new Set(list.map((v) => v.name));
     for (const v of list) { const a = about[v.name]; if (a) { if (a.note) v.note = a.note; v.group = a.group; if (a.heading) v.heading = a.heading; } v.uses = used(v.name); }
     return list;
   };
@@ -357,22 +427,55 @@ export interface Render {
   failed?: string;
 }
 
+/** Who made a version and what it changed, in a line, kept in its vN.json for the studio's list. */
+export interface VersionNote {
+  by: "you" | "friday";
+  what: string;
+}
+
 /**
  * Save a new version of a sketch and render it. The number is one past the newest on disk.
  * Every way of saving comes through here, so this is where ready-made parts named by a tag
  * (<panel-icon>, <panel-loading>) get their real drawings (parts.ts); a wrong name saves nothing.
+ * `asIs` keeps the file exactly as given (bringing an old version back: it was filled already).
  */
-export async function writeVersion(projectId: string, sketchId: string, given: string, device: Device = "desktop") {
+export async function writeVersion(projectId: string, sketchId: string, given: string, device: Device = "desktop", note?: VersionNote, asIs = false) {
   if (!given.trim()) throw new Error("The sketch is empty.");
-  const html = fillParts(given);
+  const html = asIs ? given : fillParts(given);
   if (html.length > MAX_HTML) throw new Error("That page is too big for a sketch (1.5 MB at most).");
   const dir = sketchDir(projectId, sketchId);
   mkdirSync(dir, { recursive: true });
   const version = (versionsOf(projectId, sketchId).at(-1) ?? 0) + 1;
   writeFileSync(join(dir, `v${version}.html`), html);
   const render = await renderSketch(projectId, sketchId, version, device);
-  writeFileSync(join(dir, `v${version}.json`), JSON.stringify({ height: render.height, errors: render.errors, rules: render.rules, ...skillsKept(render), screens: render.screens.length, failed: render.failed }));
+  const said = note ? { at: new Date().toISOString(), by: note.by, what: note.what.replace(/\s+/g, " ").trim().slice(0, 300) } : { at: new Date().toISOString() };
+  writeFileSync(join(dir, `v${version}.json`), JSON.stringify({ height: render.height, errors: render.errors, rules: render.rules, ...skillsKept(render), screens: render.screens.length, failed: render.failed, ...said }));
   return { version, render };
+}
+
+/**
+ * When a version was made, by whom and what it changed, as written beside it. Versions made
+ * before this was written down have only their file's time; the studio fills in the rest from
+ * the canvas's history (board.ts).
+ */
+export function versionNote(projectId: string, sketchId: string, v: number): { at?: string; by?: VersionNote["by"]; what?: string } {
+  const dir = sketchDir(projectId, sketchId);
+  let meta: { at?: string; by?: string; what?: string } = {};
+  try {
+    meta = JSON.parse(readFileSync(join(dir, `v${v}.json`), "utf8"));
+  } catch {
+    /* never rendered, or from before */
+  }
+  let at = typeof meta.at === "string" ? meta.at : undefined;
+  if (!at) {
+    try {
+      at = statSync(join(dir, `v${v}.html`)).mtime.toISOString();
+    } catch {
+      /* gone */
+    }
+  }
+  const by = meta.by === "you" || meta.by === "friday" ? meta.by : undefined;
+  return { at, by, what: typeof meta.what === "string" ? meta.what : undefined };
 }
 
 /** What the last render of a version saw, from disk. */

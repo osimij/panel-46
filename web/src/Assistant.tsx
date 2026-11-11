@@ -10,12 +10,15 @@ import { Icon, type IconName } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
 import { Popover } from "./TagRow.tsx";
 import { ModelPicker } from "./ModelPicker.tsx";
+import { ContextMeter } from "./ContextMeter.tsx";
 import { MicButton } from "./Voice.tsx";
 
 export interface AssistantHandle {
   /** Ask, about what's given instead of what's open or selected (the studio's sketch, or a part of it). */
   ask: (text: string, about?: CanvasSelection) => void;
   focus: () => void;
+  /** Add these words to what's being written, and put the cursor there. */
+  type: (t: string) => void;
 }
 
 /** The one conversation older Panels remembered for everywhere; read once, by the library. */
@@ -125,6 +128,8 @@ export function Assistant(props: {
   onGoTo?: (project: string | null) => void;
   /** What's selected on that canvas, if anything: what "this" and "these" mean there. */
   picked?: CanvasSelection | null;
+  /** A part of a sketch (picked.point) was sent with a message, or taken off: the studio lets go of it. */
+  onLetGoPoint?: () => void;
   onOpenRef: (id: string) => void;
   /** Open the brand assets page onto one asset, or a project's kit ("none": those in no project). */
   onOpenBrand?: (focus: string) => void;
@@ -150,7 +155,7 @@ export function Assistant(props: {
   const [running, setRunning] = useState(false);
   const [history, setHistory] = useState<{ x: number; y: number } | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
-  /** How full this conversation is (shown by the model chip). */
+  /** How full this conversation is, and what fills it (the meter by the message box). */
   const [use, setUse] = useState<ContextUse | null>(null);
   // Answers that arrived while you were here play in; older ones just appear.
   const live = useRef(new Set<string>());
@@ -165,8 +170,9 @@ export function Assistant(props: {
   const [dropped, setDropped] = useState<string | null>(null);
   const context = looking && looking.id !== dropped ? looking : null;
   const contextNow = context;
-  // The canvas selection, until you take it off (for that selection).
-  const pickKey = props.picked?.nodes.join(",") ?? "";
+  // The canvas selection, until you take it off (for that selection). A part of a sketch
+  // selected in the studio is a selection of its own, part by part.
+  const pickKey = props.picked ? props.picked.nodes.join(",") + (props.picked.point ? `#${props.picked.point.selector}` : "") : "";
   const [droppedPick, setDroppedPick] = useState<string | null>(null);
   const picked = !context && props.picked && pickKey !== droppedPick ? props.picked : null;
   const pickedNow = picked;
@@ -216,7 +222,7 @@ export function Assistant(props: {
             if (e.t === "idle") return;
             if (e.t === "draft") return putDraft(e.id, e.html);
             if (e.t === "title") return setTitle(e.title);
-            if (e.t === "context") return setUse({ used: e.used, limit: e.limit });
+            if (e.t === "context") return setUse({ used: e.used, limit: e.limit, parts: e.parts });
             if (e.t === "start") runId.current = e.message.id;
             if (e.t === "tool") toolNames.current.set(e.id, e.name);
             if (e.t === "tool_result") {
@@ -302,6 +308,8 @@ export function Assistant(props: {
         ...(files.length ? { files: files.map((f) => f.id) } : {}),
       };
       if (context && !cards.has(context.id)) addCards([cardFromRef(context)]);
+      // A part of a sketch goes with this message only: the studio lets go of it.
+      if (picked?.point && !about) props.onLetGoPoint?.();
       const about0 = context ? { open: context.id } : picked ? { nodes: picked.nodes, label: picked.label, thumbs: picked.thumbs } : null;
       const temp: ChatMessage = { id: `u${Date.now()}`, role: "user", text, context: files.length ? { ...about0, files } : about0, parts: [], status: "done", error: null, created_at: new Date().toISOString() };
       const pending: Msg = { id: "pending", key: `a${Date.now()}`, role: "assistant", text: "", context: null, parts: [], status: "streaming", error: null, created_at: temp.created_at };
@@ -351,6 +359,11 @@ export function Assistant(props: {
   useImperativeHandle(props.handle, () => ({
     ask: (text: string, about?: CanvasSelection) => void send(text, about),
     focus: () => inputRef.current?.focus(),
+    // The studio: a letter typed with a part selected starts a message about it here.
+    type: (t: string) => {
+      setDraft((d) => d + t);
+      inputRef.current?.focus();
+    },
   }), [send]);
 
   // Opening the panel puts the cursor in the composer.
@@ -585,7 +598,10 @@ export function Assistant(props: {
           context={context}
           onDropContext={() => looking && setDropped(looking.id)}
           picked={picked}
-          onDropPicked={() => setDroppedPick(pickKey)}
+          onDropPicked={() => {
+            setDroppedPick(pickKey);
+            if (picked?.point) props.onLetGoPoint?.();
+          }}
           lastAsked={messages.findLast((m) => m.role === "user")?.text}
         />
       </div>
@@ -1776,7 +1792,7 @@ function Composer(props: {
             </span>
           )}
           <span className="composer-context-text">
-            <span className="faint">On the canvas</span> {props.picked.label}
+            <span className="faint">{props.picked.point ? "In the sketch" : "On the canvas"}</span> {props.picked.label}
           </span>
           <button onClick={props.onDropPicked} aria-label="Don't include this" title="Don't include this">
             <Icon name="x" size={11} />
@@ -1846,7 +1862,7 @@ function Composer(props: {
           value={value}
           rows={1}
           // Short enough for one line in the narrowest panel.
-          placeholder={listening ? "Listening… click the mic when you're done" : props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention" : "Ask anything · @ to mention"}
+          placeholder={listening ? "Listening… click the mic when you're done" : props.quote ? "Reply to this" : props.picked ? (props.picked.point ? "What should change here?" : props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention" : "Ask anything · @ to mention"}
           onChange={(e) => {
             props.setValue(e.target.value);
             look(e.target.value, e.target.selectionStart);
@@ -1936,7 +1952,10 @@ function Composer(props: {
       </div>
       {/* Its own row under the words, so a narrow panel never squeezes what you're writing. */}
       <div className="composer-foot">
-        <ModelPicker use={props.use} running={running} onCompact={() => props.onSend("/compact", [])} />
+        <span className="composer-left">
+          <ContextMeter use={props.use} running={running} onCompact={() => props.onSend("/compact", [])} />
+          <ModelPicker />
+        </span>
         <span className="composer-actions">
           <button
             className="composer-btn attach"

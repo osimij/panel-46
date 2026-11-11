@@ -3,9 +3,25 @@
 /*
  * While the studio is open the library's room changes at once when FRIDAY opens or folds,
  * not over half a second: Knobs or Directions take FRIDAY's place in the same frame, so the
- * page beside them keeps its size. FRIDAY's panel still slides in and out over them.
+ * page beside them keeps its size.
  */
 .main:has(.studio) { transition: none; }
+
+/*
+ * The header runs the studio's whole width, over the top of FRIDAY's panel too, so opening
+ * or closing a column moves nothing in it. To do that the studio keeps its full width while
+ * FRIDAY's panel shows, and the panel sits just under the header and under the studio, which
+ * leaves an empty column (.st-slot, FRIDAY's width) where the panel shows through. The
+ * studio is see-through and lets clicks pass only there. Everything the header opens (a
+ * name under an icon, the Build sheet) then lies over the panel, not under it. Outside the
+ * studio FRIDAY's panel is exactly as it was.
+ */
+.app.chat-open .main:has(.studio) { margin-right: 0; }
+.app:has(.studio) > .ask { top: 52px; z-index: 17; }
+.studio:has(.st-slot) { background: none; }
+.studio:has(.st-slot), .studio:has(.st-slot) .st-body { pointer-events: none; }
+.studio:has(.st-slot) .st-head, .studio:has(.st-slot) .st-main, .studio:has(.st-slot) .st-rail:not(.st-slot) { pointer-events: auto; }
+.st-slot { background: none !important; box-shadow: none !important; animation: none !important; }
 
 .studio {
   position: absolute; inset: 0; z-index: 18; display: flex; flex-direction: column; background: var(--bg); container-type: inline-size;
@@ -14,42 +30,62 @@
 .studio.closing { opacity: 0; transform: scale(0.995); transition: opacity 0.16s var(--ease), transform 0.16s var(--ease); }
 @keyframes st-in { from { opacity: 0; transform: translateY(6px); } }
 
-/* ---- Header ---- */
+/* ---- Header: icons only, one row ---- */
 .st-head {
-  position: relative; display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 12px 0 10px; flex: none;
-  box-shadow: 0 1px 0 var(--line);
+  position: relative; z-index: 4; display: flex; align-items: center; gap: 2px; height: 52px; padding: 0 12px 0 10px; flex: none;
+  background: var(--bg); box-shadow: 0 1px 0 var(--line);
 }
-.st-name { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 120px; max-width: 360px; line-height: 1.25; }
-.st-title { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-tries { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-gap { flex: 1; }
-.st-sep { width: 1px; height: 18px; background: var(--line); flex: none; }
+/* Only the title gives way as the header narrows, down to 80px; then an ellipsis. */
+.st-name { position: relative; display: flex; flex: 0 1 auto; min-width: 80px; max-width: 420px; margin: 0 2px 0 4px; }
+.st-title {
+  min-width: 0; max-width: 100%; height: 28px; padding: 0 8px; font-size: 13px; font-weight: 600; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+  transition: background-color var(--fast) var(--ease);
+}
+.st-title:hover, .st-title[aria-expanded="true"] { background: var(--fill); }
+.st-about { left: 0; right: auto; width: 340px; }
+.st-about .st-pop-title { margin-bottom: 10px; line-height: 1.35; overflow-wrap: anywhere; }
+.st-about .st-pop-text { margin: 0; }
+.st-about-label { margin: 0 0 3px; font-size: 11.5px; font-weight: 500; color: var(--faint); }
+.st-gap { flex: 1 1 0; min-width: 0; }
+.st-sep { width: 1px; height: 18px; background: var(--line); flex: none; margin: 0 7px; }
 
 .st-icon {
-  width: 30px; height: 30px; flex: none; display: grid; place-items: center; color: var(--muted);
+  position: relative; width: 30px; height: 30px; flex: none; display: grid; place-items: center; color: var(--muted);
   border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
 }
+.st-head .st-icon { width: 28px; height: 28px; }
+.st-head .st-icon.sm { width: 24px; }
 .st-icon.sm { width: 26px; height: 26px; }
 .st-icon.xs { width: 22px; height: 22px; }
 .st-icon:hover:not(:disabled) { background: var(--fill); color: var(--text); }
 .st-icon:disabled { opacity: 0.3; cursor: default; }
+/* Lit: a mode that's on (Point, Compare), the column that shows, a sheet that's open. */
+.st-icon.on, .st-icon.on:hover:not(:disabled) { background: var(--fill-hover); color: var(--text); }
+/* Chosen or ruled out: the mark on a dark fill, so the verdict reads from across the room. */
+.st-icon.dark, .st-icon.dark:hover:not(:disabled) { background: var(--text); color: var(--bg); }
+/* Directions with its count beside the icon. */
+.st-head .st-icon.wide { width: auto; padding: 0 7px 0 6px; display: inline-flex; align-items: center; gap: 4px; }
+.st-count { font-size: 11.5px; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--faint); }
+.st-icon.on .st-count, .st-icon:hover .st-count { color: var(--muted); }
+.st-head .mark { flex: none; }
+.st-head .mark i { filter: blur(1.5px); }
+/* Something waiting there: knob changes not kept yet, or an answer not seen yet. */
+.st-dot { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 1.5px var(--bg); }
 
-.st-versions { display: flex; align-items: center; gap: 2px; flex: none; }
-.st-v { min-width: 58px; text-align: center; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; border-radius: 999px; padding: 3px 6px; transition: background-color 0.4s var(--ease); }
+.st-versions { display: flex; align-items: center; gap: 0; flex: none; }
+.st-v {
+  position: relative; min-width: 38px; height: 28px; padding: 0 6px; text-align: center; font-size: 12.5px; font-weight: 500; font-variant-numeric: tabular-nums;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); transition: background-color 0.4s var(--ease);
+}
+.st-v:hover { background: var(--fill); }
+.st-v.on { background: var(--fill-hover); }
 .st-v.fresh { background: color-mix(in oklch, var(--ok) 22%, transparent); }
+.st-verdict { position: relative; display: flex; gap: 2px; flex: none; }
 
-.st-seg {
-  display: flex; padding: 2px; gap: 2px; flex: none; background: var(--fill);
-  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
-}
-.st-seg button {
-  width: 30px; height: 24px; display: grid; place-items: center; color: var(--muted);
-  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
-  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
-}
-.st-seg button:hover { color: var(--text); }
-.st-seg button.on { background: var(--raised); color: var(--text); box-shadow: 0 0 0 0.5px var(--line), 0 1px 3px oklch(0 0 0 / 0.08); }
-
+/* A tool with its name written on it: Compare's columns use these. */
 .st-tool {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 11px; flex: none;
   font-size: 12.5px; font-weight: 500; color: var(--muted);
@@ -57,44 +93,50 @@
   transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
 }
 .st-tool:hover { background: var(--fill); color: var(--text); }
-.st-tool.on { background: var(--text); color: var(--bg); }
-
-/* The column switch: Knobs, Directions and FRIDAY take turns beside the page. */
-.st-cols button { position: relative; width: auto; min-width: 30px; padding: 0 9px; gap: 6px; display: inline-flex; align-items: center; justify-content: center; font-size: 12.5px; font-weight: 500; white-space: nowrap; }
-.st-cols .st-count { font-variant-numeric: tabular-nums; color: var(--faint); }
-.st-cols button.on .st-count { color: var(--muted); }
-.st-cols .mark { flex: none; }
-.st-cols .mark i { filter: blur(1.5px); }
-/* Something waiting there: knob changes not kept yet, or an answer not seen yet. */
-.st-dot { position: absolute; top: 3px; right: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--text); box-shadow: 0 0 0 1.5px var(--fill); }
-.st-tool.chosen { color: var(--text); background: var(--fill); }
-.st-tool.out { color: var(--text); background: var(--fill); }
-.st-verdict { position: relative; display: flex; gap: 2px; }
+.st-tool.chosen, .st-tool.out { color: var(--text); background: var(--fill); }
 
 /*
- * Handing it off to Claude Code is rare, so it is a quiet icon like the others here. Its
- * name appears just under it on hover or keyboard focus, and stays away while the hand-off
- * sheet is open. The label hangs from the icon's right edge so it never leaves the window.
+ * Every icon's name, the moment the pointer or Tab is on it, just under it (data-tip). Not the
+ * browser's own slow title. Icons at the header's ends hang their name from their outer edge,
+ * so it never leaves the window; one whose sheet is open keeps it hidden.
  */
-.st-build { position: relative; }
-.st-build.on { background: var(--fill); color: var(--text); }
-.st-build::after {
-  content: attr(data-tip); position: absolute; top: calc(100% + 6px); right: 0; z-index: 6; padding: 5px 9px;
-  font-size: 11.5px; font-weight: 500; white-space: nowrap; color: var(--bg); background: var(--text);
+.studio [data-tip]::after {
+  content: attr(data-tip); position: absolute; top: calc(100% + 6px); left: 50%; z-index: 8; padding: 5px 9px;
+  font-size: 11.5px; font-weight: 500; line-height: 1.2; letter-spacing: 0; white-space: nowrap; color: var(--bg); background: var(--text);
   border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
-  opacity: 0; transform: translateY(-2px); pointer-events: none;
-  transition: opacity var(--fast) var(--ease), transform var(--fast) var(--ease);
+  opacity: 0; translate: -50% -2px; pointer-events: none;
+  transition: opacity var(--fast) var(--ease), translate var(--fast) var(--ease);
 }
-.st-build:not(.on):hover::after, .st-build:not(.on):focus-visible::after { opacity: 1; transform: none; transition-delay: 0.25s; }
-@media (prefers-reduced-motion: reduce) { .st-build::after { transition: none; transform: none; } }
+.studio [data-tip].tip-start::after { left: 0; translate: 0 -2px; }
+.studio [data-tip].tip-end::after { left: auto; right: 0; translate: 0 -2px; }
+.studio [data-tip]:hover::after, .studio [data-tip]:focus-visible::after { opacity: 1; translate: -50% 0; }
+.studio [data-tip].tip-start:hover::after, .studio [data-tip].tip-start:focus-visible::after,
+.studio [data-tip].tip-end:hover::after, .studio [data-tip].tip-end:focus-visible::after { translate: 0 0; }
+.studio [data-tip][aria-expanded="true"]::after { opacity: 0 !important; }
+@media (prefers-reduced-motion: reduce) { .studio [data-tip]::after { transition: none; translate: -50% 0; } .studio [data-tip].tip-start::after, .studio [data-tip].tip-end::after { translate: 0 0; } }
 
 /* ---- Body ---- */
 .st-body { flex: 1; min-height: 0; display: flex; }
 .st-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); }
 
+/* The page row: the states at the left (scrolling sideways in their own room), the rest at the right, whole. */
 .st-bar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px; flex: none; }
-.st-address { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-size { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.st-bar-end { display: flex; align-items: center; gap: 8px; flex: none; }
+/* The view chip: which screen, at what scale; its menu has the rest. */
+.st-view {
+  display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 7px 0 8px; flex: none;
+  font-size: 12px; font-weight: 500; color: var(--muted); font-variant-numeric: tabular-nums;
+  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.st-view > .icon:last-child { color: var(--faint); margin-left: -1px; }
+.st-view:hover, .st-view.open { background: var(--fill); color: var(--text); }
+.st-view-menu { min-width: 236px; transform-origin: top right; }
+.st-view-menu .menu-item { font-size: 13px; }
+.st-view-menu .menu-item > .icon { flex: none; color: var(--muted); }
+.st-view-name { flex: 1; min-width: 0; }
+.st-view-size { flex: none; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.st-view-foot { margin: 4px 0 2px; padding: 6px 9px 3px; font-size: 11.5px; color: var(--faint); font-variant-numeric: tabular-nums; box-shadow: 0 -1px 0 var(--line); }
 /* Changes made by hand and not saved yet: how many, Put back, Save. */
 .st-unsaved { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; animation: st-unsaved 0.22s var(--ease); }
 .st-unsaved-text { font-size: 12px; color: var(--muted); margin-right: 4px; font-variant-numeric: tabular-nums; }
@@ -104,8 +146,8 @@
 .st-errors { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--bad); white-space: nowrap; }
 
 /* The states map: the page's screens and states, to jump between. */
-.st-states { display: flex; align-items: center; gap: 3px; min-width: 0; overflow-x: auto; color: var(--faint); scrollbar-width: none; }
-.st-states > .icon { margin: 0 4px 0 2px; flex: none; }
+.st-states { display: flex; align-items: center; gap: 3px; flex: 0 1 auto; min-width: 0; overflow-x: auto; color: var(--faint); scrollbar-width: none; overscroll-behavior-x: contain; }
+.st-states::-webkit-scrollbar { display: none; }
 .st-states button {
   height: 24px; padding: 0 10px; flex: none; font-size: 12px; color: var(--muted); white-space: nowrap; border-radius: 999px;
   box-shadow: inset 0 0 0 1px var(--line);
@@ -139,25 +181,23 @@
 @keyframes st-pill { from { opacity: 0; transform: translate(-50%, -6px); } }
 @keyframes st-out { to { opacity: 0; } }
 
-/* ---- Pointing at a part ---- */
-.st-bubble {
-  position: absolute; z-index: 3; width: 360px; padding: 10px; background: var(--raised);
-  border-radius: calc(14px * var(--smooth)); corner-shape: var(--corner);
-  box-shadow: 0 0 0 1px var(--line), 0 18px 50px -14px oklch(0 0 0 / 0.35);
-  animation: st-bubble 0.22s var(--ease);
+/* ---- Pointing at a part: a strip of icons under it ---- */
+.st-strip {
+  position: absolute; z-index: 3; display: flex; align-items: center; gap: 2px; padding: 4px; background: var(--raised);
+  border-radius: calc(11px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 0 0 1px var(--line), 0 12px 32px -12px oklch(0 0 0 / 0.35);
+  animation: st-bubble 0.2s var(--ease);
 }
 @keyframes st-bubble { from { opacity: 0; transform: translateY(-4px) scale(0.98); } }
-.st-bubble-head { display: flex; align-items: center; gap: 7px; margin-bottom: 6px; }
-.st-bubble-dot { width: 7px; height: 7px; border-radius: 50%; background: #3b82f6; flex: none; }
-.st-bubble-label { flex: 1; min-width: 0; font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.st-bubble textarea, .st-pop textarea, .st-field input, .st-field textarea {
+.st-strip .st-icon { width: 30px; height: 30px; }
+.st-strip.editing { gap: 6px; padding: 4px 4px 4px 12px; }
+.st-strip-say { font-size: 12px; color: var(--muted); white-space: nowrap; margin-right: auto; }
+.st-pop textarea, .st-field input, .st-field textarea {
   width: 100%; resize: none; font: inherit; font-size: 13px; line-height: 1.4; color: var(--text); background: var(--fill); border: 0; outline: 0;
   padding: 8px 10px; border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
 }
-.st-bubble textarea:focus, .st-pop textarea:focus, .st-field input:focus, .st-field textarea:focus { box-shadow: inset 0 0 0 1.5px var(--faint); }
-.st-bubble-actions, .st-pop-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 8px; }
-.st-bubble-actions .st-send { margin-left: auto; }
-.st-bubble-note { margin: 2px 0 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
+.st-pop textarea:focus, .st-field input:focus, .st-field textarea:focus { box-shadow: inset 0 0 0 1.5px var(--faint); }
+.st-pop-actions { display: flex; justify-content: flex-end; align-items: center; gap: 6px; margin-top: 8px; }
 
 .st-quiet {
   display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; font-size: 12.5px; color: var(--muted);
@@ -178,23 +218,37 @@
   background: var(--raised); border-radius: 999px;
   box-shadow: 0 0 0 1px var(--line), 0 10px 30px -16px oklch(0 0 0 / 0.3);
 }
+/* The part selected, carried by the bar: the message is about it. */
+.st-ask-chip {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 46%; height: 26px; padding: 0 4px 0 9px; flex: none;
+  font-size: 12px; font-weight: 500; color: var(--text); background: var(--fill);
+  border-radius: 999px; animation: st-unsaved 0.22s var(--ease);
+}
+.st-ask-chip > i { width: 6px; height: 6px; border-radius: 50%; background: #3b82f6; flex: none; }
+.st-ask-chip > span { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-ask-chip > button { width: 18px; height: 18px; display: grid; place-items: center; flex: none; color: var(--muted); border-radius: 50%; }
+.st-ask-chip > button:hover { background: var(--fill-hover); color: var(--text); }
+@media (prefers-reduced-motion: reduce) { .st-ask-chip { animation: none; } }
 .st-ask-field { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; }
 .st-ask input { flex: 1; min-width: 0; border: 0; outline: 0; background: none; font: inherit; font-size: 13px; color: var(--text); }
 /* What FRIDAY is doing, where the placeholder would be: typing the next thing hides it. */
 .st-ask-status { position: absolute; inset: 0; display: flex; align-items: center; pointer-events: none; font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .st-ask-status .step-q { color: var(--text); }
-.st-alts { height: 26px; padding: 0 8px; font-size: 12px; flex: none; }
 .st-ask .st-send { padding: 0; width: 30px; }
 .st-ask-mark { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; transition: background-color 0.3s; }
 .st-ask.running .st-ask-mark { background: var(--accent); animation: st-breathe 1.2s ease-in-out infinite; }
 @keyframes st-breathe { 50% { transform: scale(0.6); opacity: 0.5; } }
 
-/* ---- Directions ---- */
-/* The column beside the page: as wide as FRIDAY's panel, whose place it takes. */
-.st-rail { width: var(--chat); flex: none; display: flex; flex-direction: column; box-shadow: -1px 0 0 var(--line); background: var(--bg); animation: st-rail 0.3s var(--ease); }
+/* ---- The column beside the page: Knobs, Directions, Versions ---- */
+/* As wide as FRIDAY's panel, whose place it takes, with one head: its name, what it offers, ×. */
+.st-rail { width: var(--chat); min-width: 0; flex: none; display: flex; flex-direction: column; box-shadow: -1px 0 0 var(--line); background: var(--bg); animation: st-rail 0.3s var(--ease); }
 @keyframes st-rail { from { opacity: 0; transform: translateX(8px); } }
-.st-rail-head { padding: 14px 14px 6px; font-size: 11.5px; font-weight: 600; color: var(--muted); }
-.st-tree { flex: 1; overflow-y: auto; padding: 4px 6px 16px; display: flex; flex-direction: column; gap: 2px; }
+.st-rail-head { display: flex; align-items: center; gap: 6px; height: 44px; padding: 0 8px 0 14px; flex: none; }
+.st-rail-name { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.st-rail-act { flex: none; }
+.st-rail-close { flex: none; }
+/* Directions: one flat list, every row starting at the same place. */
+.st-tree { flex: 1; overflow-y: auto; padding: 2px 6px 16px; display: flex; flex-direction: column; gap: 2px; }
 .st-dir {
   display: flex; align-items: center; gap: 9px; padding: 6px 8px; text-align: left; width: 100%;
   border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
@@ -211,6 +265,35 @@
 .st-dir.s-ruled_out .st-dir-title { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--faint); }
 .st-dir-sub { font-size: 11px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .st-dir-sub.chosen { color: var(--text); font-weight: 500; }
+
+/* ---- Versions: newest first, under the day each was made ---- */
+.st-rail-count { flex: none; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; margin-right: 2px; }
+.st-ver-list { gap: 0; }
+.st-day { position: sticky; top: 0; z-index: 1; padding: 10px 8px 5px; font-size: 11.5px; font-weight: 500; color: var(--faint); background: var(--bg); }
+.st-ver-group:first-child .st-day { padding-top: 2px; }
+.st-ver {
+  display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; margin-bottom: 2px; cursor: default; outline: none;
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
+  transition: background-color var(--fast) var(--ease);
+}
+.st-ver:hover { background: var(--fill); }
+.st-ver.on { background: var(--fill-hover); }
+.st-ver:focus-visible { box-shadow: inset 0 0 0 1.5px var(--faint); }
+.st-ver-pic {
+  flex: none; width: 72px; aspect-ratio: 16 / 10; overflow: hidden; background: var(--card);
+  border-radius: calc(5px * var(--smooth)); corner-shape: var(--corner); box-shadow: 0 0 0 1px var(--line);
+}
+.st-ver-pic img { width: 100%; height: 100%; object-fit: cover; object-position: top; display: block; }
+.st-ver-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; line-height: 1.3; padding-top: 1px; }
+.st-ver-line { display: flex; align-items: center; gap: 7px; font-size: 12px; min-height: 16px; }
+.st-ver-line b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.st-ver-time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.st-ver-who { display: inline-flex; align-items: center; color: var(--muted); }
+.st-ver-who .mark i { filter: blur(1px); }
+.st-ver-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text); flex: none; }
+.st-ver-what { font-size: 11.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.st-ver-back { align-self: flex-start; margin: 5px 0 1px -2px; height: 26px; padding: 0 9px; color: var(--text); background: var(--bg); box-shadow: 0 0 0 1px var(--line); }
+.st-ver-back:hover:not(:disabled) { background: var(--bg) !important; box-shadow: 0 0 0 1px var(--faint); }
 
 /* ---- Knobs: the page's own variables, as bars, swatches and font pickers ---- */
 .kn-scroll { flex: 1; overflow-y: auto; padding: 2px 14px 14px; display: flex; flex-direction: column; gap: 22px; }
@@ -322,7 +405,19 @@
 .kn-palette:hover { transform: scale(1.06); }
 .kn-palette i { width: 13px; height: 100%; }
 .kn-hint { margin: -6px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--faint); }
-.kn-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px 12px; box-shadow: 0 -1px 0 var(--line); }
+/* The selected part, at the top of Knobs: its name, then its own look. */
+.kn-part-name { margin-top: -2px; font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn-hint.kn-part-hint { margin: -6px 0 2px; }
+.kn-chip.kn-none { background: linear-gradient(135deg, transparent calc(50% - 0.75px), var(--faint) calc(50% - 0.75px), var(--faint) calc(50% + 0.75px), transparent calc(50% + 0.75px)), var(--bg); }
+/* "All knobs", folded while a part is selected. */
+.kn-fold {
+  display: flex; align-items: center; gap: 6px; height: 30px; margin: -6px -6px 0; padding: 0 6px; font-size: 12px; font-weight: 500; color: var(--muted); text-align: left;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+}
+.kn-fold:hover { background: var(--fill); color: var(--text); }
+.kn-fold > .icon { transition: transform 0.2s var(--ease); }
+.kn-fold.open > .icon { transform: rotate(90deg); }
+@media (prefers-reduced-motion: reduce) { .kn-fold > .icon { transition: none; } }
 .kn-empty { padding: 4px 14px; font-size: 12px; line-height: 1.5; color: var(--muted); display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 0; }
 .kn-empty p { margin: 0; }
 @media (prefers-reduced-motion: reduce) {
@@ -445,34 +540,18 @@
 }
 .bd-ask .st-send { width: 30px; padding: 0; }
 
-/*
- * The header gives things up in a fixed order as it narrows. Studio.tsx decides how far
- * from what actually fits and marks it with data-f1 … data-f6; never given up: back, the
- * title (at least 120px, then an ellipsis), the version, the screens, Build.
- */
-.st-head[data-f1] .st-tries { display: none; }
-.st-head[data-f2] .st-l-verdict { display: none; }
-.st-head[data-f2] .st-verdict .st-tool { padding: 0 9px; }
-.st-head[data-f3] .st-l-view { display: none; }
-.st-head[data-f3] .st-tool { padding: 0 9px; gap: 0; }
-.st-head[data-f4] .st-l-col { display: none; }
-.st-head[data-f4] .st-cols button { padding: 0 8px; gap: 4px; }
-.st-head[data-f5] .st-of { display: none; }
-.st-head[data-f5] .st-v { min-width: 36px; }
-.st-head[data-f5] { gap: 6px; }
-.st-head[data-f6] { gap: 4px; }
-.st-head[data-f6] .st-tool:not(.st-verdict .st-tool), .st-head[data-f6] .st-sep { display: none; }
-
 @container (max-width: 1080px) {
-  .st-size { display: none; }
   .st-dir img { width: 48px; height: 32px; }
 }
-@container (max-width: 760px) {
-  .st-ask .st-ask-alts { display: none; }
+/* A narrow studio keeps what it's for: rarely used tools step back (Compare, Figma, Build). */
+@container (max-width: 720px) {
+  .st-compare, .st-figma-toggle, .st-build, .st-sep-hand { display: none !important; }
+  .studio .st-ruleout[data-tip]::after { left: auto; right: 0; translate: 0 -2px; }
+  .studio .st-ruleout[data-tip]:hover::after, .studio .st-ruleout[data-tip]:focus-visible::after { translate: 0 0; }
   .st-unsaved-text { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .studio, .st-bubble, .st-pop, .st-rail, .st-hint, .st-fresh, .st-unsaved { animation: none !important; }
+  .studio, .st-strip, .st-pop, .st-rail, .st-hint, .st-fresh, .st-unsaved { animation: none !important; }
   .st-stage.glide .st-device, .st-stage.glide .st-device iframe { transition: none; }
 }

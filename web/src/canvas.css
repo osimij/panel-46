@@ -405,11 +405,6 @@ a.mat-name:hover { text-decoration: underline; text-decoration-color: var(--fain
 .tray-blank { display: block; padding: 18px 10px; font-size: 11px; color: var(--muted); text-align: left; }
 .tray-none { column-span: all; color: var(--muted); font-size: 12px; margin: 8px 4px; }
 
-/* ---- Sidebar ---- */
-
-.side-project-dot { width: 7px; height: 7px; border-radius: 2px; background: var(--faint); flex: none; margin-right: 1px; }
-.side-link.on .side-project-dot { background: var(--text); }
-
 @media (prefers-reduced-motion: reduce) {
   .bn, .bn.enter, .bn.topic.locked, .ref-badge, .bn-tools, .tray, .canvas-empty, .fe-line { animation: none !important; transition: none !important; }
 }

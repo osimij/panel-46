@@ -1,10 +1,10 @@
 // Which model FRIDAY uses and how hard it thinks, picked the way Claude Code does it. Either
 // one model at one effort, or two models on one answer: one plans and decides (Fable, for
 // its eye), the other builds what was planned (Opus). The choice is kept by Panel and holds
-// from the next message on.
+// from the next message on. How full the conversation is lives beside it (ContextMeter.tsx).
 
 import { useEffect, useState } from "react";
-import { chatApi, type ChatSettings, type ContextUse, type Effort } from "./api.ts";
+import { chatApi, type ChatSettings, type Effort } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
 
@@ -18,8 +18,7 @@ const EFFORTS: { value: Effort; label: string; hint: string }[] = [
 
 type Patch = Partial<Omit<ChatSettings, "models">>;
 
-/** `use`: how full the open conversation is, shown on the chip once it's past half. */
-export function ModelPicker({ use, running, onCompact }: { use?: ContextUse | null; running?: boolean; onCompact?: () => void }) {
+export function ModelPicker() {
   const [s, setS] = useState<ChatSettings | null>(null);
   const [at, setAt] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
@@ -35,8 +34,6 @@ export function ModelPicker({ use, running, onCompact }: { use?: ContextUse | nu
   const first = (id: string) => name(id).split(" ")[0];
   const effortOf = (e: Effort) => EFFORTS.find((x) => x.value === e)!;
   const duo = s.mode === "duo";
-  const full = use ? Math.min(100, Math.round((use.used / use.limit) * 100)) : 0;
-  const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 
   return (
     <>
@@ -54,7 +51,6 @@ export function ModelPicker({ use, running, onCompact }: { use?: ContextUse | nu
         aria-label="Model and effort"
       >
         {duo ? <>{first(s.plan_model)} <span className="faint">→</span> {first(s.build_model)}</> : <>{name(s.model)} <span className="faint">{effortOf(s.effort).label}</span></>}
-        {full >= 50 && <span className={`model-full ${full >= 85 ? "high" : ""}`}>{full}%</span>}
         <Icon name="chevron-down" size={10} />
       </button>
       {at && (
@@ -87,25 +83,6 @@ export function ModelPicker({ use, running, onCompact }: { use?: ContextUse | nu
               <EffortPick value={s.effort} onChange={(v) => change({ effort: v })} />
               <p className="mp-hint">{effortOf(s.effort).hint}</p>
             </>
-          )}
-          {use && (
-            <div className="mp-use" title="Past this, Claude Code summarizes the earlier part of the conversation to make room, and gives FRIDAY the project card again">
-              <span className="mp-use-bar"><i style={{ width: `${full}%` }} /></span>
-              <span>This conversation: {k(use.used)} of {k(use.limit)} before it's summarized</span>
-              {onCompact && (
-                <button
-                  className="mp-compact"
-                  disabled={running}
-                  onClick={() => {
-                    setAt(null);
-                    onCompact();
-                  }}
-                  title="Summarize the conversation so far now (same as typing /compact). The project card comes back after."
-                >
-                  Summarize now
-                </button>
-              )}
-            </div>
           )}
         </Popover>
       )}

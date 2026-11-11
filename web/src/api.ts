@@ -612,8 +612,19 @@ export interface ChatMessage {
 
 /** project: the project the conversation belongs to, null for the library. */
 export interface ChatSummary { id: string; title: string; updated_at: string; running: boolean; project: string | null; project_name: string | null }
-/** How full a conversation is, in tokens, and where it gets summarized to make room. */
-export interface ContextUse { used: number; limit: number }
+/** One line of the context meter's panel (server/contextparts.ts). */
+export interface ContextPart { name: string; tokens: number }
+/** What fills a conversation: named rows, biggest first, the room left last. */
+export interface ContextParts {
+  rows: (ContextPart & { id: string; kind: "used" | "buffer" | "free" })[];
+  /** What the conversation row is made of; null when Claude Code didn't say. */
+  talk: (ContextPart & { id: "read" | "answers" | "yours"; tools?: ContextPart[] })[] | null;
+}
+/**
+ * How full a conversation is, in tokens, where it gets summarized to make room, and what
+ * fills it (null for a conversation whose answers were all made before the meter).
+ */
+export interface ContextUse { used: number; limit: number; parts?: ContextParts | null }
 export interface ChatFull { id: string; title: string; project: string | null; messages: ChatMessage[]; cards: RefCard[]; running: boolean; seq: number; context: ContextUse | null }
 
 export type ChatEvent =
@@ -626,7 +637,7 @@ export type ChatEvent =
   | { t: "draft"; id: string; html: string }
   | { t: "text"; delta: string }
   | { t: "compact"; pre: number; post?: number }
-  | { t: "context"; used: number; limit: number }
+  | { t: "context"; used: number; limit: number; parts: ContextParts | null }
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string }
   | { t: "idle" };
@@ -720,6 +731,8 @@ export interface ProjectSummary {
   locked: number;
   created_at: string;
   updated_at: string;
+  /** When it was archived; null while it is in use. */
+  archived_at: string | null;
 }
 export interface ProjectFull {
   id: string;
@@ -797,7 +810,11 @@ export interface RuleFinding {
 }
 
 export interface SketchInfo {
-  versions: { v: number; errors: number; height: number; rules?: RuleFinding[] }[];
+  /**
+   * Oldest first. `at`: when it was made; `by`: who made it ("you" by hand, "friday" for
+   * FRIDAY or Claude Code; absent when no one knows); `what`: what it changed, in a line.
+   */
+  versions: { v: number; errors: number; height: number; rules?: RuleFinding[]; at: string; by?: "you" | "friday"; what: string }[];
   states: { name: string; slug: string }[];
   family: { id: string; parent: string | null; depth: number; title: string; tries?: string; state: string; version: number; reason?: string }[];
   /** The Figma frame it was last brought back from. */
@@ -844,6 +861,22 @@ export interface Build {
 /** Words the designer edited in place in the studio: where, and the HTML and words before and after. */
 export interface WordEdit { path: string; before: string; after: string; before_text: string; after_text: string }
 
+/**
+ * A part of a sketch changed by hand in the studio: where it sits (body > main:nth-child(2) > …)
+ * and what the studio saw there (its class, id and first words), so the server can be sure the
+ * file's part is the same one. `label` is its name as the page shows it (heading “Документы”).
+ */
+export interface PartSeen { path: string; cls: string; id: string; text: string; label: string }
+/** A part's own look changed by hand: CSS properties on that part only. */
+export interface PartStyleEdit extends PartSeen { props: Record<string, string> }
+
+/**
+ * The studio's own address for a sketch page (…/v3.html?studio=6), shared by the studio and
+ * Compare, so a copy a browser kept from before the kit last changed (sketches.ts) is never
+ * used. Bump it whenever the kit changes.
+ */
+export const STUDIO_PAGE = "studio=6";
+
 export const studioApi = {
   sketch: (project: string, sketch: string) => call<SketchInfo>(`/api/projects/${project}/sketches/${sketch}`),
   /** Keep the knobs as they are now: a new version with these :root variables changed. */
@@ -861,8 +894,20 @@ export const studioApi = {
    * Save: every word edited in place and every knob moved on this version, as one new version.
    * With check, nothing is written; it only fails if a change can't be kept.
    */
-  saveChanges: (project: string, sketch: string, changes: { edits: WordEdit[]; vars: Record<string, string> }, from_version: number, check = false) =>
-    call<{ version?: number; ok?: boolean }>(`/api/projects/${project}/sketches/${sketch}/changes`, { method: "POST", body: body({ ...changes, from_version, check }) }),
+  saveChanges: (
+    project: string,
+    sketch: string,
+    changes: { edits: WordEdit[]; vars: Record<string, string>; styles?: PartStyleEdit[]; removes?: PartSeen[] },
+    from_version: number,
+    check = false,
+  ) => {
+    const seen = (x: PartSeen) => ({ path: x.path, cls: x.cls, id: x.id, text: x.text });
+    const sent = { edits: changes.edits, vars: changes.vars, styles: (changes.styles ?? []).map((x) => ({ ...seen(x), props: x.props })), removes: (changes.removes ?? []).map(seen) };
+    return call<{ version?: number; ok?: boolean }>(`/api/projects/${project}/sketches/${sketch}/changes`, { method: "POST", body: body({ ...sent, from_version, check }) });
+  },
+  /** Bring an older version back: its file becomes the newest version, and the sketch shows it. */
+  restore: (project: string, sketch: string, version: number) =>
+    call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/restore`, { method: "POST", body: body({ version }) }),
   folders: () => call<{ recent: string[]; found: string[]; home: string }>("/api/builds/folders"),
   build: (o: { project: string; sketch: string; folder: string; note?: string }) => call<Build>("/api/builds", { method: "POST", body: body(o) }),
   getBuild: (id: string) => call<Build>(`/api/builds/${id}`),
@@ -899,6 +944,9 @@ export const projectApi = {
   create: (name: string, brief = "") => call<{ id: string; name: string; brief: string }>("/api/projects", { method: "POST", body: body({ name, brief }) }),
   get: (id: string) => call<ProjectFull>(`/api/projects/${id}`),
   remove: (id: string) => call<{ ok: boolean }>(`/api/projects/${id}`, { method: "DELETE" }),
+  /** Rename it, or archive it (and bring it back), from the sidebar. */
+  update: (id: string, patch: { name?: string; archived?: boolean }) =>
+    call<ProjectSummary>(`/api/projects/${id}`, { method: "PATCH", body: body(patch) }),
   ops: (id: string, ops: BoardOp[], client: string) =>
     call<{ seq: number; ops: BoardOp[]; cards: RefCard[] }>(`/api/projects/${id}/ops`, { method: "POST", body: body({ ops, client }) }),
   /** Undo this window's last change (who: "me", ⌘Z) or the assistant's last change. */

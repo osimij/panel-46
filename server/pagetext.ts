@@ -22,9 +22,9 @@ export interface TextEdit {
   afterText: string;
 }
 
-const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+export const squash = (s: string) => s.replace(/\s+/g, " ").trim();
 const escapeText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const decode = (s: string) =>
+export const decode = (s: string) =>
   s
     .replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<")
@@ -44,15 +44,23 @@ function inScript(html: string, at: number) {
 
 const NOT_FOUND = "Couldn't find those words in the sketch's file (the page's own script probably writes them). Ask FRIDAY to change them instead.";
 
-/** The sketch's HTML with the edit made, or an error saying why it can't be. */
-export function withText(html: string, e: TextEdit): string {
+/** Refuses an edit that isn't only words (typing can't add a script or an onclick). */
+export function checkWords(e: TextEdit) {
   if (e.after.length > 20_000) throw new Error("That's too much text to change here.");
   // Typing can't add these; if they're there, it isn't a text edit.
   if (/<\/?(script|style|iframe|object|embed|link|meta)\b/i.test(e.after) || /\son[a-z]+\s*=/i.test(e.after)) throw new Error("Only words can be changed here.");
+}
+
+/**
+ * The sketch's HTML with the edit made, or an error saying why it can't be. `byPlace` false
+ * skips step 1: pageparts.ts has done that already, in one pass with the other changes.
+ */
+export function withText(html: string, e: TextEdit, byPlace = true): string {
+  checkWords(e);
   if (e.after === e.before) return html;
 
   // 1. By its place in the page.
-  if (/^body( > [a-z][a-z0-9-]*:nth-child\(\d{1,4}\)){1,40}$/.test(e.path)) {
+  if (byPlace && /^body( > [a-z][a-z0-9-]*:nth-child\(\d{1,4}\)){1,40}$/.test(e.path)) {
     let found = 0;
     let text = "";
     new HTMLRewriter()

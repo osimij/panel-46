@@ -143,15 +143,22 @@ button:not(:disabled):active, a.glass-btn:active { transform: scale(0.94); }
   color: var(--faint); height: 22px; margin-bottom: 2px;
 }
 /* Projects and Collections fold away under their heading. The rows slide shut rather than
-   vanish; the little arrow shows on hover, and stays while the group is folded so it's clear
-   something is tucked there. */
+   vanish. The little arrow always shows, quietly, so it's clear the heading folds; it brightens
+   with the heading on hover. */
 .side-fold-head {
   display: inline-flex; align-items: center; gap: 4px; height: 22px; margin-left: -2px; padding: 0 2px;
   color: inherit; font: inherit;
 }
 .side-fold-head:hover { color: var(--text); }
-.side-fold-head .chev { opacity: 0; transition: opacity var(--med) var(--ease), transform 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
+.side-fold-head .chev { opacity: 0.7; transition: opacity var(--med) var(--ease), transform 0.38s cubic-bezier(0.32, 0.72, 0, 1); }
 .side-fold-head:hover .chev, .side-fold-head:focus-visible .chev, .side-fold-head.closed .chev { opacity: 1; }
+/* The small square before each project. It lives here, not with the canvas's styles, so it shows
+   before any canvas has been opened. */
+.side-project-dot { width: 7px; height: 7px; border-radius: calc(2px * var(--smooth)); corner-shape: var(--corner); background: var(--faint); flex: none; margin-right: 1px; }
+.side-link.on .side-project-dot { background: var(--text); }
+/* Archived projects: one quiet row at the end of Projects that opens onto them. */
+.side-archived-head { gap: 5px; margin-top: 2px; }
+.side-archived-head .chev { width: 11px; margin-left: -1px; }
 .side-fold {
   display: grid; grid-template-rows: 0fr; opacity: 0; flex: none;
   transition: grid-template-rows 0.38s cubic-bezier(0.32, 0.72, 0, 1), opacity var(--med) var(--ease);

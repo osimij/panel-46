@@ -666,6 +666,12 @@ export interface CanvasProps {
   /** FRIDAY's panel is open; the studio shares its column with it. */
   askOpen: boolean;
   setAskOpen: (open: boolean) => void;
+  /** A part of a sketch selected in the studio (null: none), for FRIDAY's own box to carry. */
+  onStudioPick?: (s: CanvasSelection | null) => void;
+  /** Goes up by one when FRIDAY has sent the part selected in the studio, or it was taken off. */
+  studioLetGo?: number;
+  /** A letter typed in the studio with a part selected, while FRIDAY's panel shows: it goes in its box. */
+  onTypeToAsk?: (t: string) => void;
 }
 
 export default function ProjectCanvas(props: CanvasProps) {
@@ -1347,7 +1353,8 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "z") return;
-      if (reviewingRef.current) return;
+      // In the studio, ⌘Z steps back through the hand changes on the page instead (Studio.tsx).
+      if (reviewingRef.current || viewingRef.current) return;
       if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
       e.preventDefault();
       undo("me");
@@ -1891,6 +1898,12 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
               onSwitch={setViewing}
               patch={patch}
               onError={onError}
+              onPick={(point: SketchPoint | null) => {
+                const about = describePicked(id, [open], cards);
+                latest.current.onStudioPick?.(point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : null);
+              }}
+              letGo={handlers.studioLetGo ?? 0}
+              typeToAsk={(t: string) => latest.current.onTypeToAsk?.(t)}
               ask={(text: string, point?: SketchPoint, fan?: number, quiet?: boolean, figma?: CanvasSelection["figma"]) => {
                 const about = { ...describePicked(id, [open], cards), ...(fan ? { fan } : {}), ...(figma ? { figma } : {}) };
                 latest.current.onAskWith(text, point ? { ...about, label: `${point.label} in ${about.label}`.slice(0, 90), point } : about, quiet);

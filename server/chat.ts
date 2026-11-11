@@ -22,6 +22,7 @@ import { partialHtml } from "./partial.ts";
 import { draftWithParts, shortPartsLoosely } from "./parts.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
 import { builderBrief, builderCard, builderNews, whichConversation, type Job } from "./duo.ts";
+import { contextParts, type ContextParts } from "./contextparts.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS chats (
@@ -56,6 +57,8 @@ if (!chatCols.includes("card_hash")) db.exec("ALTER TABLE chats ADD COLUMN card_
 // How full the conversation is after its last answer, and where Claude Code summarizes it.
 if (!chatCols.includes("context_tokens")) db.exec("ALTER TABLE chats ADD COLUMN context_tokens INTEGER");
 if (!chatCols.includes("context_limit")) db.exec("ALTER TABLE chats ADD COLUMN context_limit INTEGER");
+// What fills it, for the meter by the message box (contextparts.ts), as JSON. Empty for answers made before it.
+if (!chatCols.includes("context_parts")) db.exec("ALTER TABLE chats ADD COLUMN context_parts TEXT");
 // In "Plan, then build", the builder keeps a conversation of its own beside the chat's main one
 // (the planner's), so its model reads its own cached work instead of the planner's whole
 // conversation at full price on every hand-over. Empty until the first hand-over.
@@ -160,8 +163,8 @@ export type ChatEvent =
   | { t: "draft"; id: string; html: string }
   | { t: "text"; delta: string }
   | { t: "compact"; pre: number; post?: number }
-  /** How full the conversation is now, in tokens, and where it gets summarized. */
-  | { t: "context"; used: number; limit: number }
+  /** How full the conversation is now, in tokens, where it gets summarized, and what fills it. */
+  | { t: "context"; used: number; limit: number; parts: ContextParts | null }
   | { t: "title"; title: string }
   | { t: "done"; status: "done" | "stopped" | "error"; error?: string };
 
@@ -249,8 +252,8 @@ export function createChat(project?: string | null) {
 }
 
 export function getChat(id: string) {
-  const chat = db.query<{ id: string; title: string; context_tokens: number | null; context_limit: number | null; project: string | null }, [string]>(
-    "SELECT c.id, c.title, c.context_tokens, c.context_limit, p.id project FROM chats c LEFT JOIN projects p ON p.id = c.project_id WHERE c.id = ?",
+  const chat = db.query<{ id: string; title: string; context_tokens: number | null; context_limit: number | null; context_parts: string | null; project: string | null }, [string]>(
+    "SELECT c.id, c.title, c.context_tokens, c.context_limit, c.context_parts, p.id project FROM chats c LEFT JOIN projects p ON p.id = c.project_id WHERE c.id = ?",
   ).get(id);
   if (!chat) return null;
   const rows = db.query<Row, [string]>("SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY created_at, rowid").all(id).map(out);
@@ -265,8 +268,24 @@ export function getChat(id: string) {
   }
   return {
     id: chat.id, title: chat.title, project: chat.project, messages: rows, cards: cards([...ids]), running: !!run, seq: run?.events.length ?? 0,
-    context: chat.context_tokens && chat.context_limit ? { used: chat.context_tokens, limit: chat.context_limit } : null,
+    context: chat.context_tokens && chat.context_limit ? { used: chat.context_tokens, limit: chat.context_limit, parts: readParts(chat.context_parts, chat.context_tokens) } : null,
   };
+}
+
+/**
+ * What fills the conversation, as kept on the chat; null for answers made before the meter.
+ * Panel on older code keeps the total up to date but not the parts, so parts that no longer
+ * add up to the total are from an earlier answer, and left out rather than shown wrong.
+ */
+function readParts(json: string | null, used: number): ContextParts | null {
+  if (!json) return null;
+  try {
+    const parts = JSON.parse(json) as ContextParts;
+    const sum = parts.rows.filter((r) => r.kind === "used").reduce((s, r) => s + r.tokens, 0);
+    return Math.abs(sum - used) <= used * 0.02 ? parts : null;
+  } catch {
+    return null;
+  }
 }
 
 export function deleteChat(id: string) {
@@ -952,8 +971,9 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
     }
     // How full the conversation is: the meter is the main conversation's, so a builder run leaves it.
     if (d.type === "panel_context" && !side && !builder) {
-      db.run("UPDATE chats SET context_tokens = ?, context_limit = ? WHERE id = ?", [d.used, d.limit, chatId]);
-      emit(chatId, run, { t: "context", used: d.used, limit: d.limit });
+      const parts: ContextParts | null = d.parts ?? null;
+      db.run("UPDATE chats SET context_tokens = ?, context_limit = ?, context_parts = ? WHERE id = ?", [d.used, d.limit, parts ? JSON.stringify(parts) : null, chatId]);
+      emit(chatId, run, { t: "context", used: d.used, limit: d.limit, parts });
       return;
     }
     if (d.type === "system" && d.subtype === "init" && d.session_id) {
@@ -1326,8 +1346,10 @@ async function viaSdk(run: Run, t: SdkTurn) {
       if (run.stopped) break;
       // After each answer: how full the conversation is now (a forked side run has its own, not the chat's).
       if (m.type === "result" && !t.fork) {
+        // "summary" answers from the last response and estimates made here, in a few
+        // milliseconds, and already says what fills the conversation (see contextparts.ts).
         const u = await q.getContextUsage({ detail: "summary" }).catch(() => null);
-        if (u?.totalTokens && u.autoCompactThreshold) t.handle({ type: "panel_context", used: u.totalTokens, limit: u.autoCompactThreshold });
+        if (u?.totalTokens && u.autoCompactThreshold) t.handle({ type: "panel_context", used: u.totalTokens, limit: u.autoCompactThreshold, parts: contextParts(u) });
       }
     }
   } catch (e) {

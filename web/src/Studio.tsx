@@ -2,25 +2,32 @@
 // its own sandbox; a small kit Panel adds to it (sketches.ts) lets the designer point at a
 // part of it, and says which states it has (a flow's screens, or empty / loading / error).
 //
-//   header   what this is (the sketch, its version), how it is seen (screen, Point, Compare,
-//            the column beside it), what to do with it (Choose, Rule out, Build)
-//   stage    the page in a browser frame, with its states as a map to jump around
-//   column   one at a time beside the page: Knobs, Directions, or FRIDAY's own panel
-//   bar      "Ask FRIDAY for a change", only while FRIDAY's panel is folded away
+//   header    icons only, one row that never moves: back, the title, the version; Point and
+//             Compare; the column beside the page; Choose and Rule out; Figma and Build.
+//             Each icon says its name the moment the pointer (or Tab) is on it.
+//   page row  the page's states as tabs, and at the right what's wrong, what's waiting to be
+//             saved, and the view chip (which screen, at what scale, reload, open in a tab)
+//   stage     the page in a browser frame
+//   column    one at a time beside the page: Knobs, Directions, or FRIDAY's own panel
+//   bar       "Ask FRIDAY for a change", only while FRIDAY's panel is folded away
 //
 // One page and one column beside it: Knobs, Directions and FRIDAY take turns in the same
 // place at the same width, so switching between them never moves or rescales the page.
-// FRIDAY's panel belongs to the app, so the studio folds it away and brings it back.
+// FRIDAY's panel belongs to the app, so the studio folds it away and brings it back. While
+// the studio is open the header runs over the top of FRIDAY's panel too, and the panel sits
+// under it (see studio.css), so opening or closing a column moves nothing in the header.
 //
 // What FRIDAY changes arrives as a new version on the canvas, and loads here in place.
 // What the designer changes by hand (words typed over in the page, knobs moved) waits, shown
 // live, until they press Save: then all of it becomes one new version, however many changes.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { studioApi, type Device, type FigmaRead, type RefState, type RuleFinding, type SketchInfo, type SketchPoint, type WordEdit } from "./api.ts";
+import { createPortal } from "react-dom";
+import { STUDIO_PAGE, studioApi, type Device, type FigmaRead, type PartSeen, type PartStyleEdit, type RefState, type RuleFinding, type SketchInfo, type SketchPoint, type WordEdit } from "./api.ts";
 import { Icon, type IconName } from "./Icon.tsx";
-import { Knobs, type PageVar, type Palette } from "./Knobs.tsx";
+import { Knobs, RailHead, type PageVar, type Palette } from "./Knobs.tsx";
 import { Compare } from "./Compare.tsx";
+import { Versions } from "./Versions.tsx";
 import { Mark } from "./Glow.tsx";
 import "./studio.css";
 
@@ -40,23 +47,70 @@ const DEVICES: Record<Device, { w: number; h: number; label: string; icon: IconN
   phone: { w: 390, h: 844, label: "Phone", icon: "phone" },
 };
 
-// "?studio=4": the studio's own address for a page, so a copy a browser kept from before the
-// kit was added (pages used to be cached forever) is never used. Bump it when the kit changes.
-const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=5`;
+// The studio's own address for a page (STUDIO_PAGE in api.ts), so a copy a browser kept from
+// before the kit last changed is never used.
+const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?${STUDIO_PAGE}`;
 const pictureOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.jpg`;
 
 /**
- * Knob changes not saved yet, per sketch and version. They outlive the studio closing, so
- * stepping to another version, FRIDAY delivering a new one, or Esc never drops them; only
- * Save and Reset empty them. (A reload of Panel does.)
+ * Hand changes: everything the designer changed on a version without FRIDAY, waiting, shown
+ * live on the page, until Save makes all of it one new version. Knobs moved, words typed
+ * over, a part's own look, parts deleted.
  */
-const pending = new Map<string, Record<string, string>>();
-/** Words edited in the page and not saved yet, per sketch and version, kept the same way. */
-const pendingWords = new Map<string, WordEdit[]>();
+interface Hand {
+  vars: Record<string, string>;
+  words: WordEdit[];
+  styles: PartStyleEdit[];
+  removes: PartSeen[];
+}
+const NONE: Hand = { vars: {}, words: [], styles: [], removes: [] };
+const handCount = (h: Hand) => Object.keys(h.vars).length + h.words.length + h.styles.length + h.removes.length;
+/**
+ * Hand changes not saved yet, per sketch and version. They outlive the studio closing, so
+ * stepping to another version, FRIDAY delivering a new one, or Esc never drops them; only
+ * Save and Put back empty them. (A reload of Panel does.)
+ */
+const pending = new Map<string, Hand>();
+/**
+ * Each version's steps, for ⌘Z and ⇧⌘Z: what the hand changes were before each step. `last`
+ * is what the latest step changed and when, so one drag of a bar is one step, not a hundred.
+ */
+const histories = new Map<string, { past: Hand[]; future: Hand[]; last: { what: string; at: number } | null }>();
+const historyOf = (key: string) => {
+  let h = histories.get(key);
+  if (!h) histories.set(key, (h = { past: [], future: [], last: null }));
+  return h;
+};
 const pendingKey = (project: string, id: string, v: number) => `${project}/${id}/v${v}`;
+/** The same words the kit and the server refuse in a part's own style. */
+const badValue = (v: string) => v.length > 200 || /[;{}<>]|url\(/i.test(v);
+const NOT_HERE = "This part is drawn by the page's script, so it can't be changed by hand here. Ask FRIDAY to change it.";
 
-/** How far the header has given things up as it narrowed, 0 (nothing) to FOLDS (all it can). */
-const FOLDS = 6;
+/** What can sit beside the page, besides FRIDAY's own panel. */
+type Side = "knobs" | "directions" | "versions";
+
+/** A part's own look, as the page itself makes it (without the changes being tried on it). */
+export interface PartLook {
+  /** The whole font stack. */
+  family: string;
+  size: number | null;
+  weight: number | null;
+  /** The weight comes from the font's "wght" axis (font-variation-settings), not font-weight. */
+  wght: boolean;
+  /** Its font-variation-settings, as computed ("" for none). */
+  fvs: string;
+  lineHeight: number | null;
+  letterSpacing: number | null;
+  color: string;
+  background: string;
+  /** Only when all four corners are the same. */
+  radius: number | null;
+  opacity: number | null;
+  /** The font size of the part around it, for sizes that keep scaling with the page. */
+  parentSize: number | null;
+  /** It has words of its own. */
+  words: boolean;
+}
 
 interface Picked {
   label: string;
@@ -68,7 +122,17 @@ interface Picked {
   state: string;
   /** Made of words (and inline tags): the designer can edit them in place. */
   editable: boolean;
+  /** Where it sits, counted as the file is; "" when that can't be said. */
+  path: string;
+  own: PartLook | null;
+  /** The page's knobs that reach it. */
+  vars: string[];
+  /** What the file is checked against: its class, id and first words. */
+  cls: string;
+  id: string;
+  words: string;
 }
+const seenOf = (p: Picked): PartSeen => ({ path: p.path, cls: p.cls, id: p.id, text: p.words, label: p.label });
 
 export function Studio(props: {
   project: string;
@@ -98,6 +162,12 @@ export function Studio(props: {
   mix: (text: string, ids: string[]) => void;
   onBuilt: (title: string) => void;
   onError: (text: string) => void;
+  /** The part selected, as FRIDAY would get it (null: none), so FRIDAY's own box can carry it. */
+  onPick?: (point: SketchPoint | null) => void;
+  /** Goes up by one when FRIDAY's box has sent the part selected, or it was taken off there. */
+  letGo?: number;
+  /** A letter typed with a part selected while FRIDAY's panel shows: it goes in FRIDAY's box. */
+  typeToAsk?: (t: string) => void;
 }) {
   const { project, sketch } = props;
   /** What Panel knows of the sketch (`of`: which one): its versions, states and family. */
@@ -110,46 +180,46 @@ export function Studio(props: {
   const [reload, setReload] = useState(0);
   // One page, or directions side by side; and which column, if any, is beside the one page.
   const [view, setView] = useState<"one" | "compare">("one");
-  const [side, setSide] = useState<"knobs" | "directions" | null>(null);
+  const [side, setSide] = useState<Side | null>(null);
   const [verdict, setVerdict] = useState<null | "chosen" | "ruled_out">(null);
   const [building, setBuilding] = useState(false);
   const [figmaOpen, setFigmaOpen] = useState(false);
+  /** The small card under the title: the whole title and what this version tried. */
+  const [aboutOpen, setAboutOpen] = useState(false);
+  /** The view menu under the view chip, pinned where the chip is. */
+  const [viewAt, setViewAt] = useState<DOMRect | null>(null);
   const [closing, setClosing] = useState(false);
-  const [fresh, setFresh] = useState<{ v: number; mine: boolean } | null>(null);
+  /** A short notice over the page when a new version arrives, saying where it came from. */
+  const [fresh, setFresh] = useState<{ v: number; text: string } | null>(null);
   // Words being edited in the page right now.
   const [editing, setEditing] = useState(false);
   /** When the designer last kept something themselves (knobs, words), so its new version isn't credited to FRIDAY. */
   const keptAt = useRef(0);
+  /** The version just brought back from the Versions column, so its notice says so. */
+  const broughtBack = useRef<number | null>(null);
   // Knobs: the page's own variables, what's been moved and not yet kept (on this version).
   const key = pendingKey(project, sketch.id, sketch.version);
   const [vars, setVars] = useState<PageVar[] | null>(null);
   /** Which fonts the page names and really has: a missing one shows as a stand-in. */
   const [pageFonts, setPageFonts] = useState<Record<string, boolean>>({});
-  const [edits, setEditsState] = useState<Record<string, string>>(() => pending.get(key) ?? {});
   const [keeping, setKeeping] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
-  const editsRef = useRef(edits);
-  editsRef.current = edits;
-  /** Changes the knobs on this version, and keeps them waiting there until kept or reset. */
+  // The hand changes on the version showing, kept waiting there (in `pending`) until saved.
   const keyRef = useRef(key);
   keyRef.current = key;
-  const setEdits = useCallback((next: Record<string, string>) => {
-    if (Object.keys(next).length) pending.set(keyRef.current, next);
-    else pending.delete(keyRef.current);
-    editsRef.current = next;
-    setEditsState(next);
-  }, []);
-  // Words edited and not saved yet (on this version), the same way.
-  const [words, setWordsState] = useState<WordEdit[]>(() => pendingWords.get(key) ?? []);
-  const wordsRef = useRef(words);
-  wordsRef.current = words;
-  const setWords = useCallback((next: WordEdit[], at = keyRef.current) => {
-    if (next.length) pendingWords.set(at, next);
-    else pendingWords.delete(at);
+  const [hand, setHandState] = useState<Hand>(() => pending.get(key) ?? NONE);
+  const handRef = useRef(hand);
+  handRef.current = hand;
+  /** The hand changes waiting on a version (this one unless `at` says another). */
+  const setHand = useCallback((next: Hand, at = keyRef.current) => {
+    if (handCount(next)) pending.set(at, next);
+    else pending.delete(at);
     if (at !== keyRef.current) return;
-    wordsRef.current = next;
-    setWordsState(next);
+    handRef.current = next;
+    setHandState(next);
   }, []);
+  const edits = hand.vars;
+  const words = hand.words;
   /** The version knob changes are being kept from: its new version starts with nothing pending. */
   const keepingFrom = useRef<string | null>(null);
   const frame = useRef<HTMLIFrameElement>(null);
@@ -180,7 +250,10 @@ export function Studio(props: {
   const seen = useRef({ id: sketch.id, v: sketch.version });
   useEffect(() => {
     if (seen.current.id === sketch.id && sketch.version > seen.current.v && isNew(sketch.version)) {
-      setFresh({ v: sketch.version, mine: Date.now() - keptAt.current < 20_000 });
+      const mine = Date.now() - keptAt.current < 20_000;
+      const back = mine ? broughtBack.current : null;
+      broughtBack.current = null;
+      setFresh({ v: sketch.version, text: back ? `v${back} brought back as v${sketch.version}` : mine ? `Saved as version ${sketch.version}` : `Version ${sketch.version} from FRIDAY` });
       setPicked(null);
       setEditing(false);
       const t = setTimeout(() => setFresh(null), 2600);
@@ -218,6 +291,13 @@ export function Studio(props: {
 
   // ---- Talking to the page ----
   const post = useCallback((m: Record<string, unknown>) => frame.current?.contentWindow?.postMessage({ panel: 1, ...m }, "*"), []);
+  // Where the page was scrolled, so the next version of the same sketch (stepped to, or just
+  // made) opens at the same place and two versions can be compared by flipping. Another
+  // sketch starts at the top. The page reports its scroll as it moves (the kit's "follow").
+  const place = useRef<{ id: string; y: number }>({ id: sketch.id, y: 0 });
+  const sketchNow = useRef(sketch.id);
+  sketchNow.current = sketch.id;
+  const movedSinceHello = useRef(false);
   useEffect(() => {
     const onMessage = (e: MessageEvent) => {
       if (e.source !== frame.current?.contentWindow || !e.data?.panel) return;
@@ -226,10 +306,18 @@ export function Studio(props: {
         setStates(Array.isArray(m.states) ? m.states : []);
         setState(String(m.state ?? ""));
         if (pointingRef.current) post({ t: "pick", on: true });
-        // The page (re)loaded: read its knobs, and put back what was being tried.
+        post({ t: "follow", on: true });
+        movedSinceHello.current = false;
+        if (place.current.id === sketchNow.current && place.current.y > 0) {
+          // Again a moment later, once pictures and fonts have given the page its height,
+          // unless the designer has scrolled it themselves since.
+          const y = place.current.y;
+          post({ t: "scroll", y });
+          for (const ms of [300, 900]) setTimeout(() => !movedSinceHello.current && place.current.id === sketchNow.current && post({ t: "scroll", y }), ms);
+        } else place.current = { id: sketchNow.current, y: 0 };
+        // The page (re)loaded: read its knobs, and put back what was being tried (after the words).
         post({ t: "vars" });
-        if (Object.keys(editsRef.current).length) post({ t: "set", vars: editsRef.current });
-        if (wordsRef.current.length) post({ t: "text", edits: wordsRef.current });
+        showHand(NONE, handRef.current);
       } else if (m.t === "vars") {
         const list: PageVar[] = Array.isArray(m.vars) ? m.vars : [];
         setVars(list);
@@ -238,14 +326,27 @@ export function Studio(props: {
         if (carried.current) {
           carried.current = false;
           const names = new Set(list.map((v) => v.name));
-          const kept = Object.fromEntries(Object.entries(editsRef.current).filter(([k]) => names.has(k)));
-          if (Object.keys(kept).length !== Object.keys(editsRef.current).length) setEdits(kept);
+          const now = handRef.current;
+          const kept = Object.fromEntries(Object.entries(now.vars).filter(([k]) => names.has(k)));
+          if (Object.keys(kept).length !== Object.keys(now.vars).length) setHand({ ...now, vars: kept });
         }
+      } else if (m.t === "scrolled") {
+        place.current = { id: sketchNow.current, y: Number(m.y) || 0 };
+        movedSinceHello.current = true;
       } else if (m.t === "state") {
         setState(String(m.state ?? ""));
         setPicked(null);
       } else if (m.t === "picked") {
-        setPicked({ label: m.label, selector: m.selector, text: m.text, html: m.html, style: m.style ?? {}, rect: m.rect, state: m.state ?? "", editable: !!m.editable });
+        setPicked({
+          label: m.label, selector: m.selector, text: m.text, html: m.html, style: m.style ?? {}, rect: m.rect, state: m.state ?? "", editable: !!m.editable,
+          path: typeof m.path === "string" ? m.path : "", own: m.own && typeof m.own === "object" ? m.own : null, vars: Array.isArray(m.vars) ? m.vars : [],
+          cls: String(m.cls ?? ""), id: String(m.id ?? ""), words: String(m.words ?? ""),
+        });
+      } else if (m.t === "moved") {
+        // The part selected moved (the page scrolled, its look changed): the strip follows it.
+        setPicked((p) => (p && m.rect ? { ...p, rect: m.rect } : p));
+      } else if (m.t === "key") {
+        partKeyRef.current(String(m.key ?? ""), !!m.mod, !!m.shift);
       } else if (m.t === "editing") {
         setEditing(!!m.on);
         // The bubble's box may have taken the keyboard on the first click: typing goes into the words.
@@ -281,9 +382,10 @@ export function Studio(props: {
     setPicked(null);
     setEditing(false);
   }, [src, reload]);
-  // Another sketch or version: its own knobs, and whatever changes were waiting on it. A
-  // version that is new (FRIDAY's, not one stepped to) takes over the changes waiting on the
-  // one it came from, for the variables it still has (checked when the page lists them).
+  // Another sketch or version: its own hand changes, whatever was waiting on it. A version
+  // that is new (FRIDAY's, not one stepped to) takes over the changes waiting on the one it came
+  // from: knobs for the variables it still has (checked when the page lists them), words and
+  // parts as far as they still fit its file (checked with the server).
   const shownKey = useRef(key);
   const carried = useRef(false);
   useLayoutEffect(() => {
@@ -293,60 +395,163 @@ export function Studio(props: {
     carried.current = false;
     const sameSketch = was.startsWith(`${project}/${sketch.id}/v`);
     const handedOn = sameSketch && isNew(sketch.version) && keepingFrom.current !== was;
+    let came: Hand | null = null;
     if (handedOn && pending.has(was) && !pending.has(key)) {
-      pending.set(key, pending.get(was)!);
+      came = pending.get(was)!;
+      pending.set(key, came);
       pending.delete(was);
-      carried.current = true;
-    }
-    // Words waiting on the version before come along too, as far as they still fit the new one.
-    let carriedWords: WordEdit[] = [];
-    if (handedOn && pendingWords.has(was) && !pendingWords.has(key)) {
-      carriedWords = pendingWords.get(was)!;
-      pendingWords.set(key, carriedWords);
-      pendingWords.delete(was);
+      histories.delete(was);
+      carried.current = Object.keys(came.vars).length > 0;
     }
     setVars(null);
     setRulesOpen(false);
-    const now = pending.get(key) ?? {};
-    editsRef.current = now;
-    setEditsState(now);
-    const nowWords = pendingWords.get(key) ?? [];
-    wordsRef.current = nowWords;
-    setWordsState(nowWords);
-    if (carriedWords.length) void fitWords(key, sketch.version, carriedWords);
+    const now = pending.get(key) ?? NONE;
+    handRef.current = now;
+    setHandState(now);
+    if (came && came.words.length + came.styles.length + came.removes.length) void fitHand(key, sketch.version, came);
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * Shows on the page what changes from one set of hand changes to another: knobs set or
+   * taken back, words put back and typed, parts' looks, parts hidden or shown again. Undo and
+   * redo use it too, so the page always shows exactly what the list says, without loading again.
+   */
+  const showHand = useCallback((from: Hand, to: Hand) => {
+    const vs: Record<string, string | null> = {};
+    for (const k of Object.keys(from.vars)) if (!(k in to.vars)) vs[k] = null;
+    for (const [k, v] of Object.entries(to.vars)) if (from.vars[k] !== v) vs[k] = v;
+    if (Object.keys(vs).length) post({ t: "set", vars: vs });
+    const same = (a: WordEdit, b: WordEdit) => a.path === b.path && a.before === b.before && a.after === b.after;
+    const back = from.words.filter((w) => !to.words.some((x) => same(x, w))).reverse().map((w) => ({ path: w.path, before: w.after, after: w.before }));
+    const ahead = to.words.filter((w) => !from.words.some((x) => same(x, w))).map((w) => ({ path: w.path, before: w.before, after: w.after }));
+    if (back.length + ahead.length) post({ t: "text", edits: [...back, ...ahead] });
+    for (const path of new Set([...from.styles, ...to.styles].map((x) => x.path))) {
+      const a = from.styles.find((x) => x.path === path)?.props ?? {}, b = to.styles.find((x) => x.path === path)?.props ?? {};
+      const props: Record<string, string | null> = {};
+      for (const k of Object.keys(a)) if (!(k in b)) props[k] = null;
+      for (const [k, v] of Object.entries(b)) if (a[k] !== v) props[k] = v;
+      if (Object.keys(props).length) post({ t: "style", path, props });
+    }
+    for (const r of to.removes) if (!from.removes.some((x) => x.path === r.path)) post({ t: "remove", path: r.path, on: true });
+    for (const r of from.removes) if (!to.removes.some((x) => x.path === r.path)) post({ t: "remove", path: r.path, on: false });
+  }, [post]);
+
+  /**
+   * One step of hand changes on this version: shown on the page at once, and one ⌘Z away.
+   * `same` names what changed; quick changes to the same thing (a drag of a bar, the color
+   * picker moving) are one step. `onPage`: the page made the change itself (words typed there).
+   */
+  const step = useCallback((next: Hand, o: { same?: string; onPage?: boolean } = {}) => {
+    const at = keyRef.current, h = historyOf(at), now = handRef.current;
+    const merge = !!o.same && h.last?.what === o.same && Date.now() - h.last.at < 1200;
+    if (!merge) {
+      h.past.push(now);
+      if (h.past.length > 200) h.past.shift();
+    }
+    h.future = [];
+    h.last = o.same ? { what: o.same, at: Date.now() } : null;
+    setHand(next, at);
+    if (!o.onPage) showHand(now, next);
+  }, [setHand, showHand]);
+  const undo = useCallback((redo = false) => {
+    const at = keyRef.current, h = historyOf(at), now = handRef.current;
+    const to = redo ? h.future.pop() : h.past.pop();
+    if (!to) return;
+    (redo ? h.past : h.future).push(now);
+    h.last = null;
+    setHand(to, at);
+    showHand(now, to);
+  }, [setHand, showHand]);
+  /** A change the server turned down: let go of it, everywhere in this version's steps too. */
+  const letGo = (at: string, keep: (h: Hand) => Hand) => {
+    const h = histories.get(at);
+    if (h) {
+      h.past = h.past.map(keep);
+      h.future = h.future.map(keep);
+    }
+    const before = at === keyRef.current ? handRef.current : pending.get(at) ?? NONE;
+    const after = keep(before);
+    setHand(after, at);
+    if (at === keyRef.current) showHand(before, after);
+  };
+
   const turn = useCallback((changes: Record<string, string>) => {
-    if (!Object.keys(changes).length) return;
-    setEdits({ ...editsRef.current, ...changes });
-    post({ t: "set", vars: changes });
-  }, [post, setEdits]);
+    const names = Object.keys(changes);
+    if (!names.length) return;
+    const next = { ...handRef.current.vars, ...changes };
+    // A knob put back where the page has it is no change at all.
+    for (const k of names) if (vars?.find((v) => v.name === k)?.value.trim() === changes[k]!.trim()) delete next[k];
+    step({ ...handRef.current, vars: next }, { same: `vars:${names.sort().join(",")}` });
+  }, [step, vars]);
   /** Outlines on the page what a knob changes, while the pointer is on it. */
   const showVar = useCallback((name: string | null) => post({ t: "show", name }), [post]);
-  const resetKnobs = useCallback(() => {
-    post({ t: "set", vars: Object.fromEntries(Object.keys(editsRef.current).map((k) => [k, null])) });
-    setEdits({});
-  }, [post, setEdits]);
+
+  /** Checks the hand changes on a version against its file; the message when they don't fit. */
+  const fits = (h: Hand, v: number) =>
+    studioApi.saveChanges(project, sketch.id, { edits: h.words, vars: {}, styles: h.styles, removes: h.removes }, v, true).then(() => null, (e: Error) => e.message);
+
+  /** A part's own look, changed by hand: only that part changes. `props` null takes one back. */
+  const stylePart = (part: PartSeen, props: Record<string, string | null>) => {
+    if (!part.path) return props_error(NOT_HERE);
+    if (Object.values(props).some((v) => v != null && badValue(v))) return props_error("That value can't be used here.");
+    const now = handRef.current;
+    const was = now.styles.find((x) => x.path === part.path);
+    const merged: Record<string, string> = { ...(was?.props ?? {}) };
+    for (const [k, v] of Object.entries(props)) {
+      if (v == null) delete merged[k];
+      else merged[k] = v;
+    }
+    const styles = now.styles.filter((x) => x.path !== part.path);
+    if (Object.keys(merged).length) styles.push({ ...part, props: merged });
+    const next = { ...now, styles };
+    step(next, { same: `style:${part.path}:${Object.keys(props).sort().join(",")}` });
+    // A part changed for the first time is checked against the file at once.
+    if (!was) {
+      const at = keyRef.current;
+      void fits(next, sketch.version).then((problem) => {
+        if (!problem) return;
+        props_error(problem);
+        letGo(at, (h) => ({ ...h, styles: h.styles.filter((x) => x.path !== part.path) }));
+      });
+    }
+  };
+  const props_error = (t: string) => props.onError(t);
+  /** Delete a part: it's hidden at once and lets go of being selected; Save takes it out of the file. */
+  const deletePart = (part: PartSeen) => {
+    setPicked(null);
+    post({ t: "release" });
+    if (!part.path) return props_error(NOT_HERE);
+    const now = handRef.current;
+    if (now.removes.some((x) => x.path === part.path)) return;
+    const next = { ...now, removes: [...now.removes, part] };
+    step(next);
+    const at = keyRef.current;
+    void fits(next, sketch.version).then((problem) => {
+      if (!problem) return;
+      props_error(problem);
+      letGo(at, (h) => ({ ...h, removes: h.removes.filter((x) => x.path !== part.path) }));
+    });
+  };
+
   /**
-   * Save: the words and the knobs changed on this version become one new version together.
+   * Save: everything changed by hand on this version becomes one new version together.
    * Only knob values the browser accepts are written into the page.
    */
   const save = async () => {
-    const good = Object.fromEntries(Object.entries(edits).filter(([, v]) => v.trim() && !/[;{}<>]/.test(v)));
-    const list = words;
-    if ((!Object.keys(good).length && !list.length) || keeping) return;
+    const h = handRef.current;
+    const good = Object.fromEntries(Object.entries(h.vars).filter(([, v]) => v.trim() && !/[;{}<>]/.test(v)));
+    if ((!Object.keys(good).length && !h.words.length && !h.styles.length && !h.removes.length) || keeping) return;
     setKeeping(true);
     keptAt.current = Date.now();
     const from = key;
     keepingFrom.current = from;
     try {
-      const res = await studioApi.saveChanges(project, sketch.id, { edits: list, vars: good }, sketch.version);
+      const res = await studioApi.saveChanges(project, sketch.id, { edits: h.words, vars: good, styles: h.styles, removes: h.removes }, sketch.version);
       // Saved: nothing waits on that version any more, and its new version starts clean.
       pending.delete(from);
-      pendingWords.delete(from);
+      histories.delete(from);
       if (shownKey.current === from) {
-        setEdits({});
-        setWords([]);
+        setHand(NONE, from);
         // Nothing changed in the file after all: show the page as it really is.
         if (res.version === sketch.version) setReload((n) => n + 1);
       }
@@ -360,14 +565,10 @@ export function Studio(props: {
       }, 4000);
     }
   };
-  /** Put back everything not saved on this version: the knobs and the words. */
-  const putBack = () => {
-    resetKnobs();
-    if (wordsRef.current.length) {
-      setWords([]);
-      setReload((n) => n + 1);
-    }
-  };
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  /** Put back everything not saved on this version, as one step (⌘Z brings it all back). */
+  const putBack = () => step(NONE);
 
   /**
    * Words the designer just edited in the page. They wait with the others until Save, but are
@@ -377,38 +578,39 @@ export function Studio(props: {
   const addWords = async (edit: WordEdit) => {
     if (edit.after === edit.before) return;
     const at = keyRef.current, v = sketch.version;
-    const was = wordsRef.current;
-    const list = [...was];
+    const now = handRef.current;
+    const list = [...now.words];
     const same = list.findIndex((x) => x.path === edit.path && x.after === edit.before);
     if (same >= 0) {
       const first = list[same]!;
       if (edit.after === first.before) list.splice(same, 1);
       else list[same] = { ...first, after: edit.after, after_text: edit.after_text };
     } else list.push(edit);
-    setWords(list, at);
+    const next = { ...now, words: list };
+    step(next, { onPage: true });
     if (!list.length) return;
-    try {
-      await studioApi.saveChanges(project, sketch.id, { edits: list, vars: {} }, v, true);
-    } catch (e) {
-      props.onError((e as Error).message);
-      // Let this one go: back to the words waiting before it, and the page loads again with them.
-      if (pendingWords.get(at) === list) setWords(was, at);
-      if (at === keyRef.current) setReload((n) => n + 1);
-    }
+    const problem = await fits(next, v);
+    if (!problem) return;
+    props.onError(problem);
+    // Let this one go: the words go back to what they were on the page, and out of the list.
+    const gone = (w: WordEdit) => w.path === edit.path;
+    letGo(at, (h) => ({ ...h, words: h.words.filter((w) => !gone(w) || now.words.includes(w)) }));
+    if (at === keyRef.current) post({ t: "text", edits: [{ path: edit.path, before: edit.after, after: edit.before }] });
   };
   /**
-   * Words carried over to a new version from FRIDAY: the ones that no longer fit its file
-   * (FRIDAY changed those words too, say) are let go, and the designer is told.
+   * Hand changes carried over to a new version from FRIDAY: the ones that no longer fit its
+   * file (FRIDAY changed those words too, or that part) are let go, and the designer is told.
    */
-  const fitWords = async (at: string, v: number, list: WordEdit[]) => {
-    const fits = async (l: WordEdit[]) => studioApi.saveChanges(project, sketch.id, { edits: l, vars: {} }, v, true).then(() => true, () => false);
-    if (await fits(list)) return;
-    const kept: WordEdit[] = [];
-    for (const e of list) if (await fits([...kept, e])) kept.push(e);
-    if (pendingWords.get(at) !== list) return;
-    setWords(kept, at);
-    const gone = list.length - kept.length;
-    props.onError(`${gone === 1 ? "One word change" : `${gone} word changes`} you hadn't saved didn't fit the new version, so ${gone === 1 ? "it was" : "they were"} let go.`);
+  const fitHand = async (at: string, v: number, came: Hand) => {
+    if (!(await fits(came, v))) return;
+    const kept: Hand = { vars: came.vars, words: [], styles: [], removes: [] };
+    for (const w of came.words) if (!(await fits({ ...kept, words: [...kept.words, w] }, v))) kept.words.push(w);
+    for (const x of came.styles) if (!(await fits({ ...kept, styles: [...kept.styles, x] }, v))) kept.styles.push(x);
+    for (const x of came.removes) if (!(await fits({ ...kept, removes: [...kept.removes, x] }, v))) kept.removes.push(x);
+    if (pending.get(at) !== came) return;
+    setHand(kept, at);
+    const gone = handCount(came) - handCount(kept);
+    props.onError(`${gone === 1 ? "One change" : `${gone} changes`} you hadn't saved didn't fit the new version, so ${gone === 1 ? "it was" : "they were"} let go.`);
     if (at === keyRef.current) setReload((n) => n + 1);
   };
 
@@ -431,9 +633,8 @@ export function Studio(props: {
 
   // ---- The one column beside the page, and Compare ----
   const { askOpen, setAskOpen } = props;
-  /** Who has the column: FRIDAY's panel whenever it shows, else Knobs or Directions, else no one. */
-  const column: "knobs" | "directions" | "friday" | null =
-    askOpen ? "friday" : view === "compare" ? null : side === "directions" && !hasDirections ? null : side;
+  /** Who has the column: FRIDAY's panel whenever it shows, else Knobs, Directions or Versions, else no one. */
+  const column: Side | "friday" | null = askOpen ? "friday" : view === "compare" ? null : side;
   /** Knobs or Directions folded FRIDAY away: closing them brings it back. */
   const folded = useRef(false);
   /** FRIDAY was showing before Compare folded it away: leaving Compare brings it back. */
@@ -453,7 +654,7 @@ export function Studio(props: {
   }, []);
 
   /** The column switch: press one to show it there, press the lit one again to close the column. */
-  const toggleColumn = (c: "knobs" | "directions" | "friday") => {
+  const toggleColumn = (c: Side | "friday") => {
     if (c === "friday") {
       folded.current = false;
       fridayBeforeCompare.current = false;
@@ -497,9 +698,11 @@ export function Studio(props: {
   };
   const leaveCompareRef = useRef(leaveCompare);
   leaveCompareRef.current = leaveCompare;
+  const toggleColumnRef = useRef(toggleColumn);
+  toggleColumnRef.current = toggleColumn;
 
   // Escape steps back one thing at a time: what's pointed at, pointing, Compare, an open
-  // dialog, and then out of the studio to the canvas. In a field with words in it, it only
+  // card or dialog, and then out of the studio to the canvas. In a field with words in it, it only
   // lets go of the field (so nothing typed is lost); in an empty one it carries on as usual.
   // The page passes its Escape up too (see the kit in sketches.ts), so it works after a click
   // on the sketch.
@@ -514,7 +717,8 @@ export function Studio(props: {
       field.blur();
       if (words) return;
     }
-    if (pointing) setPointing(false);
+    if (aboutOpen) setAboutOpen(false);
+    else if (pointing) setPointing(false);
     else if (view === "compare") leaveCompareRef.current();
     else if (verdict || building || figmaOpen) {
       setVerdict(null);
@@ -524,6 +728,57 @@ export function Studio(props: {
   };
   const escapeRef = useRef(escape);
   escapeRef.current = escape;
+  /** The studio's single-letter keys: P points, K, D and V open and close their columns. */
+  const letterKey = (key: string) => {
+    const k = key.toLowerCase();
+    if (k === "p" && view === "one") setPointing((v) => !v);
+    else if (k === "k") toggleColumnRef.current("knobs");
+    else if (k === "d") toggleColumnRef.current("directions");
+    else if (k === "v") toggleColumnRef.current("versions");
+    else return false;
+    return true;
+  };
+  const letterKeyRef = useRef(letterKey);
+  letterKeyRef.current = letterKey;
+  /** Edit the selected part's words right there in the page. */
+  const editWords = () => {
+    // The page takes the keyboard, so typing goes into the words.
+    frame.current?.focus();
+    post({ t: "edit" });
+  };
+  /** Knobs for the selected part: the Knobs column, opened on it (or closed again). */
+  const knobsForPart = () => toggleColumnRef.current("knobs");
+  /**
+   * The studio's keys, from the studio itself or passed up by the page (after a click on it,
+   * the keyboard is the page's): ⌘Z and ⇧⌘Z step back and forward through hand changes, ⌘S
+   * saves; with a part selected, Delete deletes it, Enter edits its words, K opens Knobs on it
+   * and any other letter starts a message about it; otherwise P, K, D and V.
+   */
+  const studioKey = (k: string, mod: boolean, shift: boolean) => {
+    if (mod) {
+      if (k.toLowerCase() === "z") undo(shift);
+      else if (k.toLowerCase() === "s") void saveRef.current();
+      else return false;
+      return true;
+    }
+    if (editing) return false;
+    const p = picked;
+    if (p) {
+      if (k === "Delete" || k === "Backspace") deletePart(seenOf(p));
+      else if (k === "Enter") {
+        if (!p.editable) return false;
+        editWords();
+      } else if (k.toLowerCase() === "k") knobsForPart();
+      else if (/^[\p{L}\p{N}]$/u.test(k)) typeToAskRef.current(k);
+      else return false;
+      return true;
+    }
+    return letterKeyRef.current(k);
+  };
+  const partKeyRef = useRef(studioKey);
+  partKeyRef.current = studioKey;
+  /** A letter typed with a part selected: the start of a message about it (see the ask boxes). */
+  const typeToAskRef = useRef<(k: string) => void>(() => {});
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const typing = (e.target as HTMLElement)?.closest?.<HTMLElement>("input, textarea, [contenteditable]") ?? null;
@@ -531,66 +786,76 @@ export function Studio(props: {
         if (!e.defaultPrevented) escapeRef.current(typing);
         return;
       }
-      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
-      if ((e.key === "p" || e.key === "P") && view === "one") setPointing((v) => !v);
+      const mod = e.metaKey || e.ctrlKey;
+      // ⌘S saves from anywhere in the studio; ⌘Z is the field's own while typing in one.
+      if (mod && !e.altKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void saveRef.current();
+        return;
+      }
+      if (typing || e.altKey || e.repeat || e.isComposing || (e.target as HTMLElement)?.closest?.("[role=slider], .popover")) return;
+      if (mod && e.key.toLowerCase() !== "z") return;
+      if (partKeyRef.current(e.key, mod, e.shiftKey)) e.preventDefault();
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [view]);
+  }, []);
 
   // ---- Asking ----
   // Always without opening FRIDAY's panel: if it's folded away, the bar says what it's doing,
-  // and the page and the column beside it stay where they are.
+  // and the page and the column beside it stay where they are. A part selected goes with the
+  // message: the bar (or FRIDAY's own box, when its panel shows) carries it as a chip.
+  const pointOf = (p: Picked, mode: "change" | "alternates" = "change"): SketchPoint => ({
+    sketch: sketch.id, version: sketch.version, label: p.label, selector: p.selector, text: p.text,
+    html: p.html, style: p.style, state: p.state || undefined, device, mode,
+  });
   const ask = (text: string, mode: "change" | "alternates" = "change") => {
     const t = text.trim();
     if (!t && mode === "change") return;
     if (picked) {
-      props.ask(t || "Try alternates of this.", {
-        sketch: sketch.id, version: sketch.version, label: picked.label, selector: picked.selector, text: picked.text,
-        html: picked.html, style: picked.style, state: picked.state || undefined, device, mode,
-      }, mode === "alternates" ? 3 : undefined, true);
+      props.ask(t || "Try alternates of this.", pointOf(picked, mode), mode === "alternates" ? 3 : undefined, true);
       setPicked(null);
       setPointing(false);
     } else props.ask(t, undefined, undefined, true);
   };
+  /** Lets go of the part selected: nothing is selected on the page any more. */
+  const letGoOfPart = () => {
+    setPicked(null);
+    post({ t: "release" });
+  };
+  // FRIDAY's own box carries the part selected; when it sends it (or it's taken off there), let go.
+  // (Told only when the part itself changes: the app passes a new function every time.)
+  const onPick = useRef(props.onPick);
+  onPick.current = props.onPick;
+  const pickedPoint = picked && !editing ? JSON.stringify(pointOf(picked)) : "";
+  useEffect(() => {
+    onPick.current?.(pickedPoint ? (JSON.parse(pickedPoint) as SketchPoint) : null);
+  }, [pickedPoint]);
+  useEffect(() => () => onPick.current?.(null), []);
+  const firstLetGo = useRef(props.letGo);
+  useEffect(() => {
+    if (props.letGo === firstLetGo.current) return;
+    firstLetGo.current = props.letGo;
+    letGoOfPart();
+  }, [props.letGo]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** The ask bar's own way to take a letter (see AskBar). */
+  const barType = useRef<((t: string) => void) | null>(null);
+  typeToAskRef.current = (k: string) => {
+    if (askOpen) props.typeToAsk?.(k);
+    else barType.current?.(k);
+  };
   const alternates = () => props.ask("Try 3 alternates of this sketch, each a different direction for the whole page.", undefined, 3, true);
 
-  // ---- The header gives things up as it narrows ----
-  // In a fixed order (see .st-head[data-f1] … [data-f6] in studio.css): the line under the
-  // title, the words on Choose and Rule out, the words on Point and
-  // Compare, the words on the column switch, "of 8", and last, at a phone's width, Point and
-  // Compare themselves (P still points). The steps come from what actually fits
-  // (the header's width against its content), so they don't go stale when a label changes.
-  const head = useRef<HTMLElement>(null);
-  const fitHead = useCallback(() => {
-    const el = head.current;
-    const name = el?.querySelector<HTMLElement>(".st-name");
-    const title = el?.querySelector<HTMLElement>(".st-title");
-    if (!el || !name || !title) return;
-    // While measuring, the title asks for the room it would like (up to 280px), so it isn't
-    // squeezed before the rest has given anything up. After, it takes whatever is left.
-    name.style.flex = "none";
-    name.style.width = `${Math.max(120, Math.min(title.scrollWidth + 1, 280))}px`;
-    const fold = (n: number) => {
-      for (let i = 1; i <= FOLDS; i++) el.toggleAttribute(`data-f${i}`, i <= n);
-      return el.scrollWidth <= el.clientWidth;
+  // The title's card closes on a click anywhere else, like a menu.
+  useEffect(() => {
+    if (!aboutOpen) return;
+    const away = (e: PointerEvent) => {
+      if (!(e.target as Element | null)?.closest?.(".st-about, .st-title")) setAboutOpen(false);
     };
-    let n = 0;
-    while (n < FOLDS - 1 && !fold(n)) n++;
-    if (n === FOLDS - 1) fold(n);
-    name.style.flex = "";
-    name.style.width = "";
-    // Before Point and Compare themselves go, the title gives up its room, down to 120px.
-    if (n === FOLDS - 1 && !fold(n)) fold(FOLDS);
-  }, []);
-  useLayoutEffect(() => {
-    const el = head.current;
-    if (!el) return;
-    const ro = new ResizeObserver(fitHead);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [fitHead]);
-  useLayoutEffect(fitHead, [fitHead, sketch.title, sketch.tries, sketch.state, sketch.version, versions.length, hasDirections, family.length, column, view]);
+    document.addEventListener("pointerdown", away);
+    return () => document.removeEventListener("pointerdown", away);
+  }, [aboutOpen]);
+  useEffect(() => setAboutOpen(false), [sketch.id, sketch.version]);
 
   // A new screen size: the frame and the page in it glide together, for that moment only.
   const firstDevice = useRef(true);
@@ -604,87 +869,140 @@ export function Studio(props: {
     return () => clearTimeout(t);
   }, [device]);
 
-  // Where the bubble goes: under the part pointed at, in the stage's own coordinates.
-  const bubble = (() => {
+  // Where the strip goes: under the part selected (above it when there's no room), centred on
+  // it, in the stage's own coordinates.
+  const STRIP = { w: editing ? 300 : (picked?.editable ? 4 : 3) * 30 + 10, h: 38 };
+  const strip = (() => {
     if (!picked || !stage.current || !frame.current) return null;
     const fr = frame.current.getBoundingClientRect(), st = stage.current.getBoundingClientRect();
     const x = fr.left - st.left + (picked.rect.x + picked.rect.w / 2) * fit.scale;
-    const below = fr.top - st.top + (picked.rect.y + picked.rect.h) * fit.scale + 12;
-    const above = fr.top - st.top + picked.rect.y * fit.scale - 12;
-    const flip = below + 150 > st.height;
-    return { left: Math.min(Math.max(x - 180, 12), st.width - 372), top: flip ? Math.max(above - 132, 8) : below };
+    const below = fr.top - st.top + (picked.rect.y + picked.rect.h) * fit.scale + 10;
+    const above = fr.top - st.top + picked.rect.y * fit.scale - 10 - STRIP.h;
+    const top = below + STRIP.h + 8 > st.height ? Math.max(above, 8) : below;
+    return { left: Math.min(Math.max(x - STRIP.w / 2, 8), st.width - STRIP.w - 8), top: Math.min(Math.max(top, 8), st.height - STRIP.h - 8) };
   })();
 
-  /** Knob changes are waiting on this version while Knobs is closed. */
-  const waiting = Object.keys(edits).length > 0 && column !== "knobs";
-  /** Everything changed by hand on this version and not saved yet: words and knobs. */
-  const unsaved = words.length + Object.keys(edits).length;
+  /** The versions of this sketch with hand changes waiting on them. */
+  const waitingOn = new Set(
+    [...pending.keys()].flatMap((k) => {
+      const m = k.match(/\/v(\d+)$/);
+      return m && k.startsWith(`${project}/${sketch.id}/v`) ? [Number(m[1])] : [];
+    }),
+  );
+  /** Bring an older version back as the newest; the notice over the page says so when it arrives. */
+  const bringBack = async (v: number) => {
+    keptAt.current = Date.now();
+    broughtBack.current = v;
+    try {
+      await studioApi.restore(project, sketch.id, v);
+    } catch (e) {
+      broughtBack.current = null;
+      props.onError((e as Error).message);
+    }
+  };
+
+  /** Changes made in Knobs (the page's knobs, parts' looks) are waiting on this version while Knobs is closed. */
+  const waiting = Object.keys(edits).length + hand.styles.length > 0 && column !== "knobs";
+  /** Everything changed by hand on this version and not saved yet: knobs, words, looks, deleted parts. */
+  const unsaved = handCount(hand);
   const comparing = view === "compare" && hasDirections;
+  const nextVersion = (versions.at(-1)?.v ?? sketch.version) + 1;
+  const pct = Math.round(fit.scale * 100);
+  /** What this version tried, in a line: written with the version, or the sketch's own line for its newest. */
+  const tried = sketch.tries && (at < 0 || at === versions.length - 1) ? sketch.tries : "";
+  const chosen = sketch.state === "chosen", ruledOut = sketch.state === "ruled_out";
 
   return (
     <div className={`studio ${closing ? "closing" : ""}`} role="dialog" aria-label={sketch.title}>
-      <header className="st-head" ref={head}>
+      <header className="st-head">
         {/* What this is */}
-        <button className="st-icon" onClick={close} aria-label="Back to the canvas" title="Back to the canvas (Esc)"><Icon name="arrow-left" size={15} /></button>
+        <button className="st-icon tip-start" onClick={close} aria-label="Back to the canvas" data-tip="Back to the canvas (Esc)"><Icon name="arrow-left" size={15} /></button>
         <div className="st-name">
-          <span className="st-title" title={sketch.title}>{sketch.title || "Untitled sketch"}</span>
-          {sketch.tries && <span className="st-tries" title={sketch.tries}>{sketch.tries}</span>}
+          <button className="st-title" onClick={() => setAboutOpen((v) => !v)} aria-expanded={aboutOpen} aria-haspopup="dialog">
+            {sketch.title || "Untitled sketch"}
+          </button>
+          {aboutOpen && (
+            <div className="st-pop st-about" role="dialog" aria-label="About this sketch">
+              <p className="st-pop-title">{sketch.title || "Untitled sketch"}</p>
+              {tried ? (
+                <>
+                  <p className="st-about-label">What this version tried</p>
+                  <p className="st-pop-text">{tried}</p>
+                </>
+              ) : (
+                <p className="st-pop-text">Version {sketch.version}.</p>
+              )}
+            </div>
+          )}
         </div>
         <div className="st-versions" aria-label="Versions">
-          <button className="st-icon sm" disabled={at <= 0} onClick={() => stepTo(-1)} aria-label="Earlier version" title="Earlier version"><Icon name="chevron-left" size={14} /></button>
-          <span className={`st-v ${fresh ? "fresh" : ""}`}>v{sketch.version}{versions.length > 1 && <span className="st-of faint"> of {versions.at(-1)!.v}</span>}</span>
-          <button className="st-icon sm" disabled={at < 0 || at >= versions.length - 1} onClick={() => stepTo(1)} aria-label="Later version" title="Later version"><Icon name="chevron-right" size={14} /></button>
+          <button className="st-icon sm" disabled={at <= 0} onClick={() => stepTo(-1)} aria-label="Earlier version" data-tip="Earlier version"><Icon name="chevron-left" size={14} /></button>
+          <button className={`st-v ${fresh ? "fresh" : ""} ${column === "versions" ? "on" : ""}`} onClick={() => toggleColumn("versions")} aria-pressed={column === "versions"} aria-label={`Version ${sketch.version}: all versions (V)`} data-tip="All versions (V)">
+            v{sketch.version}
+          </button>
+          <button className="st-icon sm" disabled={at < 0 || at >= versions.length - 1} onClick={() => stepTo(1)} aria-label="Later version" data-tip="Later version"><Icon name="chevron-right" size={14} /></button>
         </div>
         <span className="st-gap" />
 
         {/* How it is seen */}
-        <div className="st-seg" role="radiogroup" aria-label="Screen">
-          {(Object.keys(DEVICES) as Device[]).map((k) => (
-            <button key={k} role="radio" aria-checked={device === k} className={device === k ? "on" : ""} onClick={() => setDevice(k)} title={`${DEVICES[k].label} (${DEVICES[k].w}×${DEVICES[k].h})`}>
-              <Icon name={DEVICES[k].icon} size={14} />
-            </button>
-          ))}
-        </div>
         <button
-          className={`st-tool ${pointing ? "on" : ""}`}
+          className={`st-icon ${pointing ? "on" : ""}`}
           onClick={() => {
             if (comparing) leaveCompare();
             setPointing((v) => (comparing ? true : !v));
           }}
           aria-pressed={pointing}
-          title="Point at a part to change it (P)"
+          aria-label="Point at a part (P)"
+          data-tip="Point at a part (P)"
         >
-          <Icon name="point" size={14} /> <span className="st-label st-l-view">Point</span>
+          <Icon name="point" size={15} />
         </button>
-        {hasDirections && (
-          <button className={`st-tool ${comparing ? "on" : ""}`} onClick={() => (comparing ? leaveCompare() : enterCompare())} aria-pressed={comparing} title="Compare: this direction beside the others, scrolled together">
-            <Icon name="compare" size={14} /> <span className="st-label st-l-view">Compare</span>
-          </button>
-        )}
-        <div className="st-seg st-cols" role="group" aria-label="Beside the page">
-          <button className={column === "knobs" ? "on" : ""} aria-pressed={column === "knobs"} onClick={() => toggleColumn("knobs")} title={waiting ? "Knobs: you have changes here not saved yet" : "Knobs: change its colors, type, corners and spacing yourself, live"}>
-            <Icon name="sliders" size={14} /><span className="st-l-col">Knobs</span>
-            {waiting && <i className="st-dot" aria-label="changes not saved yet" />}
-          </button>
-          {hasDirections && (
-            <button className={column === "directions" ? "on" : ""} aria-pressed={column === "directions"} onClick={() => toggleColumn("directions")} title="Directions: the sketches branched from this one">
-              <Icon name="branch" size={14} /><span className="st-l-col">Directions</span><span className="st-count">{family.length}</span>
-            </button>
-          )}
-          <button className={column === "friday" ? "on" : ""} aria-pressed={column === "friday"} onClick={() => toggleColumn("friday")} title="FRIDAY beside the page (⌘J)">
-            <Mark size={14} active={props.running} /><span className="st-l-col">FRIDAY</span>
-            {props.unread && !askOpen && <i className="st-dot" aria-label="a new answer" />}
-          </button>
-        </div>
+        <button
+          className={`st-icon st-compare ${comparing ? "on" : ""}`}
+          disabled={!hasDirections}
+          onClick={() => (comparing ? leaveCompare() : enterCompare())}
+          aria-pressed={comparing}
+          aria-label="Compare directions side by side"
+          data-tip={hasDirections ? "Compare directions side by side" : "Compare directions side by side (needs a second direction)"}
+        >
+          <Icon name="compare" size={15} />
+        </button>
+        <span className="st-sep" />
+
+        <button className={`st-icon ${column === "knobs" ? "on" : ""}`} aria-pressed={column === "knobs"} onClick={() => toggleColumn("knobs")} aria-label="Knobs (K)" data-tip={waiting ? "Knobs (K) · changes not saved" : "Knobs (K)"}>
+          <Icon name="sliders" size={15} />
+          {waiting && <i className="st-dot" aria-label="changes not saved yet" />}
+        </button>
+        <button className={`st-icon wide ${column === "directions" ? "on" : ""}`} aria-pressed={column === "directions"} onClick={() => toggleColumn("directions")} aria-label={`Directions (D): ${family.length || 1}`} data-tip="Directions (D)">
+          <Icon name="branch" size={15} />
+          <span className="st-count">{family.length || 1}</span>
+        </button>
+        <button className={`st-icon ${column === "friday" ? "on" : ""}`} aria-pressed={column === "friday"} onClick={() => toggleColumn("friday")} aria-label="FRIDAY (⌘J)" data-tip="FRIDAY (⌘J)">
+          <Mark size={15} active={props.running} />
+          {props.unread && !askOpen && <i className="st-dot" aria-label="a new answer" />}
+        </button>
         <span className="st-sep" />
 
         {/* What to do with it */}
         <div className="st-verdict">
-          <button className={`st-tool ${sketch.state === "chosen" ? "chosen" : ""}`} title={sketch.state === "chosen" ? "Chosen (click to undo)" : "Choose this direction"} onClick={() => (sketch.state === "chosen" ? props.patch(sketch.id, { state: "kept", reason: "" }) : setVerdict("chosen"))}>
-            <Icon name="check" size={14} /> <span className="st-label st-l-verdict">{sketch.state === "chosen" ? "Chosen" : "Choose"}</span>
+          <button
+            className={`st-icon ${chosen ? "dark" : ""}`}
+            aria-pressed={chosen}
+            aria-label={chosen ? "Chosen · click to undo" : "Choose"}
+            data-tip={chosen ? "Chosen · click to undo" : "Choose"}
+            onClick={() => (chosen ? props.patch(sketch.id, { state: "kept", reason: "" }) : setVerdict("chosen"))}
+          >
+            <Icon name="check" size={15} />
           </button>
-          <button className={`st-tool ${sketch.state === "ruled_out" ? "out" : ""}`} title={sketch.state === "ruled_out" ? "Ruled out (click to undo)" : "Rule this direction out"} onClick={() => (sketch.state === "ruled_out" ? props.patch(sketch.id, { state: "kept", reason: "" }) : setVerdict("ruled_out"))}>
-            <Icon name="x" size={14} /> <span className="st-label st-l-verdict">{sketch.state === "ruled_out" ? "Ruled out" : "Rule out"}</span>
+          <button
+            // Its name hangs from its right edge: in a narrow studio it's the last icon in the row.
+            className={`st-icon st-ruleout ${ruledOut ? "dark" : ""}`}
+            aria-pressed={ruledOut}
+            aria-label={ruledOut ? "Ruled out · click to undo" : "Rule out"}
+            data-tip={ruledOut ? "Ruled out · click to undo" : "Rule out"}
+            onClick={() => (ruledOut ? props.patch(sketch.id, { state: "kept", reason: "" }) : setVerdict("ruled_out"))}
+          >
+            <Icon name="x" size={15} />
           </button>
           {verdict && (
             <Reason
@@ -697,8 +1015,9 @@ export function Studio(props: {
             />
           )}
         </div>
-        {/* To Figma and back: a quiet icon like Build, with its two actions under it. */}
-        <button className={`st-icon st-build st-figma-toggle ${figmaOpen ? "on" : ""}`} onClick={() => setFigmaOpen((v) => !v)} aria-label="Figma" aria-expanded={figmaOpen} data-tip="Figma">
+        <span className="st-sep st-sep-hand" />
+        {/* To Figma and back, and handing it to Claude Code: rare, so quiet icons, their actions under them. */}
+        <button className={`st-icon st-figma-toggle tip-end ${figmaOpen ? "on" : ""}`} onClick={() => setFigmaOpen((v) => !v)} aria-label="Figma" aria-expanded={figmaOpen} data-tip="Figma">
           <Icon name="figma" size={15} />
         </button>
         {figmaOpen && (
@@ -709,7 +1028,7 @@ export function Studio(props: {
             state={states.length > 1 ? state || states[0]!.slug : ""}
             stateName={states.length > 1 ? (states.find((x) => x.slug === state) ?? states[0])!.name : ""}
             last={info?.of === sketch.id ? info.figma : undefined}
-            nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
+            nextVersion={nextVersion}
             running={props.running}
             onClose={() => setFigmaOpen(false)}
             onRead={(r) => {
@@ -718,8 +1037,7 @@ export function Studio(props: {
             }}
           />
         )}
-        {/* Rarely used, so it is a quiet icon; its name shows under it on hover or focus. */}
-        <button className={`st-icon st-build ${building ? "on" : ""}`} onClick={() => setBuilding(true)} aria-label="Build with Claude Code" data-tip="Build with Claude Code">
+        <button className={`st-icon st-build tip-end ${building ? "on" : ""}`} onClick={() => setBuilding(true)} aria-label="Build with Claude Code" aria-expanded={building} data-tip="Build with Claude Code">
           <Icon name="build" size={15} />
         </button>
         {building && (
@@ -755,10 +1073,8 @@ export function Studio(props: {
         ) : (
         <div className="st-main">
           <div className="st-bar">
-            <button className="st-icon sm" onClick={() => setReload((n) => n + 1)} aria-label="Reload" title="Reload the page"><Icon name="refresh" size={13} /></button>
-            {states.length > 1 ? (
+            {states.length > 1 && (
               <div className="st-states" role="tablist" aria-label="States">
-                <Icon name="states" size={13} />
                 {states.map((s, i) => {
                   const on = (state || states[0]!.slug) === s.slug || (!state && i === 0);
                   return (
@@ -768,41 +1084,65 @@ export function Studio(props: {
                   );
                 })}
               </div>
-            ) : (
-              <span className="st-address">{sketch.title || "sketch"}{state ? <span className="faint"> #{state}</span> : null}</span>
             )}
             <span className="st-gap" />
-            {errors > 0 && <span className="st-errors" title="The page reported errors when it was rendered"><Icon name="alert" size={12} /> {errors} {errors === 1 ? "error" : "errors"}</span>}
-            {rules.length > 0 && (
-              <span className="st-rules-wrap">
-                <button className={`st-rules ${breaks ? "breaks" : ""}`} onClick={() => setRulesOpen((v) => !v)} aria-expanded={rulesOpen} title="What Panel measured in this page against your rules (unugly.md)">
-                  {breaks ? `${breaks} against your rules` : `${rules.length} to look at`}
-                </button>
-                {rulesOpen && (
-                  <div className="st-pop st-rules-pop" role="dialog" aria-label="Rule checks">
-                    <p className="st-pop-title">Measured against your rules</p>
-                    {rules.map((r, i) => (
-                      <div key={i} className={`st-rule ${r.level}`}>
-                        <span className="st-rule-name">{r.rule}{r.level === "breaks" ? "" : " · look"}</span>
-                        <p>{r.what}</p>
-                        {r.where?.length ? <p className="st-rule-where">{r.where.join(" · ")}</p> : null}
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </span>
-            )}
-            {unsaved > 0 && (
-              <span className="st-unsaved" role="group" aria-label="Changes not saved">
-                <span className="st-unsaved-text">{unsaved} {unsaved === 1 ? "change" : "changes"} not saved</span>
-                <button className="st-quiet sm" disabled={keeping} onClick={putBack} title="Put back every change not saved yet">Put back</button>
-                <button className="st-send sm" disabled={keeping} onClick={() => void save()} title="Save every change as one new version">{keeping ? "Saving…" : `Save as v${(versions.at(-1)?.v ?? sketch.version) + 1}`}</button>
-              </span>
-            )}
-            <span className="st-size">{d.w}×{device === "desktop" ? Math.round(fit.h) : d.h}{fit.scale < 1 ? ` · ${Math.round(fit.scale * 100)}%` : ""}</span>
-            <a className="st-icon sm" href={src} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab"><Icon name="external" size={13} /></a>
-            {/* With FRIDAY's panel showing, its box is the place to ask; Alternates waits here. */}
-            {askOpen && <button className="st-quiet st-alts" onClick={alternates} disabled={props.running} title="Three new directions from this sketch, made at the same time"><Icon name="branch" size={13} /> Alternates</button>}
+            <div className="st-bar-end">
+              {errors > 0 && <span className="st-errors" title="The page reported errors when it was rendered"><Icon name="alert" size={12} /> {errors} {errors === 1 ? "error" : "errors"}</span>}
+              {rules.length > 0 && (
+                <span className="st-rules-wrap">
+                  <button className={`st-rules ${breaks ? "breaks" : ""}`} onClick={() => setRulesOpen((v) => !v)} aria-expanded={rulesOpen} title="What Panel measured in this page against your rules (unugly.md)">
+                    {breaks ? `${breaks} against your rules` : `${rules.length} to look at`}
+                  </button>
+                  {rulesOpen && (
+                    <div className="st-pop st-rules-pop" role="dialog" aria-label="Rule checks">
+                      <p className="st-pop-title">Measured against your rules</p>
+                      {rules.map((r, i) => (
+                        <div key={i} className={`st-rule ${r.level}`}>
+                          <span className="st-rule-name">{r.rule}{r.level === "breaks" ? "" : " · look"}</span>
+                          <p>{r.what}</p>
+                          {r.where?.length ? <p className="st-rule-where">{r.where.join(" · ")}</p> : null}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </span>
+              )}
+              {unsaved > 0 && (
+                <span className="st-unsaved" role="group" aria-label="Changes not saved">
+                  <span className="st-unsaved-text">{unsaved} {unsaved === 1 ? "change" : "changes"} not saved</span>
+                  <button className="st-quiet sm" disabled={keeping} onClick={putBack} title="Put back every change not saved yet">Put back</button>
+                  <button className="st-send sm" disabled={keeping} onClick={() => void save()} title="Save every change as one new version (⌘S)">{keeping ? "Saving…" : `Save as v${nextVersion}`}</button>
+                </span>
+              )}
+              <button
+                className={`st-view ${viewAt ? "open" : ""}`}
+                onClick={(e) => setViewAt(viewAt ? null : e.currentTarget.getBoundingClientRect())}
+                aria-haspopup="menu"
+                aria-expanded={!!viewAt}
+                aria-label={`${d.label}, shown at ${pct}%`}
+              >
+                <Icon name={d.icon} size={13} />
+                <span>{pct}%</span>
+                <Icon name="chevron-down" size={11} />
+              </button>
+              {viewAt && (
+                <ViewMenu
+                  at={viewAt}
+                  device={device}
+                  src={src}
+                  size={`${d.w}×${device === "desktop" ? Math.round(fit.h) : d.h}, shown at ${pct}%`}
+                  onDevice={(k) => {
+                    setDevice(k);
+                    setViewAt(null);
+                  }}
+                  onReload={() => {
+                    setReload((n) => n + 1);
+                    setViewAt(null);
+                  }}
+                  onClose={() => setViewAt(null)}
+                />
+              )}
+            </div>
           </div>
           <div className={`st-stage ${device} ${glide ? "glide" : ""}`} ref={stageRef}>
             <div className={`st-device ${device}`} style={{ width: fit.w * fit.scale, height: fit.h * fit.scale }}>
@@ -816,34 +1156,32 @@ export function Studio(props: {
               />
             </div>
             {pointing && !picked && <div className="st-hint">Click a part to change it · double-click words to edit them · Esc to stop</div>}
-            {picked && bubble && (
-              <PointBubble
+            {picked && strip && (
+              <PointStrip
                 key={picked.selector}
                 picked={picked}
-                style={bubble}
+                style={strip}
                 editing={editing}
-                onSend={ask}
-                onEdit={() => {
-                  // The page takes the keyboard, so typing goes into the words.
-                  frame.current?.focus();
-                  post({ t: "edit" });
-                }}
+                knobsOn={column === "knobs"}
+                running={props.running}
+                onEdit={editWords}
                 onEditEnd={(keep) => post({ t: "edit-end", keep })}
-                onCancel={() => {
-                  setPicked(null);
-                  post({ t: "release" });
-                }}
+                onAlternates={() => ask("", "alternates")}
+                onKnobs={knobsForPart}
+                onDelete={() => deletePart(seenOf(picked))}
               />
             )}
-            {fresh && <div className="st-fresh" key={fresh.v}>{fresh.mine ? `Saved as version ${fresh.v}` : `Version ${fresh.v} from FRIDAY`}</div>}
+            {fresh && <div className="st-fresh" key={fresh.v}>{fresh.text}</div>}
           </div>
           {!askOpen && (
             <AskBar
               running={props.running}
               doing={props.doing}
               unread={props.unread}
+              part={picked && !editing ? picked.label : null}
+              typeRef={barType}
+              onLetGo={letGoOfPart}
               onSend={(t) => ask(t)}
-              onAlternates={alternates}
               onShow={() => toggleColumn("friday")}
             />
           )}
@@ -856,24 +1194,27 @@ export function Studio(props: {
             fonts={pageFonts}
             edits={edits}
             palettes={props.palettes}
-            keeping={keeping}
-            nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
             onChange={turn}
-            onReset={resetKnobs}
-            onKeep={() => void save()}
+            part={picked?.own ? { path: picked.path, label: picked.label, look: picked.own, vars: picked.vars, props: hand.styles.find((x) => x.path === picked.path)?.props ?? {} } : null}
+            onPart={(p) => picked && stylePart(seenOf(picked), p)}
+            onClose={() => toggleColumn("knobs")}
             onAskForKnobs={() => props.ask("Rewrite this sketch so its colors, fonts, type sizes, corner radius and spacing are CSS variables on :root (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space and whatever else it needs), used everywhere in place of the fixed values. Give each one a short note in plain words beside it where its name doesn't say it (--c1: #e2372b; /* Cortex */). Change nothing about how it looks.", undefined, undefined, true)}
             onShow={showVar}
           />
         )}
         {column === "directions" && (
           <aside className="st-rail" aria-label="Directions">
-            <div className="st-rail-head">Directions</div>
+            <RailHead name="Directions" onClose={() => toggleColumn("directions")}>
+              <button className="st-quiet sm st-rail-act" onClick={alternates} disabled={props.running} title={props.running ? "After FRIDAY's answer" : "Three new directions from this sketch, made at the same time"}>
+                3 alternates
+              </button>
+            </RailHead>
             <div className="st-tree">
-              {family.map((f) => (
-                <button key={f.id} className={`st-dir s-${f.state} ${f.id === sketch.id ? "on" : ""}`} style={{ paddingLeft: 8 + Math.min(f.depth, 4) * 14 }} onClick={() => props.onSwitch(f.id)} title={f.tries ?? f.title}>
+              {(family.length ? family : [{ id: sketch.id, title: sketch.title, tries: sketch.tries, state: sketch.state ?? "kept", version: sketch.version, reason: sketch.reason }]).map((f) => (
+                <button key={f.id} className={`st-dir s-${f.state} ${f.id === sketch.id ? "on" : ""}`} onClick={() => f.id !== sketch.id && props.onSwitch(f.id)} title={f.tries ?? f.title}>
                   <img src={pictureOf(project, f.id, f.version)} alt="" draggable={false} loading="lazy" />
                   <span className="st-dir-text">
-                    <span className="st-dir-title">{f.title}</span>
+                    <span className="st-dir-title">{f.title || "Untitled sketch"}</span>
                     {f.state === "ruled_out" ? (
                       <span className="st-dir-sub">Ruled out{f.reason ? `: ${f.reason}` : ""}</span>
                     ) : f.state === "chosen" ? (
@@ -887,92 +1228,153 @@ export function Studio(props: {
             </div>
           </aside>
         )}
+        {column === "versions" && (
+          <Versions
+            project={project}
+            sketch={sketch.id}
+            versions={info?.of === sketch.id ? versions : []}
+            current={sketch.version}
+            waiting={waitingOn}
+            onShow={(v) => props.patch(sketch.id, { version: v })}
+            onRestore={bringBack}
+            onClose={() => toggleColumn("versions")}
+          />
+        )}
+        {/* FRIDAY's own panel shows here: the studio keeps its place, the panel sits over it. */}
+        {column === "friday" && <div className="st-rail st-slot" aria-hidden />}
       </div>
     </div>
   );
 }
 
 /**
- * Under the part pointed at: say what to change, ask for alternates of it, or, for words,
- * edit them right there in the page (also by double-clicking them).
+ * The view chip's menu: which screen the page is shown on, reloading it, opening it in a tab
+ * of its own, and at the bottom what size it really is and at what scale it's shown.
  */
-function PointBubble(props: {
+function ViewMenu(props: { at: DOMRect; device: Device; src: string; size: string; onDevice: (d: Device) => void; onReload: () => void; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const { onClose } = props;
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const t = e.target as Element | null;
+      if (!box.current?.contains(t) && !t?.closest?.(".st-view")) onClose();
+    };
+    // Escape closes the menu only, not the studio behind it.
+    const key = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      e.stopPropagation();
+      onClose();
+    };
+    document.addEventListener("pointerdown", away, true);
+    document.addEventListener("keydown", key, true);
+    addEventListener("resize", onClose);
+    return () => {
+      document.removeEventListener("pointerdown", away, true);
+      document.removeEventListener("keydown", key, true);
+      removeEventListener("resize", onClose);
+    };
+  }, [onClose]);
+  return createPortal(
+    <div ref={box} className="popover st-view-menu" role="menu" aria-label="View" style={{ top: props.at.bottom + 6, right: Math.max(8, innerWidth - props.at.right) }}>
+      {(Object.keys(DEVICES) as Device[]).map((k) => (
+        <button key={k} className={`menu-item ${props.device === k ? "on" : ""}`} role="menuitemradio" aria-checked={props.device === k} onClick={() => props.onDevice(k)}>
+          <span className="menu-check">{props.device === k && <Icon name="check" size={13} />}</span>
+          <Icon name={DEVICES[k].icon} size={14} />
+          <span className="st-view-name">{DEVICES[k].label}</span>
+          <span className="st-view-size">{DEVICES[k].w}×{DEVICES[k].h}</span>
+        </button>
+      ))}
+      <div className="menu-sep" />
+      <button className="menu-item" role="menuitem" onClick={props.onReload}>
+        <span className="menu-check" />
+        <Icon name="refresh" size={14} />
+        <span className="st-view-name">Reload the page</span>
+      </button>
+      <a className="menu-item" role="menuitem" href={props.src} target="_blank" rel="noopener noreferrer" onClick={props.onClose}>
+        <span className="menu-check" />
+        <Icon name="external" size={14} />
+        <span className="st-view-name">Open in a new tab</span>
+      </a>
+      <p className="st-view-foot">{props.size}</p>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * Under the part selected: one row of icons, each saying its name on hover. Edit its words
+ * (only for a part made of words), three alternates of it, Knobs for it, Delete it. No card
+ * and no box to type in: asking FRIDAY about the part happens in the ask box, which carries it.
+ * While its words are being edited, the row says how to finish.
+ */
+function PointStrip(props: {
   picked: Picked;
   style: { left: number; top: number };
   editing: boolean;
-  onSend: (t: string, mode?: "change" | "alternates") => void;
+  knobsOn: boolean;
+  running: boolean;
   onEdit: () => void;
   onEditEnd: (keep: boolean) => void;
-  onCancel: () => void;
+  onAlternates: () => void;
+  onKnobs: () => void;
+  onDelete: () => void;
 }) {
-  const { picked, style, onSend, onCancel } = props;
-  const [text, setText] = useState("");
-  const input = useRef<HTMLTextAreaElement>(null);
-  // Not while the words are being edited: the page has the keyboard then.
-  useEffect(() => {
-    if (!props.editing) input.current?.focus();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const { picked } = props;
+  // Clicks on the strip stay on the strip (the page would take them as pointing).
+  const hold = (e: React.PointerEvent) => e.stopPropagation();
   if (props.editing) {
     return (
-      <div className="st-bubble" style={style} onPointerDown={(e) => e.stopPropagation()}>
-        <div className="st-bubble-head">
-          <span className="st-bubble-dot" />
-          <span className="st-bubble-label">Editing the words in the page</span>
-        </div>
-        <p className="st-bubble-note">Type over them. ↵ when done, Esc puts them back, ⇧↵ for a new line. Nothing is saved until you press Save.</p>
-        <div className="st-bubble-actions">
-          <button className="st-quiet" onClick={() => props.onEditEnd(false)}>Put back</button>
-          <button className="st-send" onClick={() => props.onEditEnd(true)}>Done</button>
-        </div>
+      <div className="st-strip editing" style={props.style} onPointerDown={hold} role="toolbar" aria-label="Editing the words">
+        <span className="st-strip-say">Editing · ↵ done · Esc put back</span>
+        <button className="st-quiet sm" onClick={() => props.onEditEnd(false)}>Put back</button>
+        <button className="st-send sm" onClick={() => props.onEditEnd(true)}>Done</button>
       </div>
     );
   }
   return (
-    <div className="st-bubble" style={style} onPointerDown={(e) => e.stopPropagation()}>
-      <div className="st-bubble-head">
-        <span className="st-bubble-dot" />
-        <span className="st-bubble-label">{picked.label}</span>
-        <button className="st-icon xs" onClick={onCancel} aria-label="Cancel"><Icon name="x" size={12} /></button>
-      </div>
-      <textarea
-        ref={input}
-        rows={2}
-        value={text}
-        placeholder="What should change here?"
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey) {
-            e.preventDefault();
-            onSend(text);
-          }
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            onCancel();
-          }
-        }}
-      />
-      <div className="st-bubble-actions">
-        {picked.editable && (
-          <button className="st-quiet" onClick={props.onEdit} title="Change the words yourself, right in the page (or double-click them)">
-            <Icon name="pencil" size={13} /> Edit text
-          </button>
-        )}
-        <button className="st-quiet" onClick={() => onSend(text, "alternates")} title="Three new sketches at once, each doing this part differently">
-          <Icon name="branch" size={13} /> {picked.editable ? "Alternates" : "Try 3 alternates"}
+    <div className="st-strip" style={props.style} onPointerDown={hold} role="toolbar" aria-label={picked.label}>
+      {picked.editable && (
+        <button className="st-icon" onClick={props.onEdit} aria-label="Edit the words (↵)" data-tip="Edit the words (↵)">
+          <Icon name="pencil" size={15} />
         </button>
-        <button className="st-send" disabled={!text.trim()} onClick={() => onSend(text)}>Change <span className="faint">↵</span></button>
-      </div>
+      )}
+      <button className="st-icon" onClick={props.onAlternates} disabled={props.running} aria-label="3 alternates of this" data-tip={props.running ? "3 alternates of this · after FRIDAY's answer" : "3 alternates of this"}>
+        <Icon name="branch" size={15} />
+      </button>
+      <button className={`st-icon ${props.knobsOn ? "on" : ""}`} onClick={props.onKnobs} aria-pressed={props.knobsOn} aria-label="Knobs for this (K)" data-tip="Knobs for this (K)">
+        <Icon name="sliders" size={15} />
+      </button>
+      <button className="st-icon" onClick={props.onDelete} aria-label="Delete (⌫)" data-tip="Delete (⌫)">
+        <Icon name="trash" size={15} />
+      </button>
     </div>
   );
 }
 
 /**
- * Asking FRIDAY about the whole page, while its panel is folded away. Asking from here never
- * opens the panel: the bar itself says what FRIDAY is doing, with a way to go and see.
+ * Asking FRIDAY for a change, while its panel is folded away. Asking from here never opens the
+ * panel: the bar itself says what FRIDAY is doing, with a way to go and see. With a part of
+ * the page selected, the bar carries it as a chip and the message is about that part; × lets
+ * go of it. A letter typed with a part selected lands here (`typeRef`).
  */
-function AskBar(props: { running: boolean; doing: React.ReactNode; unread: boolean; onSend: (t: string) => void; onAlternates: () => void; onShow: () => void }) {
+function AskBar(props: {
+  running: boolean;
+  doing: React.ReactNode;
+  unread: boolean;
+  /** The part selected, by its name on the page, or null. */
+  part: string | null;
+  typeRef: React.RefObject<((t: string) => void) | null>;
+  onLetGo: () => void;
+  onSend: (t: string) => void;
+  onShow: () => void;
+}) {
   const { running } = props;
   const [text, setText] = useState("");
+  const input = useRef<HTMLInputElement>(null);
+  props.typeRef.current = (t: string) => {
+    setText((x) => x + t);
+    input.current?.focus();
+  };
   const send = () => {
     if (!text.trim() || running) return;
     props.onSend(text);
@@ -981,22 +1383,31 @@ function AskBar(props: { running: boolean; doing: React.ReactNode; unread: boole
   const status = running ? (props.doing || "FRIDAY is working on it…") : props.unread ? "FRIDAY answered" : null;
   return (
     <div className={`st-ask ${running ? "running" : ""}`}>
-      <span className="st-ask-mark" aria-hidden />
+      {/* FRIDAY's dot, breathing while it works; a part's chip has its own dot instead. */}
+      {(!props.part || running) && <span className="st-ask-mark" aria-hidden />}
+      {props.part && (
+        <span className="st-ask-chip" title={props.part}>
+          <i aria-hidden />
+          <span>{props.part}</span>
+          <button onClick={props.onLetGo} aria-label="Let go of this part" title="Let go of this part"><Icon name="x" size={11} /></button>
+        </span>
+      )}
       <span className="st-ask-field">
         <input
+          ref={input}
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder={status ? "" : "Ask FRIDAY for a change to this page, or press P to point at a part"}
-          aria-label="Ask FRIDAY for a change"
+          onKeyDown={(e) => {
+            if (e.key === "Enter") send();
+            // Backspace in an empty bar lets go of the part, like taking off a chip.
+            else if (e.key === "Backspace" && !text && props.part) props.onLetGo();
+          }}
+          placeholder={status && !props.part ? "" : props.part ? "What should change here?" : "Ask FRIDAY for a change…"}
+          aria-label={props.part ? `Ask FRIDAY for a change to ${props.part}` : "Ask FRIDAY for a change"}
         />
-        {status && !text && <span className="st-ask-status" aria-live="polite">{status}</span>}
+        {status && !text && !props.part && <span className="st-ask-status" aria-live="polite">{status}</span>}
       </span>
-      {status ? (
-        <button className="st-quiet" onClick={props.onShow} title="Show FRIDAY's panel beside the page (⌘J)">{running ? "Watch" : "See answer"}</button>
-      ) : (
-        <button className="st-quiet st-ask-alts" onClick={props.onAlternates} title="Three new directions from this sketch, made at the same time"><Icon name="branch" size={13} /> Alternates</button>
-      )}
+      {status && <button className="st-quiet" onClick={props.onShow} title="Show FRIDAY's panel beside the page (⌘J)">{running ? "Watch" : "See answer"}</button>}
       <button className="st-send" onClick={send} disabled={!text.trim() || running} aria-label="Send"><Icon name="arrow-up" size={14} /></button>
     </div>
   );

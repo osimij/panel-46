@@ -309,6 +309,10 @@ export function App() {
   const sayError = useCallback((text: string) => say(text, "error"), [say]);
   // What's selected on the canvas: Ask talks about it, and the canvas's Ask button opens Ask on it.
   const [canvasPick, setCanvasPick] = useState<CanvasSelection | null>(null);
+  // A part of a sketch selected in the studio: FRIDAY's box carries it, and sends it with the
+  // next message. `letGo` tells the studio FRIDAY has sent it (or it was taken off).
+  const [studioPick, setStudioPick] = useState<CanvasSelection | null>(null);
+  const [letGo, setLetGo] = useState(0);
   const askAboutPick = useCallback(() => {
     setAskOpenState(true);
     try {
@@ -530,6 +534,8 @@ export function App() {
       }
       if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey || e.repeat || overlayOpen) return;
       if ((e.target as Element).closest?.("input, textarea, select, [contenteditable]")) return;
+      // With a sketch open in the studio, its letters are its own (P points, K opens Knobs…).
+      if (document.querySelector(".studio")) return;
       // T: make a new tag for this page.
       if (e.key.toLowerCase() === "t") {
         e.preventDefault();
@@ -910,6 +916,7 @@ export function App() {
         online={online}
         onChanged={refresh}
         onError={(t) => say(t, "error")}
+        onSay={say}
         onSettings={() => setSettingsOpen(true)}
         hover={sidebarHover}
         tucked={tucked}
@@ -944,6 +951,9 @@ export function App() {
               askUnread={askUnread}
               askOpen={askOpen}
               setAskOpen={setAskOpen}
+              onStudioPick={setStudioPick}
+              studioLetGo={letGo}
+              onTypeToAsk={(t: string) => askRef.current?.type(t)}
             />
           </Suspense>
         ) : (
@@ -1125,7 +1135,11 @@ export function App() {
         project={scope.kind === "project" ? scope.id : null}
         projectName={scope.kind === "project" ? projects.find((p) => p.id === scope.id)?.name : undefined}
         onGoTo={(p) => setScope(p ? { kind: "project", id: p } : { kind: "all" })}
-        picked={scope.kind === "project" && canvasPick?.project === scope.id ? canvasPick : null}
+        picked={scope.kind === "project" && studioPick?.project === scope.id ? studioPick : scope.kind === "project" && canvasPick?.project === scope.id ? canvasPick : null}
+        onLetGoPoint={() => {
+          setStudioPick(null);
+          setLetGo((n) => n + 1);
+        }}
         onOpenRef={openFromAsk}
         onOpenBrand={(focus) => setScope({ kind: "brand", focus })}
         onShowInGrid={showPicked}
@@ -1426,6 +1440,7 @@ function Sidebar(props: {
   online: boolean;
   onChanged: () => Promise<void>;
   onError: (text: string) => void;
+  onSay: (text: string) => void;
   onSettings: () => void;
   hover?: { onMouseEnter: () => void; onMouseLeave: () => void };
   tucked: boolean;
@@ -1479,9 +1494,72 @@ function Sidebar(props: {
     }
   };
 
+  // A project's menu (the ··· on its row, or a right-click): rename, open in a new tab, archive, delete.
+  // Deleting takes a second click every time: it takes the canvas, its sketches and its files with it.
+  const [projMenu, setProjMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [confirmProjDelete, setConfirmProjDelete] = useState(false);
+  const [renamingProject, setRenamingProject] = useState<string | null>(null);
+  const openProjMenu = (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    const r = (e.currentTarget as HTMLElement).closest(".side-row")!.getBoundingClientRect();
+    setConfirmProjDelete(false);
+    setProjMenu({ id, x: r.right - 200, y: r.bottom + 4 });
+  };
+
+  const renameProject = async (id: string, next: string) => {
+    setRenamingProject(null);
+    if (!next || next === props.projects.find((p) => p.id === id)?.name) return;
+    try {
+      await projectApi.update(id, { name: next });
+      await props.onProjectsChanged();
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
+
+  const archiveProject = async (id: string, archived: boolean) => {
+    setProjMenu(null);
+    try {
+      await projectApi.update(id, { archived });
+      await props.onProjectsChanged();
+      // An archived project waits under Archived, folded open so it's clear where it went.
+      if (archived) setArchivedOpen(true);
+      props.onSay(archived ? "Archived. It's under Archived, at the end of Projects" : "Back in Projects");
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
+
+  const removeProject = async (id: string) => {
+    setProjMenu(null);
+    try {
+      await projectApi.remove(id);
+      if (scope.kind === "project" && scope.id === id) setScope({ kind: "all" });
+      await props.onProjectsChanged();
+      props.onSay("Project deleted");
+    } catch (e) {
+      props.onError((e as Error).message);
+    }
+  };
+
   // Projects and Collections fold away with a click on their heading, and stay that way between visits.
+  // Archived projects sit folded at the end of Projects until asked for.
   const [projectsOpen, setProjectsOpen] = useRemembered("panel.side.projects", true);
   const [collectionsOpen, setCollectionsOpen] = useRemembered("panel.side.collections", true);
+  const [archivedOpen, setArchivedOpen] = useRemembered("panel.side.archived", false);
+  const activeProjects = props.projects.filter((p) => !p.archived_at);
+  const archivedProjects = props.projects.filter((p) => p.archived_at);
+  const projectRow = (p: ProjectSummary) =>
+    renamingProject === p.id ? (
+      <InlineName key={p.id} initial={p.name} onDone={(v) => renameProject(p.id, v)} onCancel={() => setRenamingProject(null)} />
+    ) : (
+      <div key={p.id} className={`side-row ${projMenu?.id === p.id ? "menu-open" : ""}`} onDoubleClick={() => setRenamingProject(p.id)} onContextMenu={(e) => openProjMenu(e, p.id)}>
+        {link({ kind: "project", id: p.id }, p.name, undefined, <span className="side-project-dot" />)}
+        <button className="side-edit" onClick={(e) => openProjMenu(e, p.id)} aria-label={`More for ${p.name}`} aria-haspopup="menu" title="Rename, archive or delete">
+          <Icon name="more" size={14} />
+        </button>
+      </div>
+    );
   const foldHead = (label: string, open: boolean, setOpen: (v: boolean) => void) => (
     <button
       className={`side-fold-head ${open ? "" : "closed"}`}
@@ -1586,13 +1664,48 @@ function Sidebar(props: {
         </div>
         <div className={`side-fold ${projectsOpen ? "open" : ""}`} inert={!projectsOpen}>
           <div>
-            {props.projects.map((p) => (
-              <div key={p.id}>
-                {link({ kind: "project", id: p.id }, p.name, undefined, <span className="side-project-dot" />)}
-              </div>
-            ))}
+            {activeProjects.map(projectRow)}
+            {archivedProjects.length > 0 && (
+              <>
+                <button className={`side-link faint side-archived-head ${archivedOpen ? "" : "closed"}`} onClick={() => setArchivedOpen(!archivedOpen)} aria-expanded={archivedOpen}>
+                  <span className={`chev ${archivedOpen ? "open" : ""}`}><Icon name="chevron-down" size={11} /></span>
+                  <span className="side-label">Archived</span>
+                  <span className="side-count">{archivedProjects.length}</span>
+                </button>
+                <div className={`side-fold side-archived ${archivedOpen ? "open" : ""}`} inert={!archivedOpen}>
+                  <div>{archivedProjects.map(projectRow)}</div>
+                </div>
+              </>
+            )}
           </div>
         </div>
+        {projMenu && (() => {
+          const p = props.projects.find((x) => x.id === projMenu.id);
+          if (!p) return null;
+          return (
+            <Popover x={projMenu.x} y={projMenu.y} onClose={() => setProjMenu(null)}>
+              <div className="menu-title">{p.name}</div>
+              <button className="menu-item" onClick={() => { setProjMenu(null); setRenamingProject(p.id); }}>
+                <Icon name="pencil" size={13} /> Rename
+              </button>
+              <button className="menu-item" onClick={() => { setProjMenu(null); window.open(`/?project=${p.id}`, "_blank"); }}>
+                <Icon name="external" size={13} /> Open in a new tab
+              </button>
+              <button className="menu-item" onClick={() => void archiveProject(p.id, !p.archived_at)} title={p.archived_at ? undefined : "Put it away. Everything in it stays, and you can bring it back"}>
+                <Icon name="archive" size={13} /> {p.archived_at ? "Bring back from Archived" : "Archive"}
+              </button>
+              <div className="menu-sep" />
+              <button
+                className="menu-item danger"
+                onClick={() => (confirmProjDelete ? void removeProject(p.id) : setConfirmProjDelete(true))}
+                title="Deletes its canvas, sketches and files. The saves on it stay in Panel"
+              >
+                <Icon name="trash" size={13} />
+                {confirmProjDelete ? "Click again to delete for good" : "Delete project"}
+              </button>
+            </Popover>
+          );
+        })()}
         {creatingProject ? (
           <InlineName initial="" placeholder="Project name" onDone={createProject} onCancel={() => setCreatingProject(false)} />
         ) : (

@@ -11,12 +11,12 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
 import { startSummaries, summarize } from "./digest.ts";
-import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, setTurnedDownReason, undoLast, verdictReasons, type Op } from "./projects.ts";
+import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, setArchived, setTurnedDownReason, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { captureForFigma, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
 import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
 import { addBrandAsset, brandFile, listBrand, removeBrandAsset, updateBrandAsset } from "./brand.ts";
-import { saveSketchChanges, setSketchText, setSketchVars, sketchInfo, sketchMeta } from "./board.ts";
+import { restoreVersion, saveSketchChanges, setSketchText, setSketchVars, sketchInfo, sketchMeta } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
 import { startMeasuring } from "./measure.ts";
@@ -781,11 +781,12 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  // The studio's Save: every word edited in place and every knob moved on one version, kept
-  // together as one new version (no AI). With check: true it only says whether they all fit.
+  // The studio's Save: every word edited in place, every knob moved, every part's own look
+  // changed and every part deleted on one version, kept together as one new version (no AI).
+  // With check: true it only says whether they all fit.
   const changesRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/changes$/);
   if (changesRoute && m === "POST") {
-    const b = (await req.json().catch(() => ({}))) as { edits?: unknown; vars?: unknown; from_version?: number; check?: boolean };
+    const b = (await req.json().catch(() => ({}))) as { edits?: unknown; vars?: unknown; styles?: unknown; removes?: unknown; from_version?: number; check?: boolean };
     const str = (v: unknown) => (typeof v === "string" ? v : "");
     const edits = (Array.isArray(b.edits) ? b.edits : []).map((e: Record<string, unknown>) => ({
       path: str(e?.path), before: str(e?.before), after: str(e?.after), beforeText: str(e?.before_text), afterText: str(e?.after_text),
@@ -793,8 +794,26 @@ async function handle(req: Request): Promise<Response> {
     const vars = b.vars && typeof b.vars === "object" && !Array.isArray(b.vars)
       ? Object.fromEntries(Object.entries(b.vars as Record<string, unknown>).filter(([, v]) => typeof v === "string")) as Record<string, string>
       : {};
+    // A part's own look, and parts taken out: where each sits, and what the studio saw there.
+    const seen = (e: Record<string, unknown>) => ({ path: str(e?.path), cls: typeof e?.cls === "string" ? e.cls : undefined, id: typeof e?.id === "string" ? e.id : undefined, text: typeof e?.text === "string" ? e.text : undefined });
+    const styles = (Array.isArray(b.styles) ? b.styles : []).map((e: Record<string, unknown>) => ({
+      ...seen(e),
+      props: Object.fromEntries(Object.entries(e?.props && typeof e.props === "object" ? (e.props as Record<string, unknown>) : {}).filter(([, v]) => typeof v === "string" || v === null)) as Record<string, string | null>,
+    }));
+    const removes = (Array.isArray(b.removes) ? b.removes : []).map((e: Record<string, unknown>) => seen(e));
     try {
-      return json(await saveSketchChanges(changesRoute[1]!, changesRoute[2]!, { edits, vars }, Number.isInteger(b.from_version) ? b.from_version : undefined, b.check === true));
+      return json(await saveSketchChanges(changesRoute[1]!, changesRoute[2]!, { edits, vars, styles, removes }, Number.isInteger(b.from_version) ? b.from_version : undefined, b.check === true));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+
+  // Bringing an older version back: its file, as it was, becomes the newest version (no AI).
+  const restoreRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/restore$/);
+  if (restoreRoute && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { version?: unknown };
+    try {
+      return json(await restoreVersion(restoreRoute[1]!, restoreRoute[2]!, Number(b.version)));
     } catch (e) {
       return bad((e as Error).message);
     }
@@ -866,6 +885,22 @@ async function handle(req: Request): Promise<Response> {
       if (!p) return bad("That project is gone.", 404);
       const ids = [...new Set(p.nodes.flatMap((n) => (n.ref_id ? [n.ref_id] : [])))];
       return json({ ...p, cards: cards(ids) });
+    }
+    // From the sidebar's menu: a new name (logged like any canvas change, so an open canvas
+    // shows it at once) and archiving.
+    if (!sub && m === "PATCH") {
+      const b = (await req.json().catch(() => ({}))) as { name?: unknown; archived?: unknown };
+      try {
+        if (typeof b.name === "string") {
+          if (!b.name.trim()) return bad("The project needs a name.");
+          apply(id, [{ op: "update_project", name: b.name }], "designer", { client: "sidebar" });
+        }
+        if (typeof b.archived === "boolean") setArchived(id, b.archived);
+        const p = listProjects().find((x) => x.id === id);
+        return p ? json(p) : bad("That project is gone.", 404);
+      } catch (e) {
+        return bad((e as Error).message, 404);
+      }
     }
     if (!sub && m === "DELETE") {
       deleteProject(id);

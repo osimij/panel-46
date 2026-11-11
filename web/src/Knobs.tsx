@@ -14,11 +14,19 @@
 // Numbers are bars, not sliders on a line: drag anywhere on one (Shift for fine steps), click
 // it to type a value, arrow keys step it. The dot by a changed knob puts it back. Hovering a
 // knob outlines what it changes on the page.
+//
+// With a part of the page selected (pointing), the column is about that part first: "This
+// part" changes its own look only (its size, weight, color…, written on the part itself), then
+// the knobs that reach it (which change it everywhere they're used), then all the knobs, folded.
+// A part's own sizes are written so they keep scaling with the page (decks size everything in
+// container units): font size in em of the part around it, letter spacing and corners in em
+// of its own size, line height as a plain number. The bars still read in px.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { fontApi } from "./api.ts";
 import { Icon } from "./Icon.tsx";
+import type { PartLook } from "./Studio.tsx";
 
 export interface PageVar {
   name: string;
@@ -828,6 +836,22 @@ function arrange(knobs: Knob[]) {
 
 // ---------- The panel ----------
 
+/**
+ * The head every column beside the page shares (Knobs, Directions, Versions): its name at the
+ * left, anything it offers in the middle, and a × that closes the column at the right.
+ */
+export function RailHead(props: { name: string; onClose: () => void; children?: React.ReactNode }) {
+  return (
+    <div className="st-rail-head">
+      <span className="st-rail-name">{props.name}</span>
+      {props.children}
+      <button className="st-icon xs st-rail-close" onClick={props.onClose} aria-label={`Close ${props.name}`} title={`Close ${props.name}`}>
+        <Icon name="x" size={13} />
+      </button>
+    </div>
+  );
+}
+
 export function Knobs(props: {
   vars: PageVar[] | null;
   /** Which fonts the page named and really has, by family. */
@@ -835,14 +859,19 @@ export function Knobs(props: {
   /** What the designer has changed so far, not yet kept. */
   edits: Record<string, string>;
   palettes: Palette[];
-  keeping: boolean;
-  nextVersion: number;
   onChange: (changes: Record<string, string>) => void;
-  onReset: () => void;
-  onKeep: () => void;
+  /** The column's ×. */
+  onClose: () => void;
   onAskForKnobs: () => void;
   /** Outline on the page what this variable changes (null: nothing). */
   onShow?: (name: string | null) => void;
+  /**
+   * The part of the page selected, if any: its name, its own look as the page makes it, the
+   * knobs that reach it, and its own look changed so far (CSS properties on the part).
+   */
+  part?: { path: string; label: string; look: PartLook; vars: string[]; props: Record<string, string> } | null;
+  /** Change the selected part's own look; null puts a property back. */
+  onPart?: (props: Record<string, string | null>) => void;
 }) {
   const knobs = useMemo(
     () =>
@@ -857,7 +886,6 @@ export function Knobs(props: {
   );
   const parts = useMemo(() => arrange(knobs), [knobs]);
   const now = (k: Knob) => props.edits[k.name] ?? k.value;
-  const changed = Object.keys(props.edits).length;
   /** Every font the sketch was made with, so one can be swapped for another it already uses. */
   const inSketch = [...new Set(knobs.filter((k) => k.kind === "font").map((k) => familiesIn(k.value)[0]!).filter(Boolean))];
   const [open, setOpen] = useState<{ name: string; at: DOMRect; anchor: HTMLElement } | null>(null);
@@ -887,10 +915,15 @@ export function Knobs(props: {
     return () => el.removeEventListener("scroll", close);
   }, [open]);
 
-  if (props.vars && !knobs.length) {
+  const { part } = props;
+  // "All knobs" folds away while a part is selected; another part folds it again.
+  const [allOpen, setAllOpen] = useState(false);
+  useEffect(() => setAllOpen(false), [part?.path]);
+
+  if (props.vars && !knobs.length && !part) {
     return (
       <aside className="st-rail kn" aria-label="Knobs">
-        <div className="st-rail-head">Knobs</div>
+        <RailHead name="Knobs" onClose={props.onClose} />
         <div className="kn-empty">
           <p>This sketch has no knobs yet: its colors, fonts and sizes are written straight into the page.</p>
           <button className="st-quiet" onClick={props.onAskForKnobs}>Ask FRIDAY to add them</button>
@@ -941,13 +974,142 @@ export function Knobs(props: {
     );
   };
   const openKnob = open && knobs.find((k) => k.name === open.name);
+
+  // ---- The selected part's own look ----
+  const look = part?.look;
+  const own = part?.props ?? {};
+  const round = (n: number, d = 2) => Number(n.toFixed(d));
+  const pxOf = (n: number | null | undefined) => `${round(n ?? 0)}px`;
+  /** The part's font size now, in px: changed (in em of the part around it) or as the page makes it. */
+  const sizeNow = (() => {
+    const em = numOf(own["font-size"] ?? "");
+    if (em && em.unit === "em" && look?.parentSize) return em.n * look.parentSize;
+    if (em && em.unit === "px") return em.n;
+    return look?.size ?? 16;
+  })();
+  const partKnob = (name: string, value: string, role: Role, label: string, kind: Kind = "length"): Knob => ({ name, value, role, label, kind, stem: "" });
+  /** A bar for one of the part's numbers: shown in px (or plain), written the way that keeps scaling. */
+  const partScrub = (k: Knob, current: string, toCss: (n: Num) => Record<string, string | null>) => (
+    <Scrub
+      key={k.name}
+      knob={k}
+      label={k.label}
+      value={current}
+      onChange={(css) => {
+        const n = numOf(css);
+        if (!n) return;
+        // Back where the page has it: the part's own value is taken away, not written.
+        if (css.trim() === k.value.trim()) props.onPart?.(Object.fromEntries(Object.keys(toCss(n)).map((p) => [p, null])));
+        else props.onPart?.(toCss(n));
+      }}
+      onDrag={drag}
+      onShow={() => {}}
+    />
+  );
+  const wghtIn = (fvs: string) => Number(fvs.match(/["']wght["']\s+(-?[\d.]+)/)?.[1] ?? NaN);
+  const withWght = (fvs: string, n: number) => (/["']wght["']/.test(fvs) ? fvs.replace(/(["']wght["']\s+)(-?[\d.]+)/, `$1${n}`) : fvs && fvs !== "normal" ? `${fvs}, "wght" ${n}` : `"wght" ${n}`);
+  const partColor = (prop: "color" | "background-color", label: string, was: string) => {
+    const value = own[prop] ?? was;
+    const c = paint(value);
+    const name = `part:${prop}`;
+    const isChanged = prop in own;
+    return (
+      <button
+        key={name}
+        className={`kn-color ${open?.name === name ? "open" : ""} ${isChanged ? "changed" : ""}`}
+        aria-label={`${label}: ${c ? hexOf([c[0], c[1], c[2]]) : "none"}`}
+        aria-haspopup="dialog"
+        onClick={(e) => setOpen(open?.name === name ? null : { name, at: e.currentTarget.getBoundingClientRect(), anchor: e.currentTarget })}
+      >
+        <span className={`kn-chip ${c ? "" : "kn-none"}`} style={{ background: c ? value : undefined }} />
+        <span className="kn-color-name">{label}</span>
+        <span className="kn-hex">
+          {c ? hexOf([c[0], c[1], c[2]]).slice(1) : "None"}
+          {c && c[3] < 0.999 && <span className="kn-faint"> {Math.round(c[3] * 100)}%</span>}
+        </span>
+      </button>
+    );
+  };
+  const partSection = part && look && (
+    <section className="kn-group kn-part" aria-label="This part">
+      <h4>This part</h4>
+      <div className="kn-part-name" title={part.label}>{part.label}</div>
+      <p className="kn-hint kn-part-hint">Only this part changes.</p>
+      {look.words && (
+        <>
+          <FontPick
+            label="Font"
+            value={own["font-family"] ?? look.family}
+            was={look.family}
+            inSketch={inSketch}
+            found={props.fonts ?? {}}
+            onPick={(stack) => props.onPart?.({ "font-family": stack.trim() === look.family.trim() ? null : stack })}
+            onShow={() => {}}
+          />
+          <div className="kn-grid">
+            {look.size != null && partScrub(partKnob("font-size", pxOf(look.size), "size", "Size"), pxOf(sizeNow), (n) => ({ "font-size": n.unit === "px" && look.parentSize ? `${round(n.n / look.parentSize, 4)}em` : `${n.n}${n.unit}` }))}
+            {look.weight != null &&
+              partScrub(
+                partKnob("font-weight", String(look.weight), "weight", "Weight", "number"),
+                String(look.wght ? (wghtIn(own["font-variation-settings"] ?? "") || look.weight) : Number(own["font-weight"] ?? look.weight)),
+                (n): Record<string, string | null> => (look.wght ? { "font-variation-settings": withWght(look.fvs, round(n.n, 0)) } : { "font-weight": String(round(n.n, 0)) }),
+              )}
+            {partScrub(
+              partKnob("line-height", pxOf(look.lineHeight ?? (look.size ?? 16) * 1.2), "leading", "Line height"),
+              own["line-height"] ? pxOf(Number(own["line-height"]) * sizeNow) : pxOf(look.lineHeight ?? (look.size ?? 16) * 1.2),
+              (n) => ({ "line-height": n.unit === "px" ? String(round(n.n / sizeNow, 3)) : `${n.n}${n.unit}` }),
+            )}
+            {partScrub(
+              partKnob("letter-spacing", pxOf(look.letterSpacing ?? 0), "tracking", "Letter spacing"),
+              own["letter-spacing"] ? pxOf((numOf(own["letter-spacing"])?.n ?? 0) * sizeNow) : pxOf(look.letterSpacing ?? 0),
+              (n) => ({ "letter-spacing": n.unit === "px" ? `${round(n.n / sizeNow, 4)}em` : `${n.n}${n.unit}` }),
+            )}
+          </div>
+        </>
+      )}
+      <div className="kn-grid">
+        {look.words && partColor("color", "Color", look.color)}
+        {partColor("background-color", "Fill", look.background)}
+      </div>
+      <div className="kn-grid">
+        {look.radius != null &&
+          partScrub(
+            partKnob("border-radius", pxOf(look.radius), "radius", "Corners"),
+            own["border-radius"] ? pxOf((numOf(own["border-radius"])?.n ?? 0) * sizeNow) : pxOf(look.radius),
+            (n) => ({ "border-radius": n.unit === "px" ? `${round(n.n / sizeNow, 4)}em` : `${n.n}${n.unit}` }),
+          )}
+        {look.opacity != null && partScrub(partKnob("opacity", String(look.opacity), "opacity", "Opacity", "number"), own.opacity ?? String(look.opacity), (n) => ({ opacity: String(round(n.n, 2)) }))}
+      </div>
+    </section>
+  );
+  const partUses = part ? knobs.filter((k) => part.vars.includes(k.name)) : [];
+  const usesSection = part && partUses.length > 0 && (
+    <section className="kn-group" aria-label="Knobs this part uses">
+      <h4>Knobs this part uses</h4>
+      <p className="kn-hint kn-part-hint">These change everywhere they're used.</p>
+      {partUses.filter((k) => k.kind === "font").map((k) => font(k, k.label))}
+      <div className="kn-grid">
+        {partUses.filter((k) => k.kind === "color").map(colorRow)}
+        {partUses.filter((k) => k.kind !== "color" && k.kind !== "font").map((k) => scrub(k))}
+      </div>
+    </section>
+  );
+  const partOpen = open?.name.startsWith("part:") ? (open.name.slice(5) as "color" | "background-color") : null;
   const pageColors = [...new Set(knobs.filter((k) => k.kind === "color").map((k) => now(k)).filter((v) => rgbOf(v)))].slice(0, 24);
   const hoveredInStrip = (s: Strip) => s.knobs.find((k) => k.name === (hovered ?? open?.name));
 
   return (
     <aside className="st-rail kn" aria-label="Knobs">
-      <div className="st-rail-head">Knobs</div>
+      <RailHead name="Knobs" onClose={props.onClose} />
       <div className="kn-scroll" ref={scroller}>
+        {partSection}
+        {usesSection}
+        {part && knobs.length > 0 && (
+          <button className={`kn-fold ${allOpen ? "open" : ""}`} onClick={() => setAllOpen((v) => !v)} aria-expanded={allOpen}>
+            <Icon name="chevron-right" size={13} /> All knobs <span className="kn-faint">{knobs.length}</span>
+          </button>
+        )}
+        {(!part || allOpen) && (<>
         {(parts.colorRows.length > 0 || parts.strips.length > 0) && (
           <section className="kn-group">
             <h4>Color</h4>
@@ -1034,15 +1196,21 @@ export function Knobs(props: {
             <div className="kn-grid">{parts.rest.map((k) => scrub(k))}</div>
           </section>
         )}
+        </>)}
         {!props.vars && <p className="kn-empty">Reading the page…</p>}
-        {props.vars && <p className="kn-hint">Drag a bar, or click it to type. Hover a knob to see what it changes.</p>}
+        {props.vars && !part && <p className="kn-hint">Drag a bar, or click it to type. Hover a knob to see what it changes.</p>}
       </div>
-      <div className="kn-foot">
-        <button className="st-quiet" disabled={!changed || props.keeping} onClick={props.onReset} title="Put every knob back as it was">
-          <Icon name="refresh" size={13} /> Reset{changed > 0 ? ` ${changed}` : ""}
-        </button>
-        <button className="st-send" disabled={!changed || props.keeping} onClick={props.onKeep}>{props.keeping ? "Saving…" : `Save as v${props.nextVersion}`}</button>
-      </div>
+      {partOpen && look && open && (
+        <ColorPop
+          at={open.at}
+          anchor={open.anchor}
+          value={own[partOpen] ?? (paint(partOpen === "color" ? look.color : look.background) ? (partOpen === "color" ? look.color : look.background) : "#ffffff")}
+          was={partOpen === "color" ? look.color : look.background}
+          others={pageColors}
+          onChange={(css) => props.onPart?.({ [partOpen]: css === (partOpen === "color" ? look.color : look.background) ? null : css })}
+          onClose={() => setOpen(null)}
+        />
+      )}
       {openKnob && open && (
         <ColorPop
           at={open.at}
