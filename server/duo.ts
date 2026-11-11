@@ -12,7 +12,7 @@ import type { Part } from "./chat.ts";
 type Prompt = string | ContentBlockParam[];
 
 /** Who the builder is and how it works, at the top of each hand-over it gets. */
-const builderIntro = (planner: string, builder: string) => `<panel-context>You are the builder, ${builder}. ${planner}, the planner, has just read the project, looked at the references and written the plan at the end of this message, for the designer's message below; the designer has seen its note. You haven't seen the planner's conversation: you get the designer's message, the project card and the plan. Anything else you need, read with the tools: get_project for the canvas and its sketches, get_sketch for a sketch, get_reference for a save. Carry the plan out with the tools: make or change what it says, from the saves it names, then look at the pictures that come back and fix what breaks the plan or the designer's rules. Follow the plan's choices; where it's silent, or something in it doesn't work, use your judgment and say so. Don't look for other references. Then reply to the designer in a few lines: what you made, and anything you did differently from the plan.</panel-context>`;
+const builderIntro = (planner: string, builder: string) => `<panel-context>You are the builder, ${builder}. ${planner}, the planner, has just read the project, looked at the references and written the plan at the end of this message, for the designer's message below; the designer has seen its note. You haven't seen the planner's conversation: you get the designer's message, the project card and the plan. Anything else you need, read with the tools: get_project for the canvas and its sketches, get_sketch for a sketch, get_reference for a save. Carry the plan out with the tools: make or change what it says, from the saves it names, then look at the pictures that come back and fix what breaks the plan or the designer's rules. Follow the plan's choices; where it's silent, or something in it doesn't work, use your judgment and say so. Don't look for other references. Then reply to the designer in a few lines: what you made, what to look at in it, and anything you did differently from the plan. Don't end with a question about going on, and don't move the steps: when the work is being made step by step, the planner has already asked the designer, and its questions show under your reply.</panel-context>`;
 
 /** The kinds of job a message can be, which decide the conversation it runs on. */
 export type Job = "plain" | "handover" | "pointed" | "figma" | "alternates" | "compact";
@@ -150,3 +150,53 @@ export const plannerAllows = (builder: string): Allow => (name) =>
 /** The builder, and the side runs that make alternates: Panel's tools, but never the steps, and never asking. */
 export const builderAllows: Allow = (name) =>
   STEP_TOOLS.has(name) ? "The planner moves the steps on." : name.startsWith("mcp__panel__") ? true : "FRIDAY only uses Panel's tools.";
+
+// ---------- Asking the designer (ask_designer) ----------
+
+/** How many saves a question can show above its choices. */
+export const QUESTION_SAVES = 6;
+
+/** The saves FRIDAY gave with its questions, in order, each once: the ones to show in rows. */
+export function questionSaves(input: unknown): string[] {
+  const qs = (input as { questions?: unknown } | null)?.questions;
+  if (!Array.isArray(qs)) return [];
+  const ids = qs.flatMap((q) => {
+    const saves = (q as { saves?: unknown } | null)?.saves;
+    return Array.isArray(saves) ? saves.filter((s): s is string => typeof s === "string" && /^[0-9a-f]{16}$/.test(s)).slice(0, QUESTION_SAVES) : [];
+  });
+  return [...new Set(ids)];
+}
+
+/**
+ * Whether FRIDAY's words for the designer come right before its questions: the last thing in
+ * the answer (thinking and the question itself aside) is a few lines of its own. Short working
+ * notes earlier on ("Checking it on a phone.") and the builder's words don't count: after a
+ * run of tools with nothing said since, the designer hasn't been told what was made.
+ */
+export function hasWords(parts: Part[]): boolean {
+  for (let i = parts.length - 1; i >= 0; i--) {
+    const p = parts[i]!;
+    if (p.type === "thinking" || (p.type === "tool" && p.name === "ask_designer")) continue;
+    return p.type === "text" && !p.builder && p.text.trim().length >= 150;
+  }
+  return false;
+}
+
+/**
+ * What FRIDAY is told once its questions are with the designer. A model nearly always writes
+ * some more words after a tool, so they are given a job: with nothing said yet, they say
+ * what was made, show what the step asks to be shown (the three headlines, in full) and say
+ * what to look at; with that already said, there is nothing left to say
+ * (and what it writes anyway isn't shown, see reader in chat.ts). The planner can still hand
+ * the making to the builder: the questions then wait under what the builder makes.
+ */
+export function askedNote(o: { said: boolean; planner: boolean; missing?: number }): string {
+  return [
+    "The designer sees the questions under your answer, with the choices as buttons, and can also write their own answer.",
+    o.missing ? `${o.missing} of the saves you gave ${o.missing === 1 ? "isn't" : "aren't"} in the library, so ${o.missing === 1 ? "it isn't" : "they aren't"} shown.` : "",
+    o.planner ? "If something has to be made for this step, call hand_to_builder now: the questions wait under what the builder makes." : "",
+    o.said
+      ? `${o.planner ? "Apart from that, your" : "Your"} turn is over. Write nothing more: words written after the questions aren't shown.`
+      : "Now write your words for the designer: what you made or found, whatever this step asks you to show them written out in full (the three headlines, the three ideas: a choice's label is not enough to choose by), and what to look at. Don't repeat the questions or their choices, and don't say that you asked. Then stop.",
+  ].filter(Boolean).join(" ");
+}

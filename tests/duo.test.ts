@@ -4,7 +4,7 @@
 // planner gets about what was made. `bun test tests/duo.test.ts`.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { builderAllows, builderBrief, builderNews, oneModelAllows, plannerAllows, whichConversation, type Job } from "../server/duo.ts";
+import { askedNote, builderAllows, builderBrief, builderNews, hasWords, oneModelAllows, plannerAllows, questionSaves, whichConversation, type Job } from "../server/duo.ts";
 import type { Part } from "../server/chat.ts";
 import { startPanel, type TestPanel } from "./helpers.ts";
 
@@ -207,5 +207,51 @@ describe("which tools each run may use", () => {
   test("what the builder made with keep_part is told to the planner", () => {
     const parts: Part[] = [{ type: "tool", id: "k1", name: "keep_part", builder: true, input: { name: "Stamp" }, done: true }];
     expect(builderNews([parts])).toContain("keep part");
+  });
+});
+
+describe("asking the designer", () => {
+  const A = "a".repeat(16), B = "b".repeat(16);
+  const words = "The wireframe is on the canvas under Sections: seven rows, from the promise down to booking a table. The menu comes before the story, because most people who open it are deciding where to eat tonight.";
+  const ask: Part = { type: "tool", id: "q1", name: "ask_designer", input: {} };
+
+  test("a question's saves, in order, each once; anything that isn't an id is left out", () => {
+    expect(questionSaves({ questions: [{ question: "Which feels closest?", choices: ["One", "Two"], saves: [A, B, A, "nope", 7] }, { question: "Go on?", choices: ["Yes", "No"] }, { question: "And?", choices: ["x", "y"], saves: [B] }] })).toEqual([A, B]);
+    expect(questionSaves({})).toEqual([]);
+    expect(questionSaves(undefined)).toEqual([]);
+  });
+
+  test("words count when they come right before the questions", () => {
+    expect(hasWords([{ type: "tool", id: "t", name: "make_sketch", done: true }, { type: "text", text: words }])).toBe(true);
+    // The question itself, already in the answer, and thinking are looked past.
+    expect(hasWords([{ type: "text", text: words }, { type: "thinking", done: true }, ask])).toBe(true);
+  });
+
+  test("working notes, tools since, and the builder's words don't count", () => {
+    expect(hasWords([])).toBe(false);
+    expect(hasWords([{ type: "text", text: "Desktop reads well now. Checking it on a phone." }, ask])).toBe(false);
+    expect(hasWords([{ type: "text", text: words }, { type: "tool", id: "t", name: "make_sketch", done: true }, ask])).toBe(false);
+    expect(hasWords([{ type: "text", text: words, builder: true }, ask])).toBe(false);
+  });
+
+  test("what FRIDAY is told after asking", () => {
+    // Nothing said yet: its next lines say what it made, and never that it asked.
+    const quiet = askedNote({ said: false, planner: false });
+    expect(quiet).toContain("what you made or found");
+    expect(quiet).toContain("written out in full");
+    expect(quiet).toContain("don't say that you asked");
+    expect(quiet).not.toContain("hand_to_builder");
+    // Already said: the turn is over.
+    expect(askedNote({ said: true, planner: false })).toContain("Your turn is over. Write nothing more");
+    // The planner can still hand the making over; a save the library doesn't have is said.
+    const planner = askedNote({ said: true, planner: true, missing: 1 });
+    expect(planner).toContain("call hand_to_builder now");
+    expect(planner).toContain("Apart from that, your turn is over");
+    expect(planner).toContain("1 of the saves you gave isn't in the library");
+  });
+
+  test("the builder is told not to ask about going on", () => {
+    const r = builderBrief({ job: "handover", builder: "Opus 5.5", planner: "Fable 5.2", message: "Make it.", plan: "1. Make the wireframe, as written out here in full for the builder.", card: null, given: { session: null, hash: null } });
+    expect(String(r.prompt)).toContain("Don't end with a question about going on");
   });
 });

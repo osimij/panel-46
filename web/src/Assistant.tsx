@@ -960,8 +960,9 @@ function AssistantMessage(props: {
           />
         ),
       )}
-      {asks.length > 0 && !(streaming && !asks.every((a) => a.done)) && (
-        <Questions asks={asks} waiting={props.waiting && !streaming && !revealing} onAnswer={props.onAnswer} />
+      {/* Shown once the answer is whole: in Plan, then build the builder may still be making what they are about. */}
+      {asks.length > 0 && !streaming && (
+        <Questions asks={asks} waiting={props.waiting && !revealing} onAnswer={props.onAnswer} ctx={props.ctx} />
       )}
       {m.status === "error" && (
         <div className="msg-error">
@@ -1177,7 +1178,7 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
 /** The tools that move a project's steps on: when one comes back, the steps row is read again. */
 const STEP_TOOLS = ["start_steps", "set_step", "stop_steps"];
 
-interface Question { question: string; choices: string[] }
+interface Question { question: string; choices: string[]; saves: string[] }
 
 /**
  * FRIDAY's questions, after its last words. While they wait for the designer, each choice is
@@ -1185,15 +1186,19 @@ interface Question { question: string; choices: string[] }
  * several, pressing marks one choice per question (again to unmark), and Send sends them as
  * one message, a line per question. Writing in the message box works as always. Once answered,
  * or in an older answer, the questions stay as text with their choices as one quiet line.
+ * A question about feeling or look comes with saves to compare: they show in a row between
+ * the question and its choices (small once it is answered). Only saves the library has are
+ * shown: the ones that came back with the question (its refs).
  */
-function Questions({ asks, waiting, onAnswer }: { asks: Extract<ChatPart, { type: "tool" }>[]; waiting: boolean; onAnswer: (text: string) => void }) {
+function Questions({ asks, waiting, onAnswer, ctx }: { asks: Extract<ChatPart, { type: "tool" }>[]; waiting: boolean; onAnswer: (text: string) => void; ctx: Ctx }) {
   const id = useId();
   const qs: Question[] = asks
-    .flatMap((a) => (Array.isArray(a.input?.questions) ? (a.input.questions as unknown[]) : []))
-    .flatMap((x) => {
+    .flatMap((a) => (Array.isArray(a.input?.questions) ? (a.input.questions as unknown[]).map((x) => ({ x, known: a.refs ?? [] })) : []))
+    .flatMap(({ x, known }) => {
       const o = x as Partial<Question>;
       const choices = Array.isArray(o.choices) ? o.choices.filter((c): c is string => typeof c === "string" && !!c.trim()) : [];
-      return typeof o.question === "string" && o.question.trim() && choices.length ? [{ question: o.question.trim(), choices }] : [];
+      const saves = Array.isArray(o.saves) ? [...new Set(o.saves)].filter((s) => typeof s === "string" && known.includes(s)).slice(0, 6) : [];
+      return typeof o.question === "string" && o.question.trim() && choices.length ? [{ question: o.question.trim(), choices, saves }] : [];
     })
     .slice(0, 4);
   const [marked, setMarked] = useState<(string | null)[]>([]);
@@ -1205,6 +1210,8 @@ function Questions({ asks, waiting, onAnswer }: { asks: Extract<ChatPart, { type
       {qs.map((q, i) => (
         <div key={i} className="ask-q">
           <p className="ask-q-text" id={`${id}-${i}`}>{q.question}</p>
+          {/* Two questions about the same saves ("which is closest?", "which is wrong?") share the first one's row. */}
+          {q.saves.length > 0 && q.saves.join() !== qs[i - 1]?.saves.join() && <Gallery ids={q.saves} ctx={ctx} small={!waiting} />}
           {waiting ? (
             <div className="ask-choices" role="group" aria-labelledby={`${id}-${i}`}>
               {q.choices.map((c) => (

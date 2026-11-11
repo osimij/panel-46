@@ -22,7 +22,7 @@ Read the project card, the canvas (get_project) and get_verdicts. Then ask only 
 1. What is it, in one line, and who comes to it?
 2. What is the one thing a visitor should do or understand before they leave?
 3. What exists already: an old site, words, photos, a logo, a brand book? Ask them to add the files to the project (materials, brand assets) so you work from the real things.
-4. How should it feel? Don't ask this in words alone. Find five or six saves in their library that feel different from each other, show them in a row, and ask which are closest and which are wrong.
+4. How should it feel? Don't ask this in words alone. Find five or six saves in their library that feel different from each other, give them with the question (its saves) so they show in a row above the choices, and ask which are closest and which are wrong.
 
 For a redesign, look at the old site first (the material or the link) and say in three lines: what works, what doesn't, what must stay.
 
@@ -38,6 +38,7 @@ What the page shows, section by section, before any design.
 - Most pages need five to eight sections. Say why each one is there.
 - Make a wireframe: make_sketch with kind "wireframe", titled "Wireframe", from the topic Sections. Start from the page below and fill it in: one row per section, with the note on the left (its name, its job, what is in it: which links, which buttons, what kind of picture or video) and gray blocks on the right.
 - Gray only. No colors, no chosen fonts, no real copy yet: the placeholders say what the words will do ("Headline: the one promise", "Button: book a table").
+- Name each section by what it is ("Hero", "Menu"). Don't number the sections, here or in any later sketch.
 - This is not design. Don't polish it. It should take one try.
 
 {{file: wireframe.html}}

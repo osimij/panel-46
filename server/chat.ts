@@ -21,7 +21,7 @@ import { designerSkills } from "./skilluse.ts";
 import { partialHtml } from "./partial.ts";
 import { draftWithParts, shortPartsLoosely } from "./parts.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
-import { builderAllows, builderBrief, builderCard, builderNews, oneModelAllows, plannerAllows, whichConversation, type Allow, type Job } from "./duo.ts";
+import { askedNote, builderAllows, builderBrief, builderCard, builderNews, hasWords, oneModelAllows, plannerAllows, questionSaves, QUESTION_SAVES, whichConversation, type Allow, type Job } from "./duo.ts";
 import { contextParts, type ContextParts } from "./contextparts.ts";
 import { listRecipes, stepsLine } from "./steps.ts";
 
@@ -346,12 +346,12 @@ Making a whole thing, step by step (on a project's canvas):
 - To begin, read the recipe whole (get_recipe with its name) and ask its opening questions: only the ones the project card, the canvas and get_verdicts don't already answer, at most four, in one message. When they have answered, start_steps. Off a canvas, say it needs a project and stop there.
 - From then on each message says where the project stands: what is done, which step is now, what is to come. Work only on the step that is now, the way the recipe says (get_recipe with step, if you haven't read it in this conversation). Never do two steps in one answer, and never start the next before the designer agreed to this one.
 - Where the recipe asks for options (three headlines, three ideas), make them different in kind, not three shades of one, and say in a line what each comes from.
-- End each step by showing what you made and asking (ask_designer), with going on as the first choice. Then stop.
+- End each step by telling the designer what you made and what to look at in it, in a few lines, with whatever the step asks you to show written out in full (the three headlines, the three ideas), and then asking (ask_designer), with going on as the first choice. Then stop. Never ask about something you haven't described: a choice's label is not a description.
 - When they agree ("yes", "go on", the first choice): set_step done, with the decision in a sentence, in their words where they gave them. Its answer brings the next step: start on it in the same answer.
 - When they want a change, make it and ask again. "Skip it": set_step skipped. Going back to an earlier step: set_step now. "Just make it" or "skip the steps": stop_steps, then make it from what is decided so far.
 - Every step builds on the ones before it: the words fit the sections, the color comes from the gem, the motion serves both. A wireframe has no colors, so the question about colors (under Sketches) waits for the Color step, which settles them.
-- Ask before you assume, but little: beyond the closing question, one question per step at most. For a question about feeling, show two or three saves in a row and ask which is closer.
-- ask_designer: one to four questions, each with two to four short choices the designer can press; they can also write their own answer. Call it last, after your words. A question with no clear choices is asked in your words instead. Without that tool, ask everything in words.
+- Ask before you assume, but little: beyond the closing question, one question per step at most. For a question about feeling or look, give the saves to compare with the question itself (its saves): they are shown in a row above its choices. Naming a save inside a choice shows nothing.
+- ask_designer: one to four questions, each with two to four short choices the designer can press; they can also write their own answer. Call it last, after your words. The designer sees each question once, under your answer: don't write the questions or their choices in your words as well, and don't say that you asked. A question with no clear choices is asked in your words instead. Without that tool, ask everything in words.
 
 Sketches (on a project's canvas):
 - When the designer wants to see how something could look ("sketch the hero", "try it with the stamp", "show me three directions"), make it with make_sketch: one self-contained page that shows the idea, not a whole site. Make it from what's settled: the locked decisions, their chosen saves (look at them first), the brief and materials. Use real content in the project's language, never lorem ipsum.
@@ -842,24 +842,32 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
 
 /**
  * FRIDAY's own tools, living in Panel for the length of one turn. ask_designer always: a
- * question with choices the designer presses (the app draws them as buttons). hand_to_builder
- * only for the planner (given `handOver`), its way to hand the plan on.
+ * question with choices the designer presses (the app draws them as buttons, with a row of
+ * saves above when the question gives some). `said` tells whether this answer already has
+ * words for the designer, which decides what FRIDAY is told to do next (askedNote in duo.ts).
+ * hand_to_builder only for the planner (given `handOver`), its way to hand the plan on.
  */
-function fridayTools(handOver?: (plan: string) => void) {
+function fridayTools(said: () => boolean, handOver?: (plan: string) => void) {
   return createSdkMcpServer({
     name: "friday",
     version: "1.0.0",
     tools: [
       tool(
         "ask_designer",
-        "Ask the designer one to four questions, each with choices they can press. Use it for a step's closing question (going on as the first choice) and for anything you would otherwise guess. Call it last, after your words to the designer: write them first (with any saves to look at as [[id]]s together on a line of their own), then call this, and write nothing after it.",
+        "Ask the designer one to four questions, each with choices they can press. Use it for a step's closing question (going on as the first choice) and for anything you would otherwise guess. Call it last, after your words to the designer. The designer sees each question once, with its choices, under your answer: don't write the questions in your words as well. For a question about feeling or look, give the saves to compare in its saves.",
         {
           questions: z.array(z.object({
             question: z.string().min(1).max(200),
             choices: z.array(z.string().min(1).max(40)).min(2).max(4),
+            saves: z.array(z.string().regex(/^[0-9a-f]{16}$/)).max(QUESTION_SAVES).optional()
+              .describe("Ids of saves to look at for this question, shown in a row of pictures above its choices, in this order. For \"which feels closest?\": the three to six saves being compared. Word each choice so it is clear which save it means (\"The dark room\", \"The folk pattern\")."),
           })).min(1).max(4),
         },
-        async () => ({ content: [{ type: "text", text: "The designer sees the questions with the choices as buttons, and can also write their own answer. Your turn is over: write nothing more." }] }),
+        async (a) => {
+          const given = questionSaves(a);
+          const missing = given.length - cards(given).length;
+          return { content: [{ type: "text" as const, text: askedNote({ said: said(), planner: !!handOver, missing }) }] };
+        },
       ),
       ...(handOver
         ? [tool(
@@ -883,7 +891,7 @@ How you work right now: you are the planner, ${planner}, paired with a builder, 
 - When it needs something made or changed, think it through first: read what you need, search and look at the saves, decide. Then tell the designer in two or three lines what you're having made and why, and call hand_to_builder as your last step.
 - The builder doesn't see this conversation. It works in a conversation of its own and gets only your plan, the designer's message (with what they have selected or open) and the project card. So the plan must stand on its own: never "as above" or "the one we discussed"; write out each save's [[id]], each value and each piece of content again. After it has built, the designer's next message here starts with a short note of what it made.
 - The plan is everything the builder needs, since it won't search or judge taste on its own. Say what to make and where it hangs (from:, the project and topic), and each save to use with what to take from it ([[id]] and the exact thing: the hex, the font, the layout move). Give the structure part by part with the real content in the project's language, the type (families, sizes, weights, line heights), the color (hex and where each goes), spacing and corners, the states, and the knobs. Name the rules that matter most here, what to check in the pictures before finishing, and what not to do. Concrete values, not adjectives. Number the steps.
-- Step by step: you run the steps. You read the recipe, ask the designer (ask_designer), decide each step and move the steps on yourself (start_steps, set_step and stop_steps are yours to call). What a step makes (the wireframe, a study, the hero) goes in the plan for the builder like anything else: say which step it is for and what to hang it from. For a wireframe, say it is one (make_sketch with kind "wireframe") and write out the recipe's starting page and what goes in each row.`;
+- Step by step: you run the steps. You read the recipe, ask the designer (ask_designer), decide each step and move the steps on yourself (start_steps, set_step and stop_steps are yours to call). What a step makes (the wireframe, a study, the hero) goes in the plan for the builder like anything else: say which step it is for and what to hang it from. For a wireframe, say it is one (make_sketch with kind "wireframe") and write out the recipe's starting page and what goes in each row. The step's closing question is yours too, since the builder can't ask: write your note, call ask_designer with the question, then hand_to_builder, in that order. The designer sees your questions as buttons under what the builder makes.`;
 
 /** The last few answers in a conversation, newest first, without the one being written now. */
 function recentAnswers(chatId: string, except: string): Part[][] {
@@ -925,7 +933,7 @@ async function duo(chatId: string, run: Run, sessionId: string | null, prompt: P
   const p = reader(chatId, run, { model: planner, tag: plannerName });
   const first = await viaSdk(run, {
     bin, token, prompt, sessionId, mcpUrl, handle: p.handle, model: planner, effort: chatSettings.planEffort(),
-    servers: { friday: fridayTools((x) => (plan = x)) },
+    servers: { friday: fridayTools(() => hasWords(run.parts), (x) => (plan = x)) },
     allow: plannerAllows(builderName),
     system: systemPrompt("planner") + plannerNote(plannerName, builderName),
   });
@@ -1007,6 +1015,10 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
   const lastPart = () => run.parts.at(-1);
   const state = { resultError: null as string | null, gotResult: false, text: "" };
   let lastSave = 0;
+  // After ask_designer, when the answer already had its words: FRIDAY was told its turn is over
+  // (askedNote), so a line it still writes ("I've asked you whether…") isn't kept or shown.
+  // Another tool starting (the planner's hand-over) ends that.
+  let quiet = false;
 
   const handle = (d: any) => {
     // Stopped: whatever is still on its way out is dropped.
@@ -1044,6 +1056,7 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
         } else if (b.type === "tool_use") {
           blocks.set(e.index, { kind: "tool", toolId: b.id, json: "", sketch: /(make|edit)_sketch$/.test(String(b.name)) });
           const name = String(b.name).replace(/^mcp__(panel|friday)__/, "");
+          quiet = name === "ask_designer" && !side && hasWords(run.parts);
           run.parts.push({ type: "tool", id: b.id, name, ...tag, ...mark });
           emit(chatId, run, { t: "tool", id: b.id, name, ...tag });
         } else blocks.set(e.index, { kind: b.type });
@@ -1055,6 +1068,7 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
             state.text += e.delta.text;
             return;
           }
+          if (quiet) return;
           // The builder's words start a part of their own, so they're told apart from the planner's.
           const last = lastPart();
           if (last?.type === "text" && !!last.builder === builder) last.text += e.delta.text;
@@ -1111,7 +1125,10 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
         const text = (Array.isArray(c.content) ? c.content : [{ type: "text", text: String(c.content ?? "") }])
           .filter((x: any) => x.type === "text").map((x: any) => x.text).join("\n");
         const part = run.parts.find((p) => p.type === "tool" && p.id === c.tool_use_id);
-        const refs = c.is_error ? [] : idsIn(text);
+        // The saves given with a question (ask_designer) are the ones its answer "came back with":
+        // the app gets their cards and shows them in a row above the question's choices.
+        const asked = part && part.type === "tool" && part.name === "ask_designer";
+        const refs = c.is_error ? [] : asked ? cards(questionSaves(part.input)).map((x) => x.id) : idsIn(text);
         let total: number | undefined;
         try {
           const j = JSON.parse(text);
@@ -1174,7 +1191,7 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   let cli = getSetting("chat_engine") === "cli";
   if (!cli) {
     // With FRIDAY's own ask_designer beside Panel's tools (the command line has no such tool: it asks in words).
-    ({ code, stderr } = await viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle, model, effort, servers: { friday: fridayTools() } }));
+    ({ code, stderr } = await viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle, model, effort, servers: { friday: fridayTools(() => hasWords(run.parts)) } }));
     if (stderr && !state.gotResult && !run.parts.length && !run.stopped) {
       console.error("Chat: the Agent SDK couldn't answer, using the command line:", stderr);
       cli = true;

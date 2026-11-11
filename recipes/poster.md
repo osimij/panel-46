@@ -19,7 +19,7 @@ Read the project card, the canvas (get_project) and get_verdicts. Then ask only 
 1. What is it for, and what must someone know after two seconds?
 2. Where will it be seen: printed (what size), on a screen, on Instagram (which shape)?
 3. What must be on it (date, place, logos, sponsors), and in which language?
-4. How should it feel? Find five or six saves in their library that feel different from each other, show them in a row, and ask which are closest and which are wrong.
+4. How should it feel? Find five or six saves in their library that feel different from each other, give them with the question (its saves) so they show in a row above the choices, and ask which are closest and which are wrong.
 
 Write what you learned as a note on the canvas (add_note), in their words. Then start_steps.
 
