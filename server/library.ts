@@ -391,12 +391,33 @@ export function facetView(d: Doc, facet: Facet) {
   }
 }
 
-/** A short card: enough to choose from without opening every save. */
+const titleOf = (d: Doc) => d.r.title || d.profile?.summary?.split(". ")[0]?.slice(0, 90) || d.r.source_url || "Untitled";
+
+/**
+ * Text cut to at most `n` characters, at a word when one ends near the cut, with "…" to show
+ * something was left out. Short cards use it so that one long read can't make a search long.
+ */
+export function cut(s: string | undefined | null, n: number): string | undefined {
+  const t = s?.replace(/\s+/g, " ").trim();
+  if (!t) return undefined;
+  if (t.length <= n) return t;
+  const head = t.slice(0, n - 1);
+  const space = head.lastIndexOf(" ");
+  return `${(space > n * 0.6 ? head.slice(0, space) : head).replace(/[\s,;:.–—-]+$/, "")}…`;
+}
+
+/** The first sentence of a text: what a short card says the save is. */
+const firstSentence = (s: string | undefined | null) => s?.trim().split(/(?<=[.!?])\s+/)[0];
+
+/**
+ * The full card: everything a search used to hand back for each save. Searches now give
+ * short cards (shortCard) unless asked for detail "full"; gather_for_brief still builds on this.
+ */
 export function card(d: Doc, extra: Record<string, unknown> = {}, focus?: Facet[]) {
   const p = d.profile;
   return {
     id: d.r.id,
-    title: d.r.title || p?.summary?.split(". ")[0]?.slice(0, 90) || d.r.source_url || "Untitled",
+    title: titleOf(d),
     type: d.type,
     by: [d.r.creator_name, d.r.creator_handle && `@${d.r.creator_handle}`].filter(Boolean).join(" ") || undefined,
     summary: p?.summary ?? (d.r.text?.slice(0, 280) || undefined),
@@ -418,6 +439,60 @@ export function card(d: Doc, extra: Record<string, unknown> = {}, focus?: Facet[
   };
 }
 
+/** What a short card says about one facet the search was within: a line or two, not the whole part. */
+function facetLine(d: Doc, f: Facet): Record<string, unknown> {
+  const p = d.profile ?? {};
+  switch (f) {
+    case "color": return { color: cut(p.color?.summary, 200) };
+    case "layout": return { layout: cut(p.layout?.summary, 200) };
+    case "imagery": return { imagery: cut(p.imagery?.summary, 200) };
+    case "motion": return { motion: p.motion?.present === false ? undefined : cut(p.motion?.summary, 200) };
+    // A site's measured fonts are facts, and search finds them even when the read saw no type worth noting.
+    case "typography": return {
+      typography: p.typography?.present === false ? undefined : cut(p.typography?.summary, 200),
+      fonts_measured: d.measured?.fonts.slice(0, 3).map((x) => x.family),
+    };
+    case "mood": return { style_references: p.style_references?.slice(0, 3) };
+    case "components": return { components: p.components?.slice(0, 8) };
+  }
+}
+
+/**
+ * A short card: enough to choose which saves to open, at about a quarter of the full card.
+ * What to take from a save (worth_taking, the whole read) is one get_reference away; only
+ * the two or three saves worth recommending need it. The designer's note is never cut.
+ * Most saves have no title of their own, and then the fallback title is only the start of
+ * the same sentence `about` gives, so the card leaves it out rather than say it twice.
+ */
+export function shortCard(d: Doc, extra: Record<string, unknown> = {}, focus?: Facet[]) {
+  const p = d.profile;
+  const about = cut(firstSentence(p?.summary) ?? d.r.text, 160);
+  return {
+    id: d.r.id,
+    title: d.r.title || (about ? undefined : titleOf(d)),
+    type: d.type,
+    about,
+    mood: p?.mood?.slice(0, 4),
+    colors: [...d.palette].sort((a, b) => b.share - a.share).slice(0, 3).map((s) => `${s.hex} ${s.name} ${pct(s.share)}`),
+    ...(Object.assign({}, ...(focus ?? []).map((f) => facetLine(d, f))) as Record<string, unknown>),
+    note: d.r.note || undefined,
+    tags: d.tags.length ? d.tags : undefined,
+    favorite: d.r.favorite ? true : undefined,
+    unread: p ? undefined : true,
+    ...extra,
+  };
+}
+
+/**
+ * One line for a save further down a search, so the whole ranked list stays in view cheaply.
+ * A plain string on purpose: FRIDAY's panel shows a thumbnail for every "id":"…" in a tool's
+ * answer, and these should not crowd out the cards.
+ */
+export const listLine = (d: Doc) => [d.r.id, cut(titleOf(d), 60), d.profile?.mood?.slice(0, 3).join(", ")].filter(Boolean).join(" · ");
+
+/** How much each save in an answer says: a short card (the default) or the full card. */
+export type Detail = "short" | "full";
+
 // ---------- The tools' logic ----------
 
 export interface SearchInput extends Filters {
@@ -429,6 +504,7 @@ export interface SearchInput extends Filters {
   color_match?: "any" | "all";
   limit?: number;
   offset?: number;
+  detail?: Detail;
 }
 
 /** The best of a ranking: the top `keep`, and only those close to the very best (the rest is noise). */
@@ -488,23 +564,53 @@ export async function search(o: SearchInput) {
     rows.sort((a, b) => scored.get(b)! - scored.get(a)! || byWords(a, b));
   }
   const limit = Math.min(o.limit ?? 12, 60), offset = o.offset ?? 0;
+  const foundBy = q || o.look ? [q ? "words" : "", q && meaningReady() ? "meaning" : "", o.look?.trim() && lookReady() ? "look" : ""].filter(Boolean).join(" + ") : undefined;
+  // Why each save is in the list: the same on a short card as on a full one.
+  const why = (x: Row) => ({
+    matched: askedTerms.length && x.found ? `${x.hits.length}/${askedTerms.length}: ${x.hits.join(", ")}` : undefined,
+    close_in_meaning: meaning.has(x.d.r.id) || undefined,
+    looks_like_it: look.has(x.d.r.id) || undefined,
+    colors_matched: x.color?.hits.map((h) => `${h.asked} → ${h.hex} ${h.name} ${pct(h.share)} (ΔE ${h.distance})`),
+  });
+  if (o.detail === "full") {
+    return {
+      total: rows.length,
+      showing: `${Math.min(rows.length, offset + 1)}–${Math.min(rows.length, offset + limit)} of ${rows.length}`,
+      words_searched: askedTerms.length ? askedTerms : undefined,
+      found_by: foundBy,
+      results: rows.slice(offset, offset + limit).map((x) => card(x.d, why(x), o.facets)),
+    };
+  }
+  // Short: the best as short cards, then one line each for the next 60 in the same order, so the
+  // model still sees how much was found and can open any of it, without reading every card.
+  // With nothing asked (no words, look or colors) the list is only the newest saves, not
+  // matches, so lines after the cards would just be more of the library: they're left out.
+  const askedNothing = !q && !o.look?.trim() && !o.colors?.length;
+  const shown = rows.slice(offset, offset + limit);
+  const lined = askedNothing ? [] : rows.slice(offset + limit, offset + limit + 60);
+  const after = rows.length - (offset + shown.length + lined.length);
+  const range = (from: number, n: number) => `${from + 1}–${from + n}`;
   return {
     total: rows.length,
-    showing: `${Math.min(rows.length, offset + 1)}–${Math.min(rows.length, offset + limit)} of ${rows.length}`,
+    showing: !shown.length
+      ? `nothing to show of ${rows.length}`
+      : `${range(offset, shown.length)} of ${rows.length} as cards${lined.length ? `, ${range(offset + shown.length, lined.length)} as lines` : ""}`,
     words_searched: askedTerms.length ? askedTerms : undefined,
-    found_by: q || o.look ? [q ? "words" : "", q && meaningReady() ? "meaning" : "", o.look?.trim() && lookReady() ? "look" : ""].filter(Boolean).join(" + ") : undefined,
-    results: rows.slice(offset, offset + limit).map((x) =>
-      card(x.d, {
-        matched: askedTerms.length && x.found ? `${x.hits.length}/${askedTerms.length}: ${x.hits.join(", ")}` : undefined,
-        close_in_meaning: meaning.has(x.d.r.id) || undefined,
-        looks_like_it: look.has(x.d.r.id) || undefined,
-        colors_matched: x.color?.hits.map((h) => `${h.asked} → ${h.hex} ${h.name} ${pct(h.share)} (ΔE ${h.distance})`),
-      }, o.facets),
-    ),
+    found_by: foundBy,
+    results: shown.map((x) => shortCard(x.d, why(x), o.facets)),
+    more: lined.length ? lined.map((x) => listLine(x.d)) : undefined,
+    not_listed: after > 0 ? after : undefined,
+    next: shown.length
+      ? "Open a save with get_reference for its whole read (facets: only the parts you need)." +
+        (after <= 0 ? ""
+          : askedNothing ? ` ${after} more aren't listed: search with words, a look or colors to find the right ones, or ask from offset ${offset + shown.length} for the next newest.`
+          : ` ${after} more matched and aren't listed: narrow the search with facets, filters or more exact words.`)
+      : undefined,
   };
 }
 
-export function findByColor(o: Filters & { colors: string[]; match?: "any" | "all"; max_distance?: number; min_share?: number; role?: string; limit?: number }) {
+export function findByColor(o: Filters & { colors: string[]; match?: "any" | "all"; max_distance?: number; min_share?: number; role?: string; limit?: number; detail?: Detail }) {
+  const make = o.detail === "full" ? card : shortCard;
   const { docs } = load();
   const asked = o.max_distance ?? 10, minShare = o.min_share ?? 0.03;
   const bad = o.colors.filter((c) => !hexRgb(c) && !/^[a-z -]+$/i.test(c));
@@ -532,13 +638,14 @@ export function findByColor(o: Filters & { colors: string[]; match?: "any" | "al
       widened && rows.length ? `Nothing within ΔE ${asked}; these are the nearest the library has.` : "",
     ].filter(Boolean).join(" ") || undefined,
     results: rows.slice(0, Math.min(o.limit ?? 12, 60)).map(({ d, m }) =>
-      card(d, { colors_matched: m.hits.map((h) => `${h.asked} → ${h.hex} ${h.name} ${pct(h.share)}${h.role ? ` (${h.role})` : ""}, ΔE ${h.distance}`) }, ["color"]),
+      make(d, { colors_matched: m.hits.map((h) => `${h.asked} → ${h.hex} ${h.name} ${pct(h.share)}${h.role ? ` (${h.role})` : ""}, ΔE ${h.distance}`) }, ["color"]),
     ),
   };
 }
 
 /** Saves like this one, in the chosen facets. Each facet ranks on its own; the ranks are then fused. */
-export function similar(o: Filters & { id: string; facets?: (Facet | "overall" | "look")[]; limit?: number }) {
+export function similar(o: Filters & { id: string; facets?: (Facet | "overall" | "look")[]; limit?: number; detail?: Detail }) {
+  const make = o.detail === "full" ? card : shortCard;
   const { docs } = load();
   const base = docs.get(o.id);
   if (!base) throw new Error(`No save with id ${o.id}.`);
@@ -581,8 +688,8 @@ export function similar(o: Filters & { id: string; facets?: (Facet | "overall" |
   }
   const rows = [...fused.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, Math.min(o.limit ?? 10, 40));
   return {
-    like: card(base, {}, facets.filter((f): f is Facet => f !== "overall" && f !== "look")),
-    results: rows.map(([id, x]) => card(docs.get(id)!, { why: [...new Set(x.why)] }, facets.filter((f): f is Facet => f !== "overall" && f !== "look"))),
+    like: make(base, {}, facets.filter((f): f is Facet => f !== "overall" && f !== "look")),
+    results: rows.map(([id, x]) => make(docs.get(id)!, { why: [...new Set(x.why)] }, facets.filter((f): f is Facet => f !== "overall" && f !== "look"))),
   };
 }
 
@@ -599,7 +706,8 @@ export async function gather(o: Filters & { brief: string; facet_briefs?: Partia
   const out: Record<string, unknown[]> = {};
   for (const f of facets) {
     const filters: Filters = { ...o, ...(f === "motion" ? { has_motion: true } : f === "typography" ? { has_type: true } : {}) };
-    const found = (await search({ ...filters, query: briefFor(f), facets: [f], colors: f === "color" ? o.colors : undefined, limit: per * 4 })).results;
+    // The full cards, so this answer stays as it was: it reads open and matched off them.
+    const found = (await search({ ...filters, query: briefFor(f), facets: [f], colors: f === "color" ? o.colors : undefined, limit: per * 4, detail: "full" })).results as ReturnType<typeof card>[];
     // Prefer saves not already picked for another facet, so the mix is wider.
     const picks = [...found].sort((a, b) => (used.get(a.id) ?? 0) - (used.get(b.id) ?? 0)).slice(0, per);
     picks.forEach((p) => used.set(p.id, (used.get(p.id) ?? 0) + 1));
@@ -663,13 +771,36 @@ export function overview() {
 
 const abs = (rel: string) => join(MEDIA_DIR, rel);
 
-/** Everything about one save: the whole read, the files on disk, and the pictures the read was made from. */
-export function reference(id: string) {
+/**
+ * Everything about one save: the whole read, the files on disk, and the pictures the read was made from.
+ * With facets, only those parts of the read (and what to take from it), for when that's all
+ * that's needed: a fraction of the length. The pictures come back the same either way.
+ */
+export function reference(id: string, facets?: Facet[]) {
   const d = load().docs.get(id) ?? (() => {
     const hidden = db.query<{ id: string }, [string]>("SELECT id FROM refs WHERE id = ?").get(id);
     throw new Error(hidden ? `Save ${id} is hidden in Panel.` : `No save with id ${id}.`);
   })();
   const r = d.r;
+  const pictures = d.visuals.map((v) => ({ path: abs(v.rel), label: v.label }));
+  if (facets?.length) {
+    return {
+      doc: d,
+      data: {
+        id: r.id,
+        title: r.title || undefined,
+        type: d.type,
+        note: r.note || undefined,
+        tags: d.tags,
+        favorite: !!r.favorite,
+        ...Object.fromEntries(facets.map((f) => [f, facetView(d, f)])),
+        worth_taking: d.profile?.worth_taking,
+        // Searches give no link, so this is where the designer's way back to the save comes from.
+        open: panelUrl(r.id),
+      },
+      pictures,
+    };
+  }
   return {
     doc: d,
     data: {
@@ -698,6 +829,6 @@ export function reference(id: string) {
       pictures: d.visuals.map((v, i) => ({ n: i + 1, what: v.label, path: abs(v.rel) })),
       open: panelUrl(r.id),
     },
-    pictures: d.visuals.map((v) => ({ path: abs(v.rel), label: v.label })),
+    pictures,
   };
 }

@@ -4,6 +4,8 @@
     { "name": "panel", "runtimeExecutable": "bun", "runtimeArgs": ["run", "start"], "port": 4646 },
     { "name": "panel-dev", "runtimeExecutable": "bun", "runtimeArgs": ["run", "dev"], "port": 5173 },
     { "name": "panel-copy", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4747", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist", "bun", "server/index.ts"], "port": 4747 },
-    { "name": "panel-copy-figma", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4748", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist-figma", "bun", "server/index.ts"], "port": 4748 }
+    { "name": "panel-copy-figma", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4748", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist-figma", "bun", "server/index.ts"], "port": 4748 },
+    { "name": "panel-copy-voice", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4767", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist-voice", "bun", "server/index.ts"], "port": 4767 },
+    { "name": "panel-copy-search", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4757", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist", "bun", "server/index.ts"], "port": 4757 }
   ]
 }

@@ -3,6 +3,7 @@
 // small events; the app can leave and come back mid-answer and pick up where it was.
 
 import { fontLines, listFonts } from "./fonts.ts";
+import { brandLine, getBrandAsset, KIND_LABEL, listBrand } from "./brand.ts";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { db, getSetting, newId, now, setSetting } from "./db.ts";
@@ -17,6 +18,7 @@ import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { designRules } from "./rules.ts";
 import { partialHtml } from "./partial.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
+import { builderBrief, builderCard, builderNews, whichConversation, type Job } from "./duo.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS chats (
@@ -51,6 +53,12 @@ if (!chatCols.includes("card_hash")) db.exec("ALTER TABLE chats ADD COLUMN card_
 // How full the conversation is after its last answer, and where Claude Code summarizes it.
 if (!chatCols.includes("context_tokens")) db.exec("ALTER TABLE chats ADD COLUMN context_tokens INTEGER");
 if (!chatCols.includes("context_limit")) db.exec("ALTER TABLE chats ADD COLUMN context_limit INTEGER");
+// In "Plan, then build", the builder keeps a conversation of its own beside the chat's main one
+// (the planner's), so its model reads its own cached work instead of the planner's whole
+// conversation at full price on every hand-over. Empty until the first hand-over.
+if (!chatCols.includes("builder_session_id")) db.exec("ALTER TABLE chats ADD COLUMN builder_session_id TEXT");
+// Which version of the project card the builder's conversation was given (as card_hash is for the main one).
+if (!chatCols.includes("builder_card_hash")) db.exec("ALTER TABLE chats ADD COLUMN builder_card_hash TEXT");
 // Where the conversation belongs: the project it was started on, or '' for the library.
 // Each project keeps its own conversations, so going to another project doesn't carry
 // one conversation along. Empty (NULL) only for conversations from before this, until
@@ -113,12 +121,16 @@ export function setChatSettings(patch: Record<string, unknown>) {
 
 // ---------- What a message is ----------
 
+/**
+ * `builder`: done on the builder's own conversation (Plan, then build), so the planner's
+ * conversation never saw it and is told about it with the next message (builderNews).
+ */
 export type Part =
-  | { type: "text"; text: string }
+  | { type: "text"; text: string; builder?: true }
   /** The conversation was summarized here to make room (Claude Code's compaction). */
-  | { type: "compact"; pre: number; post?: number; done: true; model?: string }
+  | { type: "compact"; pre: number; post?: number; done: true; model?: string; builder?: true }
   /** `model`: which model did it, when two work on one answer (plan, then build). */
-  | { type: "thinking"; ms?: number; done?: boolean; model?: string }
+  | { type: "thinking"; ms?: number; done?: boolean; model?: string; builder?: true }
   | {
       type: "tool";
       model?: string;
@@ -130,6 +142,9 @@ export type Part =
       total?: number;
       error?: string;
       done?: boolean;
+      builder?: true;
+      /** make_sketch: the id of the sketch it made, so what was made can be named later. */
+      sketch?: string;
     };
 
 export type ChatEvent =
@@ -272,6 +287,8 @@ interface Run {
   card?: { project: string; hash: string };
   /** The card to give again if Claude Code summarizes the conversation during this answer. */
   keep?: string;
+  /** The card's version given to the builder's conversation, marked as given once the answer is done. */
+  builderCard?: string;
 }
 const runs = new Map<string, Run>();
 
@@ -284,6 +301,7 @@ How the app shows your answer:
 
 How to work:
 - Search before you say anything about the library. Search finds by words and by meaning, and by look when you describe one (look: "a dark dashboard with glowing charts"); found_by in its answer says which were used. If it says only "words", or results are thin, try other words or a facet.
+- Search answers are short cards for the best and a line each for the rest: open a save with get_reference before you say what to take from it, with facets when only one part matters.
 - Look at the pictures (get_reference) before you recommend a save for how it looks, when that matters.
 - Talk like a design partner: concrete about color (hex), type, layout and motion, and say what to take from each save. Keep it short; the pictures do the rest.
 - Collections in Panel are the designer's own. Don't make them or put saves in them.
@@ -306,7 +324,7 @@ Sketches (on a project's canvas):
 - Reply in a few lines: what it tries and what you'd look at. Don't paste its HTML or describe it at length; it's on the canvas. Say plainly what it doesn't do yet.
 - Changes to a sketch go through edit_sketch with small edits (exact find and replace). To keep a version and try something else, make a new sketch from it instead.
 - When the designer has a sketch selected, "this" means it: read it with get_sketch if you haven't seen it in this conversation.
-- Give every sketch knobs: declare its colors, fonts, type sizes, corner radius and spacing as CSS variables on :root and use them everywhere in place of fixed values (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space, and whatever else the page needs). The designer changes them live in the studio (Knobs) and tries palettes from their saves on them, without asking you. They also edit words in place, right in the page. When they kept a change that way, the next version you read has their values and their words: build on them, don't put yours back. Keep words in the HTML itself (not built by a script) where you can, so they can edit them.
+- Give every sketch knobs: declare its colors, fonts, type sizes, corner radius and spacing as CSS variables on :root and use them everywhere in place of fixed values (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space, and whatever else the page needs). Group them with blank lines, and where a name doesn't say what it is in plain words, write a short note beside it (--c1: #e2372b; /* Cortex */, --stop: 11; /* Route stop size */): the studio shows that note as the knob's name. The designer changes them live in the studio (Knobs) and tries palettes from their saves on them, without asking you. They also edit words in place, right in the page. When they kept a change that way, the next version you read has their values and their words: build on them, don't put yours back. Keep words in the HTML itself (not built by a script) where you can, so they can edit them.
 - Pass uses: the ids of the saves it takes from (type from one, color from another), so lines on the canvas show where it came from.
 - Make it something they can click through, not a picture: buttons, tabs, menus and forms that work. A flow of screens or its states (empty, loading, error, success) go in one sketch: list them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; buttons between screens set location.hash. The studio shows these as a map they can jump around. Check the other states with get_sketch state.
 - A mobile app screen is made for a phone: device "phone" (390×844). To check a desktop sketch on a phone, get_sketch with device.
@@ -382,10 +400,13 @@ function partialInput(json: string): Record<string, unknown> {
 function readable(text: string) {
   const { docs } = load();
   const asked = text.replace(/^(?:>[^\n]*(?:\n|$))+\s*/, "");
-  return (asked.trim() ? asked : text).replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
-    const d = docs.get(id);
-    return d ? cardOf(d).title : all;
-  });
+  return (asked.trim() ? asked : text)
+    .replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+      const d = docs.get(id);
+      return d ? cardOf(d).title : all;
+    })
+    .replace(/\[\[brand:([0-9a-f]{16})\]\]/g, (all, id: string) => getBrandAsset(id)?.name ?? all)
+    .replace(/\[\[brandkit:([0-9a-f]{16}|none)\]\]/g, (_, id: string) => (id === "none" ? "brand assets" : `${findProject(id)?.name ?? "the"} brand kit`));
 }
 
 /** A part of a sketch the designer pointed at in the studio. */
@@ -460,6 +481,10 @@ export async function send(chatId: string, text: string, context: SendContext = 
   emit(chatId, run, { t: "start", message });
 
   const said: string[] = [];
+  // Lines of `said` only the main conversation gets: its own copy of the card, and the note of
+  // what the builder made. The builder's conversation is given the card by its own count.
+  const mainOnly = new Set<number>();
+  let cardFor: { text: string; hash: string } | null = null;
   if (context.project) {
     const p = findProject(context.project);
     if (p) {
@@ -469,10 +494,12 @@ export async function send(chatId: string, text: string, context: SendContext = 
       const hash = String(Bun.hash(card));
       const had = db.query<{ card_project: string | null; card_hash: string | null }, [string]>("SELECT card_project, card_hash FROM chats WHERE id = ?").get(chatId);
       if (!chat.session_id || had?.card_project !== p.id || had?.card_hash !== hash) {
+        mainOnly.add(said.length);
         said.push(`${had?.card_project === p.id && chat.session_id ? "The project card has changed since you were given it; this one replaces it." : "Here is the project card."}\n<project-card>\n${card}\n</project-card>\n`);
         run.card = { project: p.id, hash };
       }
       run.keep = card;
+      cardFor = { text: card, hash };
       const sel = picked ? describeSelection(p.id, picked.nodes) : [];
       if (sel.length) said.push(`They have selected on the canvas: ${sel.join("; ")}. “This” and “these” mean what's selected; look at the saves with get_reference before you answer about them.`);
       const pt = context.point;
@@ -510,14 +537,42 @@ export async function send(chatId: string, text: string, context: SendContext = 
     const list = named.flatMap((id) => (docs.get(id) ? [`[[${id}]] (${cardOf(docs.get(id)!).title})`] : []));
     if (list.length) said.push(`The designer mentions ${list.join(", ")}: each [[id]] in their message is that save; look at it with get_reference when it matters.`);
   }
+  // Brand assets mentioned with @ arrive as [[brand:id]], a project's whole kit as [[brandkit:id]] ("none": no project's).
+  const assets = [...new Set([...clean.matchAll(/\[\[brand:([0-9a-f]{16})\]\]/g)].map((x) => x[1]!))].flatMap((id) => getBrandAsset(id) ?? []);
+  if (assets.length) said.push(`The designer mentions their brand asset${assets.length > 1 ? "s" : ""} (each [[brand:id]] in their message): ${assets.map((a) => brandLine(a)).join("; ")}. Use ${assets.length > 1 ? "them" : "it"} as given, the real file; look with get_brand_assets (ids) when how it looks matters.`);
+  for (const pid of new Set([...clean.matchAll(/\[\[brandkit:([0-9a-f]{16}|none)\]\]/g)].map((x) => x[1]!))) {
+    const kit = listBrand(pid);
+    const whose = pid === "none" ? "their brand assets that are in no project" : `the brand kit of “${kit[0]?.project_name ?? findProject(pid)?.name ?? "a project"}”`;
+    if (!kit.length) continue;
+    const kinds = [...new Set(kit.map((a) => KIND_LABEL[a.kind].toLowerCase()))].join(", ");
+    said.push(`[[brandkit:${pid}]] in their message is ${whose} (${kit.length}: ${kinds}): ${kit.map((a) => brandLine(a)).join("; ")}. Look with get_brand_assets when how they look matters.`);
+  }
   // A font of theirs named in the message ("@Söhne", or just "in Söhne"): say it's theirs, so it isn't looked for on the web.
   const fonts = listFonts().filter(({ family }) => namesWord(clean, family)).map(({ family }) => `“${family}” (font-family: "${family}")`);
   if (fonts.length) said.push(`The designer names their own font${fonts.length > 1 ? "s" : ""} ${fonts.join(", ")}, already loaded in every sketch.`);
+  // A small, pointed job ("make this button darker") doesn't need minutes of thought, or a
+  // plan: it runs at low effort whatever the setting (on the builder, when two models share
+  // the work), so the studio answers in seconds.
+  const pointed = !!context.point && context.point.mode !== "alternates";
+  const duoOn = chatSettings.mode() === "duo" && getSetting("chat_engine") !== "cli";
+  // Alternates: one run each, side by side, instead of one run making them one after another.
+  const base = fanBase(context, nodes);
+  const n = Math.min(4, Math.max(0, Math.floor(Number(context.fan) || 0)));
+  // What kind of job this is decides which conversation it continues (whichConversation).
+  const job: Job = compacting ? "compact" : base && n >= 2 && getSetting("chat_engine") !== "cli" ? "alternates" : pointed ? "pointed" : fig ? "figma" : "plain";
+  const builderSession = db.query<{ s: string | null }, [string]>("SELECT builder_session_id s FROM chats WHERE id = ?").get(chatId)?.s ?? null;
+  const conv = whichConversation({ duo: duoOn, job, main: chat.session_id, builder: builderSession });
   // What happened beside this conversation since its last message (alternates made in parallel).
   const news = compacting ? null : sideNews.get(chatId);
   if (news) {
     said.push(news);
     sideNews.delete(chatId);
+  }
+  // What the builder made on its own conversation, for the main one, which didn't see it.
+  const built = conv.on === "main" && !compacting ? builderNews(recentAnswers(chatId, messageId)) : "";
+  if (built) {
+    mainOnly.add(said.length);
+    said.push(built);
   }
   // Attached files: pictures to look at, PDFs to read, documents as their words, after the message.
   const attached = files.length ? await filesForClaude(files) : null;
@@ -529,23 +584,25 @@ export async function send(chatId: string, text: string, context: SendContext = 
   if (compacting) run.card = undefined;
   else if (said.length) words = `<panel-context>${said.join(" ")}</panel-context>\n\n${asked}`;
   const prompt: Prompt = attached?.blocks.length ? [{ type: "text", text: words }, ...attached.blocks] : words;
-  // A small, pointed job ("make this button darker") doesn't need minutes of thought, or a
-  // plan: it runs at low effort whatever the setting (on the builder, when two models share
-  // the work), so the studio answers in seconds.
-  const pointed = !!context.point && context.point.mode !== "alternates";
-  const duoOn = chatSettings.mode() === "duo" && getSetting("chat_engine") !== "cli";
+  // The same message as the builder's conversation gets it: without the main one's card and notes.
+  const forBuild = said.filter((_, i) => !mainOnly.has(i));
+  const builderWords = forBuild.length ? `<panel-context>${forBuild.join(" ")}</panel-context>\n\n${asked}` : asked;
   const model = duoOn ? chatSettings.buildModel() : chatSettings.model();
   // Rebuilding from Figma is a known job too (no plan needed), but a whole page: medium effort.
   const effort: Effort = pointed ? "low" : fig ? "medium" : chatSettings.effort();
-  // Alternates: one run each, side by side, instead of one run making them one after another.
-  const base = fanBase(context, nodes);
-  const n = Math.min(4, Math.max(0, Math.floor(Number(context.fan) || 0)));
-  if (compacting) void drive(chatId, run, chat.session_id, clean, model, "low").catch((e) => finish(chatId, run, "error", (e as Error).message));
-  else if (base && n >= 2 && getSetting("chat_engine") !== "cli") {
-    void fanOut(chatId, run, chat.session_id, { context: said.join(" "), asked, base, n, part: context.point?.mode === "alternates" ? context.point.label : undefined, attached: attached?.blocks })
-      .catch((e) => finish(chatId, run, "error", (e as Error).message));
-  } else if (duoOn && !pointed && !fig) void duo(chatId, run, chat.session_id, prompt).catch((e) => finish(chatId, run, "error", (e as Error).message));
-  else void drive(chatId, run, chat.session_id, prompt, model, effort).catch((e) => finish(chatId, run, "error", (e as Error).message));
+  const failed = (e: unknown) => finish(chatId, run, "error", (e as Error).message);
+  if (compacting) void drive(chatId, run, chat.session_id, clean, model, "low").catch(failed);
+  else if (job === "alternates") {
+    // In Plan, then build the copies branch from the builder's conversation, or start fresh
+    // with the card when there's none yet; in One model, from the main one, as always.
+    const extra = duoOn ? builderCard(cardFor, { session: builderSession, hash: db.query<{ h: string | null }, [string]>("SELECT builder_card_hash h FROM chats WHERE id = ?").get(chatId)?.h ?? null }) : null;
+    const ctx = duoOn ? [extra?.block ?? "", ...forBuild].filter(Boolean).join(" ") : said.join(" ");
+    void fanOut(chatId, run, conv.session, { context: ctx, asked, base: base!, n, part: context.point?.mode === "alternates" ? context.point.label : undefined, attached: attached?.blocks })
+      .catch(failed);
+  } else if (duoOn && job === "plain") void duo(chatId, run, chat.session_id, prompt, { message: builderWords, blocks: attached?.blocks, card: cardFor }).catch(failed);
+  // A pointed edit or a rebuild from Figma, in Plan, then build: the builder's own conversation.
+  else if (duoOn) void build(chatId, run, { effort, brief: (given) => builderBrief({ job: job === "figma" ? "figma" : "pointed", builder: modelName(model), message: builderWords, blocks: attached?.blocks, card: cardFor, given }) }).catch(failed);
+  else void drive(chatId, run, chat.session_id, prompt, model, effort).catch(failed);
   // A short name for a new conversation, made alongside the answer.
   if (!chat.title) void nameChat(chatId, readable(clean) || `Files: ${files.map((f) => f.name).join(", ")}`, run);
   return { user: out(db.query<Row, [string]>("SELECT * FROM chat_messages WHERE id = ?").get(userId)!), assistant: message };
@@ -591,6 +648,7 @@ function finish(chatId: string, run: Run, status: "done" | "stopped" | "error", 
   persist(run, status, error ?? null);
   // The card counts as given once an answer to it came back.
   if (run.card && status === "done") db.run("UPDATE chats SET card_project = ?, card_hash = ? WHERE id = ?", [run.card.project, run.card.hash, chatId]);
+  if (run.builderCard && status === "done") db.run("UPDATE chats SET builder_card_hash = ? WHERE id = ?", [run.builderCard, chatId]);
   db.run("UPDATE chats SET updated_at = ? WHERE id = ?", [now(), chatId]);
   emit(chatId, run, { t: "done", status, error });
   runs.delete(chatId);
@@ -613,6 +671,9 @@ export function projectCard(p: { id: string; name: string; brief?: string }) {
     else if (m.unreadable) lines.push(head, m.unreadable);
     else lines.push(head, `${m.length}. Not summarized yet; it starts: ${m.starts}`);
   }
+  // Its brand assets: the real logo for any sketch that shows the brand.
+  const kit = listBrand(p.id);
+  if (kit.length) lines.push("", "Its brand assets (use the real files; get_brand_assets to look at them):", ...kit.map((a) => `- ${brandLine(a)}`));
   return lines.join("\n");
 }
 
@@ -702,7 +763,7 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
 
 /** What the planner may use: Panel's tools that only read. Making and changing things is the builder's. */
 const READ_TOOLS = new Set(
-  ["get_design_rules", "get_fonts", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
+  ["get_design_rules", "get_fonts", "get_brand_assets", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
     .map((n) => `mcp__panel__${n}`),
 );
 
@@ -730,21 +791,38 @@ const plannerNote = (planner: string, builder: string) => `
 How you work right now: you are the planner, ${planner}, paired with a builder, ${builder}. You do the understanding and the taste: read the project and the rules, search, look at the saves, and decide. The builder does the making. You can only read; the tools that change things (make_sketch, edit_sketch, place_on_board, topics, notes, builds) are the builder's.
 - When the message only needs an answer (a question, an opinion, a search, a comparison), answer it yourself as usual and don't hand anything over.
 - When it needs something made or changed, think it through first: read what you need, search and look at the saves, decide. Then tell the designer in two or three lines what you're having made and why, and call hand_to_builder as your last step.
+- The builder doesn't see this conversation. It works in a conversation of its own and gets only your plan, the designer's message (with what they have selected or open) and the project card. So the plan must stand on its own: never "as above" or "the one we discussed"; write out each save's [[id]], each value and each piece of content again. After it has built, the designer's next message here starts with a short note of what it made.
 - The plan is everything the builder needs, since it won't search or judge taste on its own. Say what to make and where it hangs (from:, the project and topic), and each save to use with what to take from it ([[id]] and the exact thing: the hex, the font, the layout move). Give the structure part by part with the real content in the project's language, the type (families, sizes, weights, line heights), the color (hex and where each goes), spacing and corners, the states, and the knobs. Name the rules that matter most here, what to check in the pictures before finishing, and what not to do. Concrete values, not adjectives. Number the steps.`;
 
-const builderPrompt = (plan: string, planner: string, builder: string) => `<panel-context>You are the builder, ${builder}. ${planner}, the planner, has just read the project, looked at the references and written the plan below; the designer has seen its note. Carry the plan out with the tools: make or change what it says, from the saves it names, then look at the pictures that come back and fix what breaks the plan or the designer's rules. Follow the plan's choices; where it's silent, or something in it doesn't work, use your judgment and say so. Don't look for other references. Then reply to the designer in a few lines: what you made, and anything you did differently from the plan.</panel-context>
+/** The last few answers in a conversation, newest first, without the one being written now. */
+function recentAnswers(chatId: string, except: string): Part[][] {
+  return db
+    .query<{ parts: string | null }, [string, string]>("SELECT parts FROM chat_messages WHERE chat_id = ? AND role = 'assistant' AND id != ? ORDER BY created_at DESC, rowid DESC LIMIT 6")
+    .all(chatId, except)
+    .map((r) => {
+      try {
+        return JSON.parse(r.parts ?? "[]") as Part[];
+      } catch {
+        return [];
+      }
+    });
+}
 
-<plan>
-${plan}
-</plan>`;
+/** What the builder needs from this turn: the designer's message as it gets it, and the card. */
+interface ForBuilder {
+  /** The designer's message, its <panel-context> first, without the planner's card or notes. */
+  message: string;
+  blocks?: ContentBlockParam[];
+  card: { text: string; hash: string } | null;
+}
 
 /**
  * One answer by two models. The planner (Fable, by default, at high effort) reads, looks and
  * decides; a question it simply answers. When something is to be made, it writes a plan and
- * hands it over, and the builder (Opus, by default) continues the same conversation and
- * carries the plan out. Both show in the one answer, each step marked with its model.
+ * hands it over, and the builder (Opus, by default) carries the plan out in a conversation of
+ * its own (see build). Both show in the one answer, each step marked with its model.
  */
-async function duo(chatId: string, run: Run, sessionId: string | null, prompt: Prompt) {
+async function duo(chatId: string, run: Run, sessionId: string | null, prompt: Prompt, forBuilder: ForBuilder) {
   const bin = await claudeBinary();
   if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
   const token = await claudeToken();
@@ -763,7 +841,7 @@ async function duo(chatId: string, run: Run, sessionId: string | null, prompt: P
   if (run.stopped) return;
   if (sessionId && run.parts.length === 0 && (lost(first.stderr) || lost(p.state.resultError ?? ""))) {
     db.run("UPDATE chats SET session_id = NULL WHERE id = ?", [chatId]);
-    return duo(chatId, run, null, prompt);
+    return duo(chatId, run, null, prompt, forBuilder);
   }
   if (p.state.resultError) return finish(chatId, run, "error", friendly(p.state.resultError));
   if (!p.state.gotResult) return finish(chatId, run, "error", friendly(first.stderr.split("\n").pop() || "Claude Code stopped."));
@@ -777,18 +855,43 @@ async function duo(chatId: string, run: Run, sessionId: string | null, prompt: P
   }
   persist(run);
 
-  // The builder continues the same conversation, so the planner's reading and plan are in it, and next time the planner sees what was built.
-  const session = db.query<{ session_id: string | null }, [string]>("SELECT session_id FROM chats WHERE id = ?").get(chatId)?.session_id ?? null;
-  const b = reader(chatId, run, { model: builder, tag: builderName });
-  const second = await viaSdk(run, {
-    bin, token, prompt: builderPrompt(plan, plannerName, builderName), sessionId: session, mcpUrl, handle: b.handle, model: builder, effort: chatSettings.buildEffort(),
-    // The planner's tool is there (the conversation has a call to it) but isn't the builder's to use.
-    servers: { friday: handOver(() => {}) },
-    allow: panelOnly,
+  // The builder works in its own conversation, from a brief: the plan, the designer's message
+  // and the card. The planner hears what it made with its next message (builderNews).
+  const planText: string = plan;
+  return build(chatId, run, {
+    effort: chatSettings.buildEffort(),
+    tag: true,
+    brief: (given) => builderBrief({ job: "handover", builder: builderName, planner: plannerName, message: forBuilder.message, blocks: forBuilder.blocks, plan: planText, card: forBuilder.card, given }),
   });
+}
+
+/**
+ * The builder's model at work on the builder's own conversation (Plan, then build): a
+ * hand-over, a pointed edit or a rebuild from Figma. It continues that conversation, or
+ * starts it. Its tools and instructions are the same every time (Panel's tools, Panel's
+ * instructions, nothing of the planner's), since any change would throw its cache away.
+ * `tag`: mark its steps with its model, as the hand-over does beside the planner's.
+ */
+async function build(chatId: string, run: Run, o: { effort: Effort; tag?: boolean; brief: (given: { session: string | null; hash: string | null }) => { prompt: Prompt; card?: string } }) {
+  const bin = await claudeBinary();
+  if (!bin) throw new Error("The claude command line isn't installed, so the assistant can't answer.");
+  const token = await claudeToken();
+  const mcpUrl = `http://127.0.0.1:${PORT}/mcp?rules=0`;
+  const builder = chatSettings.buildModel();
+  const given = db.query<{ session: string | null; hash: string | null }, [string]>("SELECT builder_session_id session, builder_card_hash hash FROM chats WHERE id = ?").get(chatId) ?? { session: null, hash: null };
+  const { prompt, card } = o.brief(given);
+  run.builderCard = card;
+  const before = run.parts.length;
+  const b = reader(chatId, run, { model: builder, builder: true, ...(o.tag ? { tag: modelName(builder) } : {}) });
+  const res = await viaSdk(run, { bin, token, prompt, sessionId: given.session, mcpUrl, handle: b.handle, model: builder, effort: o.effort });
   if (run.stopped) return;
+  // Its conversation is gone (cleared by Claude Code): a new one starts quietly, with the card.
+  if (given.session && run.parts.length === before && (lost(res.stderr) || lost(b.state.resultError ?? ""))) {
+    db.run("UPDATE chats SET builder_session_id = NULL, builder_card_hash = NULL WHERE id = ?", [chatId]);
+    return build(chatId, run, o);
+  }
   if (b.state.resultError) return finish(chatId, run, "error", friendly(b.state.resultError));
-  if (!b.state.gotResult) return finish(chatId, run, "error", friendly(second.stderr.split("\n").pop() || "Claude Code stopped."));
+  if (!b.state.gotResult) return finish(chatId, run, "error", friendly(res.stderr.split("\n").pop() || "Claude Code stopped."));
   finish(chatId, run, "done");
 }
 
@@ -797,11 +900,16 @@ async function duo(chatId: string, run: Run, sessionId: string | null, prompt: P
  * the events the app follows. `side` is for a run working beside others on the same answer
  * (one alternate each): its tool steps show like any other, but its words are kept back
  * until the end and it doesn't change which conversation the chat continues.
+ * `builder` is for a run on the builder's own conversation (Plan, then build): it keeps that
+ * conversation's id in builder_session_id, leaves the meter (the main conversation's) alone,
+ * and marks its parts, so the planner can be told what was made (builderNews).
  */
-function reader(chatId: string, run: Run, o: { side?: boolean; model: string; tag?: string }) {
+function reader(chatId: string, run: Run, o: { side?: boolean; model: string; tag?: string; builder?: boolean }) {
   const side = !!o.side;
+  const builder = !!o.builder;
   // Which model it is, on its steps, when two models work on one answer.
   const tag = o.tag ? { model: o.tag } : {};
+  const mark = builder ? { builder: true as const } : {};
   // Per content block: what kind it is, and a tool's input as it's written.
   const blocks = new Map<number, { kind: string; toolId?: string; json?: string; started?: number; sketch?: boolean; drafted?: number; draft?: Extract<ChatEvent, { t: "draft" }> }>();
   const lastPart = () => run.parts.at(-1);
@@ -813,19 +921,21 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
     if (run.stopped) return;
     if (d.type === "system" && d.subtype === "compact_boundary" && !side) {
       const pre = Number(d.compact_metadata?.pre_tokens) || 0, post = Number(d.compact_metadata?.post_tokens) || undefined;
-      run.parts.push({ type: "compact", pre, post, done: true, ...tag });
+      run.parts.push({ type: "compact", pre, post, done: true, ...tag, ...mark });
       emit(chatId, run, { t: "compact", pre, post });
       persist(run);
       return;
     }
-    if (d.type === "panel_context" && !side) {
+    // How full the conversation is: the meter is the main conversation's, so a builder run leaves it.
+    if (d.type === "panel_context" && !side && !builder) {
       db.run("UPDATE chats SET context_tokens = ?, context_limit = ? WHERE id = ?", [d.used, d.limit, chatId]);
       emit(chatId, run, { t: "context", used: d.used, limit: d.limit });
       return;
     }
     if (d.type === "system" && d.subtype === "init" && d.session_id) {
       // A side run works in a copy of the conversation; the chat keeps its own.
-      if (!side) db.run("UPDATE chats SET session_id = ? WHERE id = ?", [d.session_id, chatId]);
+      if (builder) db.run("UPDATE chats SET builder_session_id = ? WHERE id = ?", [d.session_id, chatId]);
+      else if (!side) db.run("UPDATE chats SET session_id = ? WHERE id = ?", [d.session_id, chatId]);
       return;
     }
     if (d.type === "stream_event") {
@@ -836,12 +946,12 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
           blocks.set(e.index, { kind: "thinking", started: Date.now() });
           if (side) return;
           const last = lastPart();
-          if (!(last?.type === "thinking" && !last.done)) run.parts.push({ type: "thinking", ...tag });
+          if (!(last?.type === "thinking" && !last.done)) run.parts.push({ type: "thinking", ...tag, ...mark });
           emit(chatId, run, { t: "thinking", on: true, ...tag });
         } else if (b.type === "tool_use") {
           blocks.set(e.index, { kind: "tool", toolId: b.id, json: "", sketch: /(make|edit)_sketch$/.test(String(b.name)) });
           const name = String(b.name).replace(/^mcp__(panel|friday)__/, "");
-          run.parts.push({ type: "tool", id: b.id, name, ...tag });
+          run.parts.push({ type: "tool", id: b.id, name, ...tag, ...mark });
           emit(chatId, run, { t: "tool", id: b.id, name, ...tag });
         } else blocks.set(e.index, { kind: b.type });
       } else if (e.type === "content_block_delta") {
@@ -852,9 +962,10 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
             state.text += e.delta.text;
             return;
           }
+          // The builder's words start a part of their own, so they're told apart from the planner's.
           const last = lastPart();
-          if (last?.type === "text") last.text += e.delta.text;
-          else run.parts.push({ type: "text", text: e.delta.text });
+          if (last?.type === "text" && !!last.builder === builder) last.text += e.delta.text;
+          else run.parts.push({ type: "text", text: e.delta.text, ...mark });
           emit(chatId, run, { t: "text", delta: e.delta.text });
           if (Date.now() - lastSave > 1500) {
             lastSave = Date.now();
@@ -916,6 +1027,11 @@ function reader(chatId: string, run: Run, o: { side?: boolean; model: string; ta
         }
         const error = c.is_error ? text.slice(0, 300) : undefined;
         if (part && part.type === "tool") Object.assign(part, { refs, total, error, done: true });
+        // The sketch the builder's make_sketch made, by id, so the planner can be told which it was.
+        if (builder && part && part.type === "tool" && part.name === "make_sketch" && !c.is_error) {
+          const made = text.match(/"sketch":"([0-9a-f]{16})"/)?.[1];
+          if (made) part.sketch = made;
+        }
         emit(chatId, run, { t: "tool_result", id: c.tool_use_id, refs, cards: cards(refs), total, error });
       }
       persist(run);
@@ -1111,10 +1227,15 @@ interface SdkTurn {
 /**
  * Where FRIDAY's conversations get summarized, in tokens. Claude Code's own default for a
  * 1M-token model is near the end of the window (about 967K), so a long design chat, full
- * of pictures, would grow slow and costly and lose focus long before. Compacting at about
- * 290K keeps the conversation sharp; the project card comes back right after (see viaSdk).
+ * of pictures, would grow slow and costly and lose focus long before. Claude Code summarizes
+ * a little before the window it is given, so 240K means about 210K; the project card comes
+ * back right after (see viaSdk). It was 320K (about 290K) until Nov 2026: across 550 past
+ * requests the average conversation was 141K tokens and a quarter of all requests ran above
+ * 210K. Every step re-reads the whole conversation, and one picked up after an hour is
+ * written again in full, so its size is what both cost. The designer chose the middle
+ * between 150K and 320K.
  */
-const COMPACT_WINDOW = 320_000;
+const COMPACT_WINDOW = 240_000;
 
 /**
  * The name Claude Code is given for a model. Fable under its plain name gets a 200K window,

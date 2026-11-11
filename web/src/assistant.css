@@ -305,8 +305,8 @@
 
 @property --rim { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 .composer {
-  position: relative; z-index: 1; display: flex; flex-direction: column; padding: 6px 6px 6px 14px;
-  background: var(--raised); border-radius: calc(20px * var(--smooth)); corner-shape: var(--corner);
+  position: relative; z-index: 1; display: flex; flex-direction: column; padding: 10px 8px 8px 16px;
+  background: var(--raised); border-radius: calc(24px * var(--smooth)); corner-shape: var(--corner);
   box-shadow: inset 0 0 0 1px var(--line), 0 12px 32px -14px oklch(0 0 0 / 0.3), 0 1px 3px oklch(0 0 0 / 0.05);
   transition: box-shadow 0.25s var(--ease);
 }
@@ -323,11 +323,16 @@
 .composer.working::before { opacity: 0.95; }
 @keyframes rim { to { --rim: 360deg; } }
 .composer-row { display: flex; align-items: flex-end; gap: 8px; }
-.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px -4px -2px 0; }
-.composer-foot .model-chip { margin-left: -9px; }
+/* The foot sits 8px in from the left, right and bottom edges, the same as the composer's own
+   padding, so the model chip and Send hug the corners evenly (the corner's radius is the
+   buttons' plus that 8px, so the curves run parallel). The chip is as tall as the buttons and its
+   label lines up with the text above it. A clear gap above the foot keeps the words and the
+   controls apart. */
+.composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 10px 0 0 -8px; }
+.composer-foot .model-chip { height: 32px; padding: 0 9px 0 8px; }
 .composer textarea {
   flex: 1; min-width: 0; border: 0; outline: 0; background: none; resize: none; color: var(--text);
-  font-size: 13.5px; line-height: 20px; padding: 6px 0; max-height: 168px; overflow-y: auto;
+  font-size: 13.5px; line-height: 20px; padding: 6px 0; min-height: 52px; max-height: 168px; overflow-y: auto;
 }
 .composer-btn {
   width: 32px; height: 32px; border-radius: 50%; display: grid; place-items: center; flex: none;
@@ -340,19 +345,32 @@
 @keyframes send-ready { 50% { transform: scale(1.1); } }
 .composer-btn.stop { background: var(--fill); color: var(--text); }
 
-/* Speaking instead of typing (Voice.tsx): a quiet mic beside Send. While it listens it turns
-   solid, and a soft ring swells with the voice (--level, 0 to 1). */
-.composer-actions { display: flex; align-items: center; gap: 4px; min-width: 0; }
-.composer-btn.mic { position: relative; color: var(--muted); animation: none; transition: background 0.15s var(--ease), color 0.15s var(--ease); }
+/* Speaking instead of typing (Voice.tsx): a quiet mic beside Send. While it listens the mic turns
+   soft blue, and a row of waves beside it moves with the voice: a new bar on the right as
+   tall as the voice (--h, 0 to 1), dots when it's quiet. Stopping dims them while the last words
+   come back. */
+.composer-actions { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.composer-btn.mic { position: relative; color: var(--muted); animation: none; transition: background 0.15s var(--ease), color 0.15s var(--ease), opacity 0.2s var(--ease); }
 .composer-btn.mic:hover { background: var(--fill); color: var(--text); }
-.composer-btn.mic.on, .composer-btn.mic.starting, .composer-btn.mic.finishing { background: var(--text); color: var(--bg); }
-.composer-btn.mic.starting, .composer-btn.mic.finishing { opacity: 0.6; }
-.composer-btn.mic::before {
-  content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--text); opacity: 0.14; z-index: -1;
-  transform: scale(calc(1 + var(--level, 0) * 0.55)); transition: transform 0.08s linear, opacity 0.2s var(--ease);
+/* Listening is the one place the composer takes a colour: a soft blue, so it's plain at a glance
+   that the microphone is open. */
+.composer-btn.mic { --listen: oklch(0.55 0.17 255); --listen-bg: oklch(0.55 0.17 255 / 0.12); }
+@media (prefers-color-scheme: dark) { .composer-btn.mic { --listen: oklch(0.72 0.14 252); --listen-bg: oklch(0.62 0.15 255 / 0.22); } }
+.composer-btn.mic.on, .composer-btn.mic.starting, .composer-btn.mic.finishing,
+.composer-btn.mic.on:hover, .composer-btn.mic.starting:hover { background: var(--listen-bg); color: var(--listen); }
+.composer-btn.mic.finishing { opacity: 0.5; cursor: default; }
+.composer-voice-waves {
+  display: flex; align-items: center; gap: 3px; height: 32px; padding: 0 8px 0 2px; margin-left: 12px; flex: 0 1 auto; min-width: 0; overflow: hidden;
+  /* The oldest bars fade out on the left, so the row has no hard edge. */
+  -webkit-mask: linear-gradient(to right, transparent, #000 28%); mask: linear-gradient(to right, transparent, #000 28%);
+  animation: waves-in 0.3s var(--ease) both; transition: opacity 0.25s var(--ease);
 }
-.composer-btn.mic:not(.on)::before { opacity: 0; transform: scale(1); }
-.composer-btn.mic { isolation: isolate; }
+.composer-voice-waves i {
+  flex: none; width: 2.5px; border-radius: 2px; background: var(--muted);
+  height: calc(2.5px + var(--h, 0) * 15.5px); transition: height 0.09s linear;
+}
+.composer-voice-waves.starting, .composer-voice-waves.finishing { opacity: 0.4; }
+@keyframes waves-in { from { opacity: 0; transform: translateX(6px); } }
 .composer-voice-lang {
   height: 22px; padding: 0 6px; border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner);
   font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; color: var(--muted); background: var(--fill);
@@ -360,7 +378,7 @@
 }
 .composer-voice-lang:hover { color: var(--text); background: var(--fill-hover); }
 .composer-voice-problem { font-size: 11.5px; color: var(--muted); text-align: right; line-height: 1.3; max-width: 190px; }
-@media (prefers-reduced-motion: reduce) { .composer-btn.mic::before, .composer-voice-lang { transition: none; animation: none; } }
+@media (prefers-reduced-motion: reduce) { .composer-voice-waves, .composer-voice-waves i, .composer-voice-lang { transition: none; animation: none; } }
 
 /* Which model answers: a quiet chip beside Send, and its menu. */
 .model-chip {
@@ -397,7 +415,7 @@
 .mp-use-bar i { display: block; height: 100%; background: var(--muted); border-radius: 2px; }
 .composer-btn.stop:hover { background: var(--fill-hover); }
 .composer-context {
-  display: flex; align-items: center; gap: 7px; height: 28px; margin: 0 0 2px -8px; padding: 0 2px 0 3px;
+  display: flex; align-items: center; gap: 7px; height: 28px; margin: 0 0 6px -8px; padding: 0 2px 0 3px;
   font-size: 12px; color: var(--text); min-width: 0; animation: rise-in 0.4s var(--ease) both;
 }
 .composer-context img { width: 20px; height: 20px; border-radius: 6px; object-fit: cover; flex: none; }
@@ -622,3 +640,10 @@
   .rt-live .w, .ref-chip, .gallery-card, .step, .msg-bubble, .ask-idea, .mention-pick, .mention-row, .composer-mention, .reply-btn, .composer-quote, .composer-file, .msg-file-pic { animation: none !important; }
   .mark i, .composer::before { animation: none !important; }
 }
+
+/* Brand assets in the @ list, in the composer and in messages: a logo shows whole, never cropped. */
+.mention-brand img, .brand-chip .ref-chip-thumb img, .composer-mention img.brand-mention-img { object-fit: contain; padding: 2px; box-sizing: border-box; background: oklch(0.965 0 0); }
+.mention-brand.on-light { background: oklch(0.965 0 0); }
+.mention-brand.on-dark, .mention-brand.on-dark img, img.on-dark { background: oklch(0.2 0 0); }
+.mention-brand img { padding: 4px; }
+.brand-chip .ref-chip-thumb { display: grid; place-items: center; color: var(--muted); }

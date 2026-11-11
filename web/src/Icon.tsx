@@ -17,6 +17,8 @@ const paths = {
   "chevron-left": <path d="m14.5 6-6 6 6 6" />,
   "chevron-right": <path d="m9.5 6 6 6-6 6" />,
   external: <path d="M14 5h5v5M19 5l-8 8M17 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h4" />,
+  // Brand assets: a logo is a mark, so three plain marks.
+  brand: <><circle cx="8" cy="8" r="3.5" /><rect x="13" y="4.5" width="7" height="7" rx="1.5" /><path d="M8.5 13.5 12.5 20h-8l4-6.5Z" /><path d="M14 16.5h6" /></>,
   folder: <path d="M4 7a2 2 0 0 1 2-2h3.5l2 2H18a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z" />,
   trash: <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" />,
   refresh: <path d="M19 12a7 7 0 1 1-2.1-5M19 4v4h-4" />,
@@ -64,6 +66,7 @@ const paths = {
   terminal: <><rect x="3.5" y="5" width="17" height="14" rx="2.5" /><path d="m7.5 10 2.5 2-2.5 2M12.5 14.5h4" /></>,
   compose: <path d="M11.5 5H7a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4.5M17.2 4.8l2 2L12 14l-2.8.8.8-2.8 7.2-7.2Z" />,
   mic: <><rect x="9" y="3.5" width="6" height="11" rx="3" /><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" /></>,
+  pipette: <path d="m13.5 7.5 3 3M15.8 4.7a2.1 2.1 0 0 1 3 3l-1.8 1.8-3-3 1.8-1.8ZM14 9 7 16l-2.5.5L5 14l7-7" />,
   figma: <path d="M12 3.5H9.25a2.75 2.75 0 0 0 0 5.5H12M12 3.5v5.5M12 3.5h2.75a2.75 2.75 0 0 1 0 5.5H12M12 9H9.25a2.75 2.75 0 0 0 0 5.5H12M12 9v5.5M12 14.5H9.25a2.75 2.75 0 1 0 2.75 2.75V14.5ZM14.75 9a2.75 2.75 0 1 1 0 5.5 2.75 2.75 0 0 1 0-5.5Z" />,
 };
 

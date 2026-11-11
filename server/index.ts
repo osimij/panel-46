@@ -15,6 +15,7 @@ import { apply, createProject, deleteProject, follow as followProject, getProjec
 import { captureForFigma, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
 import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
+import { addBrandAsset, brandFile, listBrand, removeBrandAsset, updateBrandAsset } from "./brand.ts";
 import { setSketchText, setSketchVars, sketchInfo, sketchMeta } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
@@ -396,6 +397,27 @@ async function handle(req: Request): Promise<Response> {
     });
   }
 
+  // Brand assets (brand.ts), for sketches and the app. Like fonts, a sketch in its sandbox asks
+  // before loading one, and the CORS header says yes. An SVG opened by itself can't run scripts
+  // as Panel (its own sandbox); files a browser can't show are downloaded under their own name.
+  if (path.startsWith("/brand/")) {
+    if (![`${HOST}:${PORT}`, `localhost:${PORT}`].includes(req.headers.get("host") ?? "")) return bad("Not allowed from here.", 403);
+    const f = brandFile(path.slice("/brand/".length));
+    if (!f) return bad("Not found", 404);
+    const download = url.searchParams.has("download") || !f.showable;
+    return new Response(Bun.file(f.path), {
+      headers: {
+        "content-type": f.mime,
+        "content-disposition": `${download ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(f.original_name || path.slice(7))}`,
+        // (Chrome's PDF viewer doesn't open in a sandbox, and a PDF can't act as Panel anyway.)
+        ...(f.format === "pdf" ? {} : { "content-security-policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:" }),
+        "access-control-allow-origin": "*",
+        "x-content-type-options": "nosniff",
+        "cache-control": "public, max-age=31536000, immutable",
+      },
+    });
+  }
+
   // The library for AI apps (MCP over HTTP). Stateless: each request gets its own server.
   // Only this Mac's own addresses are accepted, so a web page can't reach it by DNS tricks.
   if (path === "/mcp") {
@@ -442,6 +464,35 @@ async function handle(req: Request): Promise<Response> {
   }
   const fontRoute = path.match(/^\/api\/fonts\/([0-9a-f]{16})$/);
   if (fontRoute && m === "DELETE") return json(removeFonts({ id: fontRoute[1]! }));
+
+  // ---- Brand assets: each project's logos, icons and files, for sketches and builds ----
+  if (path.startsWith("/api/brand") && !fromPanel(req)) return bad("Not allowed from here.", 403);
+  if (path === "/api/brand" && m === "GET") return json(listBrand(url.searchParams.get("project") ?? undefined));
+  if (path === "/api/brand" && m === "POST") {
+    const form = await req.formData();
+    const project = String(form.get("project") ?? "") || null;
+    const kind = String(form.get("kind") ?? "") || undefined;
+    const added = [];
+    const failed: string[] = [];
+    for (const f of form.getAll("file")) {
+      if (typeof f === "string") continue;
+      try {
+        added.push(await addBrandAsset(f, project === "none" ? null : project, kind));
+      } catch (e) {
+        failed.push((e as Error).message);
+      }
+    }
+    return json({ added, failed });
+  }
+  const brandRoute = path.match(/^\/api\/brand\/([0-9a-f]{16})$/);
+  if (brandRoute && m === "PATCH") {
+    try {
+      return json(updateBrandAsset(brandRoute[1]!, (await req.json().catch(() => ({}))) as Record<string, unknown>));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  if (brandRoute && m === "DELETE") return json(removeBrandAsset(brandRoute[1]!));
 
   // ---- The assistant ----
   // It spends your Claude plan and can change collections, so only Panel's own page may use

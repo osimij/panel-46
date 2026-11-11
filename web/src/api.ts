@@ -968,3 +968,47 @@ export const fontApi = {
 /** A font file, by its name: what Panel can take as one of the designer's fonts. */
 export const isFontFile = (f: File) => /\.(woff2?|ttf|otf)$/i.test(f.name);
 
+
+// ---------- Brand assets: each project's logos, icons and files ----------
+
+export const BRAND_KINDS = ["logo", "icon", "image", "pattern", "guide", "other"] as const;
+export type BrandKind = (typeof BRAND_KINDS)[number];
+/** How each kind is named where assets are grouped. */
+export const BRAND_KIND_LABEL: Record<BrandKind, string> = {
+  logo: "Logos", icon: "Icons", image: "Images", pattern: "Patterns", guide: "Guidelines", other: "Other files",
+};
+/** One of a kind, for menus ("Make it a logo"). */
+export const BRAND_KIND_ONE: Record<BrandKind, string> = {
+  logo: "Logo", icon: "Icon", image: "Image", pattern: "Pattern", guide: "Guideline", other: "Other",
+};
+
+export interface BrandAsset {
+  id: string;
+  project_id: string | null;
+  project_name: string | null;
+  kind: BrandKind;
+  name: string;
+  format: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  original_name: string;
+  url: string;
+  thumb_url: string | null;
+  created_at: string;
+}
+
+export const brandApi = {
+  /** All of them, or one project's ("none": those in no project). */
+  list: (project?: string) => call<BrandAsset[]>(`/api/brand${project ? `?project=${encodeURIComponent(project)}` : ""}`),
+  add: (files: File[], project: string | null, kind?: BrandKind) => {
+    const form = new FormData();
+    form.append("project", project ?? "none");
+    if (kind) form.append("kind", kind);
+    for (const f of files) form.append("file", f, f.name);
+    return call<{ added: BrandAsset[]; failed: string[] }>("/api/brand", { method: "POST", body: form });
+  },
+  update: (id: string, patch: { name?: string; kind?: BrandKind; project_id?: string | null }) =>
+    call<BrandAsset>(`/api/brand/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
+  remove: (id: string) => call<{ removed: number }>(`/api/brand/${id}`, { method: "DELETE" }),
+};

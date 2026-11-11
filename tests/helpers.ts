@@ -24,13 +24,17 @@ function sparePort() {
   return port;
 }
 
-/** `env`: more settings for the companion, e.g. a stand-in for the Figma app (PANEL_FIGMA_APP). */
-export async function startPanel(env: Record<string, string> = {}): Promise<TestPanel> {
+/**
+ * `env`: more settings for the companion, e.g. a stand-in for the Figma app (PANEL_FIGMA_APP).
+ * `sql`: run on the empty library before Panel first opens it, e.g. to start from an older one.
+ */
+export async function startPanel(env: Record<string, string> = {}, sql = ""): Promise<TestPanel> {
   const dir = mkdtempSync(join(tmpdir(), "panel-test-"));
   // Reading new saves by AI is off before Panel first looks, so a test never spends anything.
   const seed = new Database(join(dir, "library.sqlite"), { create: true });
   // (Nor does it fetch the models for search by meaning.)
   seed.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO settings VALUES ('ai_auto', '0'), ('meaning_search', '0');");
+  if (sql) seed.exec(sql);
   seed.close();
 
   const port = sparePort();

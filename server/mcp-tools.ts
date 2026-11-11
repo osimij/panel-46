@@ -5,6 +5,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readMaterial } from "./materials.ts";
 import { fontLines } from "./fonts.ts";
+import { BRAND_KINDS, brandLine, brandPaths, getBrandAsset, listBrand } from "./brand.ts";
 import { designRules } from "./rules.ts";
 import { chosenRefs, findProject, listProjects, projectsOf, summary, verdicts, REF_STATES, TOPIC_FACETS } from "./projects.ts";
 import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, sketchMeta, type SketchResult } from "./board.ts";
@@ -20,20 +21,21 @@ const INSTRUCTIONS = `Panel is a designer's private library of saved design refe
 Use it to find references for a brief and to combine them: color from one save, type from another, motion from a third.
 - Start with library_overview to learn the words the library uses (moods, fonts, motion techniques).
 - gather_for_brief gives the best saves per facet for a brief in one call.
-- search_library finds by words and, when its answer says found_by includes "meaning", by meaning too (a save described in other words still comes up, in English or Russian). Give it look ("a dark dashboard with glowing charts") to find by the pictures themselves. If found_by is only "words", matching is by words alone: try synonyms when results are thin.
+- search_library finds by words and, when its answer says found_by includes "meaning", by meaning too (a save described in other words still comes up, in English or Russian). Give it look ("a dark dashboard with glowing charts") to find by the pictures themselves. If found_by is only "words", matching is by words alone: try synonyms when results are thin. It answers with short cards for the best and one line each for the rest.
 - find_by_color matches measured palettes by hex (ΔE distance).
 - similar_to finds saves like one you have, by facet; the facet "look" compares the pictures themselves.
-- get_reference returns everything about a save, and its pictures so you can look at it yourself. Look before you recommend. For a website it also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures. Searching typography for a font's name, or for "cyrillic" or "tajik", finds sites whose own fonts have those letters.
+- get_reference returns everything about a save (the whole read, what's worth taking), and its pictures so you can look at it yourself; with facets, only those parts. Open and look before you recommend. For a website it also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures. Searching typography for a font's name, or for "cyrillic" or "tajik", finds sites whose own fonts have those letters.
 - Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials (files and links the designer added: specs, brand books, sites); get_project_material reads a material in full. When working on a project, read it and the materials that matter first, and build from its locked decisions.
 - get_verdicts is the designer's taste across every project: what they chose and ruled out, with their reasons. Lean on it.
 - On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
 - To try a direction before anyone builds it, make_sketch puts a quick page on the canvas: one self-contained HTML file. You get back pictures of it as rendered; look, check it against the brief and the rules, and fix it with edit_sketch before showing it. get_sketch reads one back, on any device or in any of its states.
 - The designer uploads their own fonts to Panel (get_fonts lists them). Every sketch has them loaded already: write font-family with the family's name, no @font-face or link. When the designer names one, use it.
-- Give a sketch knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those.
+- Each project can have brand assets (get_brand_assets): the client's real logos, icons, pictures, patterns and brand books. When a sketch shows the brand, use its real logo with <img src="/brand/…"> (the src given), never a drawn stand-in. When building for real, copy the files from their path on this Mac.
+- Give a sketch knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. Where a name doesn't say what it is, write a short plain note beside it (--c1: #e2372b; /* Cortex */): the studio shows it as the knob's name. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those.
 - A sketch can be clickable: a flow of screens, or states (empty, loading, error). List them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.
 - A sketch can go to Figma and come back: the designer copies it into Figma from the studio, changes it there, and brings it back. get_figma_frame then gives the Figma frame beside the page it started from; rebuild the page with edit_sketch as its next version, keeping its knobs, states and scripts.
 - When the designer chooses a sketch, get_handoff writes down everything needed to build it, and start_build hands it to Claude Code to build in their code (get_build, message_build follow it).
-Always give the designer the "open" link for each save you recommend, so they can watch or look at the original.`;
+For each save you recommend, give the designer its "open" link from get_reference's answer, so they can watch or look at the original.`;
 
 const RULES_NOTE = `
 - The designer keeps standing rules for every design (unugly.md): get_design_rules returns them, and get_project starts with them. Read them before you design, build or judge anything, follow them over any reference, and check the result against them before you show it.`;
@@ -55,6 +57,10 @@ const filterShape = {
   whitespace: z.enum(["minimal", "moderate", "generous"]).optional(),
   pace: z.enum(["slow", "medium", "fast"]).optional().describe("Pace of the motion."),
 };
+
+// How much each save in a search's answer says. Short is the default because a search is
+// read in full by the model, and most of a full card only matters for the saves it then opens.
+const detail = z.enum(["short", "full"]).optional().describe("short (default): a short card each. full: the whole card, up to 4× longer; only when you need every save's detail.");
 
 type Content = ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
 
@@ -139,6 +145,42 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     return { content: [{ type: "text" as const, text: lines.length ? `The designer's fonts, loaded in every sketch (write font-family with the name in quotes, plus a fallback):\n${lines.map((l) => `- ${l}`).join("\n")}` : "The designer hasn't uploaded any fonts yet." }] };
   });
 
+  server.registerTool("get_brand_assets", {
+    title: "Brand assets",
+    description: "The brand assets the designer keeps in Panel: each project's real logos, icons, images, patterns and brand books (guides), as files. Each comes with the src a sketch uses (<img src=\"/brand/….svg\">, which works in every sketch as is) and its path on this Mac for building for real. With pictures, you also see them (an SVG's own code comes too, when it's small). Use the real logo whenever a sketch shows the brand, never a drawn stand-in.",
+    inputSchema: {
+      project: z.string().optional().describe("A project's id or name: only its assets. \"none\" for those in no project. Leave out for all of them."),
+      ids: z.array(z.string()).optional().describe("Particular assets, by id (from a list, or [[brand:id]] in the designer's message)."),
+      kind: z.enum(BRAND_KINDS).optional().describe("Only one kind: logo, icon, image, pattern, guide (brand books) or other."),
+      pictures: z.boolean().optional().describe("Look at them too (default: true when ids are given or there are 8 or fewer)."),
+    },
+    annotations: readOnly,
+  }, async ({ project, ids, kind, pictures }) => {
+    let list = ids?.length ? ids.flatMap((id) => getBrandAsset(id) ?? []) : listBrand(project === undefined ? undefined : project === "none" ? "none" : findProject(project)?.id ?? project);
+    if (kind) list = list.filter((a) => a.kind === kind);
+    if (!list.length) return { content: [{ type: "text" as const, text: ids?.length ? "Those assets aren't in Panel." : "No brand assets there yet. The designer adds them in Panel (Brand assets, in the sidebar)." }] };
+    const content: Content = [{
+      type: "text",
+      text: `Brand assets (src works in any sketch as is; path is the file on this Mac):\n${list.map((a) => `- ${brandLine(a)}; path: ${brandPaths(a.id)?.file}`).join("\n")}`,
+    }];
+    const look = pictures ?? (!!ids?.length || list.length <= 8);
+    if (look) {
+      for (const a of list.slice(0, 12)) {
+        const where = brandPaths(a.id);
+        if (a.format === "svg" && a.size <= 12_000) {
+          const code = await Bun.file(where!.file).text().catch(() => "");
+          if (code) content.push({ type: "text", text: `“${a.name}” as SVG code:\n${code}` });
+        }
+        const pic = where?.look;
+        const mime = pic?.endsWith(".png") ? "image/png" : /\.jpe?g$/.test(pic ?? "") ? "image/jpeg" : pic?.endsWith(".webp") ? "image/webp" : null;
+        if (!pic || !mime || !existsSync(pic)) continue;
+        content.push({ type: "text", text: `“${a.name}” (${a.kind}, ${a.format.toUpperCase()}):` });
+        content.push({ type: "image", data: Buffer.from(await Bun.file(pic).arrayBuffer()).toString("base64"), mimeType: mime });
+      }
+    }
+    return { content };
+  });
+
   server.registerTool("get_verdicts", {
     title: "The designer's verdicts",
     description: "Everything the designer has chosen and ruled out across all their projects, grouped by the reason they gave: what they keep choosing and what they keep turning down, in their own words, with examples. Read it before suggesting references or sketching, to lean on their taste, and to notice a reason that keeps coming back (worth offering as a line for their rules).",
@@ -155,7 +197,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("search_library", {
     title: "Search the library",
-    description: "Find saves by words and by meaning: saves that match the words come first by how many they match, and saves whose design reads say the same thing in other words are found too (found_by in the answer says which ways were used; with only \"words\", search a few phrasings). With facets, the search stays within those facets only: e.g. query \"stagger spring\" with facets [\"motion\"] finds motion that staggers, not a poster that mentions springs. With look, saves are ranked by their pictures against your description. With no query, lists the newest saves that pass the filters. Combine with colors and filters freely.",
+    description: "Find saves by words and by meaning: saves matching more words come first, and saves whose reads say the same in other words are found too (found_by says which ways were used; with only \"words\", try a few phrasings). With facets, the search stays within those facets: query \"stagger spring\" with facets [\"motion\"] finds motion that staggers, not a poster that mentions springs. With look, saves are ranked by how their pictures match it. No query: the newest. Combine with colors and filters. Answers with short cards for the best and a line each for the rest; the whole read is in get_reference.",
     inputSchema: {
       query: z.string().optional().describe("Words to look for: mood, style, technique, component, font, subject, creator…"),
       look: z.string().optional().describe("How it should look, described plainly in English, e.g. \"a dark dashboard with glowing charts\" or \"a poster with one huge red word\". Matches the pictures themselves, not what was written about them. Alone or together with query."),
@@ -165,6 +207,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       ...filterShape,
       limit: z.number().int().min(1).max(60).optional().describe("Default 12."),
       offset: z.number().int().min(0).optional(),
+      detail,
     },
     annotations: readOnly,
   }, safe((a) => search(a)));
@@ -180,6 +223,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       role: z.string().optional().describe("Only swatches whose role contains this word: background, accent, text, surface…"),
       ...filterShape,
       limit: z.number().int().min(1).max(60).optional(),
+      detail,
     },
     annotations: readOnly,
   }, safe((a) => findByColor(a)));
@@ -192,6 +236,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       facets: z.array(z.enum([...FACETS, "overall", "look"])).optional().describe("Default [\"overall\"]. look: by the pictures themselves."),
       ...filterShape,
       limit: z.number().int().min(1).max(40).optional().describe("Default 10."),
+      detail,
     },
     annotations: readOnly,
   }, safe((a) => similar(a)));
@@ -213,17 +258,18 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("get_reference", {
     title: "Open a save",
-    description: "Everything about one or more saves: the whole design read, measured palette with roles, the designer's note and tags, the source link, the original files on this Mac (images, videos) and the pictures the read was made from. With images, returns those pictures so you can see the save yourself: for a video they are frame grids in time order and motion close-ups 0.1s apart; for a site, crops and the whole page folded into columns.",
+    description: "Everything about one or more saves: the whole design read (every facet, what's worth taking), measured palette with roles, the designer's note and tags, the source link, the original files on this Mac and the pictures the read was made from. Searches give short cards: open a save before saying what to take from it. With images, you see those pictures: for a video, frame grids in time order and motion close-ups 0.1s apart; for a site, crops and the whole page folded into columns.",
     inputSchema: {
       ids: z.array(z.string()).min(1).max(10),
       images: z.enum(["none", "first", "all"]).optional().describe("Pictures to include: none, first (default) or all."),
+      facets: z.array(facet).optional().describe("Only these parts of the read, when that's all you need: much shorter."),
     },
     annotations: readOnly,
-  }, async ({ ids, images = "first" }) => {
+  }, async ({ ids, images = "first", facets }) => {
     const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
     for (const id of ids) {
       try {
-        const { data, pictures } = reference(id);
+        const { data, pictures } = reference(id, facets);
         const used = projectsOf(id);
         content.push({ type: "text", text: JSON.stringify(used.length ? { ...data, in_projects: used.map((p) => ({ project: p.name, state: p.state ?? "kept" })) } : data) });
         for (const p of images === "none" ? [] : images === "first" ? pictures.slice(0, 1) : pictures) {
@@ -263,6 +309,9 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
         ...(rules ? [{ type: "text" as const, text: `${rulesHeading}\n\n${rules}` }] : []),
         { type: "text", text: JSON.stringify(summary(project)) },
       ];
+      // Its brand assets, so a sketch uses the real logo without being told where it is.
+      const kit = listBrand(findProject(project)?.id ?? project);
+      if (kit.length) content.push({ type: "text", text: `Its brand assets (get_brand_assets to see them):\n${kit.map((a) => `- ${brandLine(a)}`).join("\n")}` });
       if (pictures) {
         for (const id of chosenRefs(project).slice(0, 12)) {
           try {

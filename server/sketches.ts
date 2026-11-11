@@ -185,6 +185,9 @@ const KIT = `<script data-panel-kit>(() => {
     }
     if (picking && e.key === "Escape") post({ t: "cancel" });
   }, true);
+  // Escape on the page (after a click on it, the keys go here, not to the studio) steps back
+  // in the studio too, unless the page used it itself, to close its own menu say.
+  addEventListener("keydown", (e) => { if (e.key === "Escape" && !picking && !e.defaultPrevented) post({ t: "cancel" }); });
   addEventListener("scroll", () => { if (editing) return; if (hold) place(hold); else if (over && picking) place(over); }, true);
   addEventListener("message", (e) => {
     if (e.source !== parent || !e.data || !e.data.panel) return;
@@ -197,16 +200,99 @@ const KIT = `<script data-panel-kit>(() => {
     if (m.t === "state") { const h = m.slug ? "#" + m.slug : ""; if (location.hash !== h) { if (h) location.hash = h; else { history.replaceState(null, "", location.pathname + location.search); dispatchEvent(new HashChangeEvent("hashchange")); } } }
     if (m.t === "hello") hello();
     if (m.t === "vars") document.fonts.ready.then(() => { const v = vars(); post({ t: "vars", vars: v, fonts: found(v) }); });
+    if (m.t === "show") show(m.name);
     if (m.t === "set") { const root = document.documentElement.style; for (const k in m.vars) { if (!/^--[A-Za-z0-9_-]+$/.test(k)) continue; if (m.vars[k] == null) root.removeProperty(k); else root.setProperty(k, String(m.vars[k])); } }
     if (m.t === "scroll") { quiet = true; scrollTo(0, m.y); requestAnimationFrame(() => requestAnimationFrame(() => { quiet = false; })); }
     if (m.t === "follow") following = !!m.on;
   });
   // The page's knobs: the CSS variables it declares on :root (its colors, fonts, sizes, radius, spacing).
+  // With each, what the studio needs to make it a knob a designer understands: the note written
+  // beside it (--c1: #e2372b; /* Cortex */), the lines it was grouped with in the page's own
+  // :root (a blank line or a comment line starts a new group), and where the page uses it
+  // (font-size, a "wght" axis, padding, the page's own script), so a weight gets a weight's
+  // range and lands under Type whatever it's called.
+  let usage = { rules: {}, via: {} };
   const vars = () => {
     const out = [], seen = new Set();
     const walk = (rules) => { for (const r of rules) { if (r.cssRules && !r.selectorText) { walk(r.cssRules); continue; } if (r.style && /^(:root|html)$/.test((r.selectorText || "").trim())) for (const n of r.style) if (n.startsWith("--") && !seen.has(n)) { seen.add(n); out.push({ name: n, value: r.style.getPropertyValue(n).trim() }); } } };
     for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
-    return out.slice(0, 80);
+    const list = out.slice(0, 80), about = notes(), used = uses();
+    for (const v of list) { const a = about[v.name]; if (a) { if (a.note) v.note = a.note; v.group = a.group; if (a.heading) v.heading = a.heading; } v.uses = used(v.name); }
+    return list;
+  };
+  const notes = () => {
+    const out = {};
+    let group = 0;
+    for (const s of document.querySelectorAll("style:not([data-panel-fonts])")) {
+      for (const m of (s.textContent || "").matchAll(/(?:^|[\\s},;])(?::root|html)\\s*\\{([^}]*)\\}/g)) {
+        let heading = "";
+        group++;
+        for (const line of m[1].split("\\n")) {
+          const t = line.trim();
+          if (!t) { group++; heading = ""; continue; }
+          const only = t.match(/^\\/\\*\\s*([\\s\\S]*?)\\s*\\*\\/$/);
+          if (only) { group++; heading = only[1].slice(0, 60); continue; }
+          for (const d of t.matchAll(/(--[A-Za-z0-9_-]+)\\s*:[^;]*;?\\s*(?:\\/\\*\\s*([\\s\\S]*?)\\s*\\*\\/)?/g)) out[d[1]] = { group, heading, note: (d[2] || "").slice(0, 80) };
+        }
+      }
+    }
+    return out;
+  };
+  // Every declaration that reads a variable, from the stylesheets and from style="" attributes.
+  // Read from cssText, because a shorthand holding var() (padding: var(--pad) 0) has no
+  // longhands to read until it's computed.
+  const uses = () => {
+    const props = {}, rules = {}, via = {};
+    const add = (o, k, v) => { (o[k] = o[k] || new Set()).add(v); };
+    const read = (css, where) => {
+      for (const d of css.matchAll(/([-A-Za-z0-9_]+)\\s*:\\s*([^;]*)/g)) {
+        const p = d[1].toLowerCase(), v = d[2];
+        if (!v.includes("var(")) continue;
+        for (const m of v.matchAll(/var\\(\\s*(--[A-Za-z0-9_-]+)/g)) {
+          const n = m[1];
+          if (p.startsWith("--")) add(via, n, p);
+          else { const axis = p === "font-variation-settings" ? (v.slice(0, m.index).match(/["'](\\w{4})["']\\s*$/) || [])[1] : ""; add(props, n, axis ? p + ":" + axis : p); }
+          if (where) add(rules, n, where);
+        }
+      }
+    };
+    const walk = (list) => { for (const r of list) { if (r.style) read(r.style.cssText, r.selectorText || ""); if (r.cssRules) walk(r.cssRules); } };
+    for (const sh of document.styleSheets) { try { walk(sh.cssRules); } catch (e) {} }
+    for (const el of document.querySelectorAll('[style*="var(--"]')) read(el.getAttribute("style") || "", "");
+    const script = [...document.scripts].filter((s) => !s.hasAttribute("data-panel-kit")).map((s) => s.textContent).join("\\n");
+    usage = { rules, via };
+    // A variable's uses, through up to two variables in between (--w-text sets --wght, which sets the "wght" axis).
+    return (n) => {
+      const all = new Set(), seen = new Set([n]);
+      let ring = [n];
+      for (let i = 0; i < 3 && ring.length; i++) {
+        const next = [];
+        for (const x of ring) { for (const p of props[x] || []) all.add(p); for (const y of via[x] || []) if (!seen.has(y)) { seen.add(y); next.push(y); } }
+        ring = next;
+      }
+      if (new RegExp("[\\"']" + n + "[\\"']").test(script)) all.add("script");
+      return [...all].slice(0, 12);
+    };
+  };
+  // Hovering a knob in the studio outlines what it changes on the page.
+  let marks = null;
+  const show = (n) => {
+    if (!marks) { marks = document.createElement("div"); marks.style.cssText = "position:fixed;inset:0;z-index:2147483646;pointer-events:none"; document.documentElement.append(marks); }
+    marks.replaceChildren();
+    if (!n || !/^--[A-Za-z0-9_-]+$/.test(n)) return;
+    const els = new Set();
+    const take = (list) => { if (list.length > 60) return; for (const el of list) if (el !== document.documentElement && el !== document.body && !marks.contains(el)) els.add(el); };
+    for (const sel of usage.rules[n] || []) { if (/^\\s*(\\*|:root|html|body)\\s*$/.test(sel)) continue; try { take([...document.querySelectorAll(sel)]); } catch (e) {} }
+    take([...document.querySelectorAll('[style*="' + n + ')"]')]);
+    let count = 0;
+    for (const el of els) {
+      const r = el.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1 || r.bottom < 0 || r.top > innerHeight) continue;
+      const b = document.createElement("div");
+      b.style.cssText = "position:fixed;border:1.5px solid #3b82f6;border-radius:3px;left:" + (r.left - 2) + "px;top:" + (r.top - 2) + "px;width:" + (r.width + 4) + "px;height:" + (r.height + 4) + "px";
+      marks.append(b);
+      if (++count >= 40) break;
+    }
   };
   // For each font a knob names, whether the page really has it: a web font it loads, one of the
   // designer's fonts, or one installed on this computer. A missing one is drawn in a stand-in,

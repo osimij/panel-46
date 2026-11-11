@@ -237,10 +237,7 @@ export function Studio(props: {
         setEditing(false);
         void keepText({ path: String(m.path ?? ""), before: String(m.before ?? ""), after: String(m.after ?? ""), before_text: String(m.beforeText ?? ""), after_text: String(m.afterText ?? "") });
       } else if (m.t === "cancel") {
-        if (picked) {
-          setPicked(null);
-          post({ t: "release" });
-        } else setPointing(false);
+        escapeRef.current(null);
       }
     };
     addEventListener("message", onMessage);
@@ -292,6 +289,8 @@ export function Studio(props: {
     setEdits({ ...editsRef.current, ...changes });
     post({ t: "set", vars: changes });
   }, [post, setEdits]);
+  /** Outlines on the page what a knob changes, while the pointer is on it. */
+  const showVar = useCallback((name: string | null) => post({ t: "show", name }), [post]);
   const resetKnobs = useCallback(() => {
     post({ t: "set", vars: Object.fromEntries(Object.keys(editsRef.current).map((k) => [k, null])) });
     setEdits({});
@@ -424,20 +423,37 @@ export function Studio(props: {
   const leaveCompareRef = useRef(leaveCompare);
   leaveCompareRef.current = leaveCompare;
 
+  // Escape steps back one thing at a time: what's pointed at, pointing, Compare, an open
+  // dialog, and then out of the studio to the canvas. In a field with words in it, it only
+  // lets go of the field (so nothing typed is lost); in an empty one it carries on as usual.
+  // The page passes its Escape up too (see the kit in sketches.ts), so it works after a click
+  // on the sketch.
+  const escape = (field: HTMLInputElement | HTMLTextAreaElement | HTMLElement | null) => {
+    if (picked) {
+      setPicked(null);
+      post({ t: "release" });
+      return;
+    }
+    if (field) {
+      const words = "value" in field ? field.value.trim() : (field.textContent ?? "").trim();
+      field.blur();
+      if (words) return;
+    }
+    if (pointing) setPointing(false);
+    else if (view === "compare") leaveCompareRef.current();
+    else if (verdict || building || figmaOpen) {
+      setVerdict(null);
+      setBuilding(false);
+      setFigmaOpen(false);
+    } else close();
+  };
+  const escapeRef = useRef(escape);
+  escapeRef.current = escape;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement)?.closest?.("input, textarea, [contenteditable]");
+      const typing = (e.target as HTMLElement)?.closest?.<HTMLElement>("input, textarea, [contenteditable]") ?? null;
       if (e.key === "Escape") {
-        if (picked) {
-          setPicked(null);
-          post({ t: "release" });
-        } else if (pointing) setPointing(false);
-        else if (view === "compare" && !typing) leaveCompareRef.current();
-        else if (verdict || building || figmaOpen) {
-          setVerdict(null);
-          setBuilding(false);
-          setFigmaOpen(false);
-        } else if (!typing) close();
+        if (!e.defaultPrevented) escapeRef.current(typing);
         return;
       }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
@@ -445,7 +461,7 @@ export function Studio(props: {
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [close, picked, pointing, post, verdict, building, figmaOpen, view]);
+  }, [view]);
 
   // ---- Asking ----
   // Always without opening FRIDAY's panel: if it's folded away, the bar says what it's doing,
@@ -763,7 +779,8 @@ export function Studio(props: {
             onChange={turn}
             onReset={resetKnobs}
             onKeep={() => void keepKnobs()}
-            onAskForKnobs={() => props.ask("Rewrite this sketch so its colors, fonts, type sizes, corner radius and spacing are CSS variables on :root (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space and whatever else it needs), used everywhere in place of the fixed values. Change nothing about how it looks.", undefined, undefined, true)}
+            onAskForKnobs={() => props.ask("Rewrite this sketch so its colors, fonts, type sizes, corner radius and spacing are CSS variables on :root (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space and whatever else it needs), used everywhere in place of the fixed values. Give each one a short note in plain words beside it where its name doesn't say it (--c1: #e2372b; /* Cortex */). Change nothing about how it looks.", undefined, undefined, true)}
+            onShow={showVar}
           />
         )}
         {column === "directions" && (

@@ -1,6 +1,6 @@
 // Snapshots of the library, so a bad day (a damaged database, a migration gone wrong, a
 // project deleted by mistake) can be undone. Once a day Panel keeps a copy of the database,
-// the projects folder (sketches, materials) and the designer's fonts in <library>/backups/<date>/. Media isn't
+// the projects folder (sketches, materials), the designer's fonts and brand assets in <library>/backups/<date>/. Media isn't
 // copied there: the files never change once saved, and a removed save goes to the Trash.
 //
 // A second place (an external disk, a synced folder) can be set in Library settings: the
@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { LIBRARY_DIR, MEDIA_DIR } from "./config.ts";
 import { FONTS_DIR } from "./fonts.ts";
+import { BRAND_DIR } from "./brand.ts";
 import { db, getSetting, setSetting } from "./db.ts";
 
 export const BACKUP_DIR = join(LIBRARY_DIR, "backups");
@@ -69,6 +70,7 @@ export async function snapshot(force = false): Promise<string> {
   }
   if (existsSync(PROJECTS_DIR)) await copyFolder(PROJECTS_DIR, join(tmp, "projects"));
   if (existsSync(FONTS_DIR)) await copyFolder(FONTS_DIR, join(tmp, "fonts"));
+  if (existsSync(BRAND_DIR)) await copyFolder(BRAND_DIR, join(tmp, "brand"));
   rmSync(dir, { recursive: true, force: true });
   renameSync(tmp, dir);
   for (const old of toDrop(snapshots())) rmSync(join(BACKUP_DIR, old), { recursive: true, force: true });

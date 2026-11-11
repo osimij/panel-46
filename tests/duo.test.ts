@@ -1,0 +1,180 @@
+// "Plan, then build": the builder keeps a conversation of its own beside the planner's.
+// A turn can't run here (it would call Claude), so each decision is tested on its own:
+// which conversation a run continues, the brief the builder gets, and the note the
+// planner gets about what was made. `bun test tests/duo.test.ts`.
+
+import { afterAll, describe, expect, test } from "bun:test";
+import { builderBrief, builderNews, whichConversation, type Job } from "../server/duo.ts";
+import type { Part } from "../server/chat.ts";
+import { startPanel, type TestPanel } from "./helpers.ts";
+
+describe("which conversation a run continues", () => {
+  const ids = { main: "main-1", builder: "builder-1" };
+  const jobs: Job[] = ["plain", "handover", "pointed", "figma", "alternates", "compact"];
+
+  test("One model: always the main one", () => {
+    for (const job of jobs) expect(whichConversation({ duo: false, job, ...ids })).toEqual({ on: "main", session: "main-1" });
+  });
+
+  test("Plan, then build: the planner the main one, the builder's jobs its own", () => {
+    expect(whichConversation({ duo: true, job: "plain", ...ids })).toEqual({ on: "main", session: "main-1" });
+    expect(whichConversation({ duo: true, job: "compact", ...ids })).toEqual({ on: "main", session: "main-1" });
+    for (const job of ["handover", "pointed", "figma", "alternates"] as Job[]) {
+      expect(whichConversation({ duo: true, job, ...ids })).toEqual({ on: "builder", session: "builder-1" });
+    }
+  });
+
+  test("the builder's first job starts its conversation, never the planner's", () => {
+    expect(whichConversation({ duo: true, job: "handover", main: "main-1", builder: null })).toEqual({ on: "builder", session: null });
+  });
+});
+
+describe("the brief the builder gets", () => {
+  const card = { text: "“NavTech” (project id p1). In the designer's words: a landing page.", hash: "h1" };
+  const message = "<panel-context>The designer is on the canvas of the project “NavTech”. They have selected on the canvas: the topic Hero.</panel-context>\n\nSketch that hero.";
+  const plan = "1. make_sketch from Hero, title “Hero”. 2. Headline 240px Hauss Next.";
+  const brief = (given: { session: string | null; hash: string | null }, msg = message, c: typeof card | null = card) =>
+    builderBrief({ job: "handover", builder: "Opus 5.5", planner: "Fable 5.2", message: msg, plan, card: c, given });
+  const count = (s: string, x: string) => s.split(x).length - 1;
+
+  test("a new builder conversation: who it is, the card, the message with its context, then the plan", () => {
+    const r = brief({ session: null, hash: null });
+    const text = r.prompt as string;
+    expect(typeof text).toBe("string");
+    expect(r.card).toBe("h1");
+    const at = (x: string) => text.indexOf(x);
+    expect(text).toStartWith("<panel-context>You are the builder, Opus 5.5.");
+    expect(text).toContain("You haven't seen the planner's conversation");
+    expect(at("<project-card>")).toBeGreaterThan(at("You are the builder"));
+    expect(at("They have selected on the canvas: the topic Hero.")).toBeGreaterThan(at("</project-card>"));
+    expect(at("Sketch that hero.")).toBeGreaterThan(at("They have selected"));
+    expect(at("<plan>")).toBeGreaterThan(at("Sketch that hero."));
+    expect(text).toContain(plan);
+    expect(count(text, "<project-card>")).toBe(1);
+    expect(text).toContain("Here is the project card.");
+  });
+
+  test("the same card again: not given twice across messages", () => {
+    const r = brief({ session: "b1", hash: "h1" });
+    expect(r.prompt as string).not.toContain("<project-card>");
+    expect(r.card).toBeUndefined();
+    expect(r.prompt as string).toContain("Sketch that hero.");
+    expect(r.prompt as string).toContain(plan);
+  });
+
+  test("a changed card: given again, as a replacement", () => {
+    const r = brief({ session: "b1", hash: "old" });
+    expect(r.prompt as string).toContain("The project card has changed since you were given it");
+    expect(r.card).toBe("h1");
+  });
+
+  test("never the card twice in one message", () => {
+    const carried = `<panel-context>Here is the project card.\n<project-card>\n${card.text}\n</project-card>\n</panel-context>\n\nSketch that hero.`;
+    const r = brief({ session: null, hash: null }, carried);
+    expect(count(r.prompt as string, "<project-card>")).toBe(1);
+    expect(r.card).toBeUndefined();
+  });
+
+  test("no project: no card", () => {
+    const r = brief({ session: null, hash: null }, message, null);
+    expect(r.prompt as string).not.toContain("<project-card>");
+  });
+
+  test("attachments come after the message, before the plan", () => {
+    const picture = { type: "image" as const, source: { type: "base64" as const, media_type: "image/png" as const, data: "AAAA" } };
+    const r = builderBrief({ job: "handover", builder: "Opus 5.5", planner: "Fable 5.2", message, blocks: [picture], plan, card, given: { session: null, hash: null } });
+    const blocks = r.prompt as any[];
+    expect(blocks.length).toBe(3);
+    expect(blocks[0].text).toContain("Sketch that hero.");
+    expect(blocks[0].text).not.toContain("<plan>");
+    expect(blocks[1]).toBe(picture);
+    expect(blocks[2].text).toContain(plan);
+  });
+
+  test("a pointed edit: the card when needed, then the message as it is", () => {
+    const point = "<panel-context>In the studio, they pointed at one part of the sketch s1: the headline.</panel-context>\n\nBigger.";
+    const first = builderBrief({ job: "pointed", builder: "Opus 5.5", message: point, card, given: { session: null, hash: null } });
+    expect(first.prompt as string).toStartWith("Here is the project card.");
+    expect(first.prompt as string).toEndWith(point);
+    expect(first.prompt as string).not.toContain("You are the builder");
+    const later = builderBrief({ job: "pointed", builder: "Opus 5.5", message: point, card, given: { session: "b1", hash: "h1" } });
+    expect(later.prompt).toBe(point);
+  });
+});
+
+describe("the note for the planner", () => {
+  const page = "<!doctype html><html><head><style>:root{--bg:#fff}</style></head><body><h1>Создаём</h1></body></html>";
+  const handover: Part[] = [
+    { type: "tool", id: "t1", name: "get_project", model: "Fable 5.2", done: true },
+    { type: "text", text: "I'm having the hero sketched." },
+    { type: "tool", id: "t2", name: "hand_to_builder", model: "Fable 5.2", input: { plan: "1. …" }, done: true },
+    { type: "tool", id: "t3", name: "place_on_board", model: "Opus 5.5", builder: true, input: { project: "p1", topic: "Hero", saves: [{ id: "a" }, { id: "b" }, { id: "c" }] }, done: true },
+    { type: "tool", id: "t4", name: "make_sketch", model: "Opus 5.5", builder: true, input: { project: "p1", title: "Hero: edge to edge", html: page }, sketch: "d4098d0f546548c8", done: true },
+    { type: "tool", id: "t5", name: "edit_sketch", model: "Opus 5.5", builder: true, input: { sketch: "d4098d0f546548c8", edits: [{ find: "<h1>", replace: "<h1 class=x>" }] }, done: true },
+    { type: "text", text: "Fixing the leading.", builder: true },
+    { type: "tool", id: "t6", name: "edit_sketch", model: "Opus 5.5", builder: true, input: { sketch: "d4098d0f546548c8", edits: [] }, done: true },
+    { type: "tool", id: "t7", name: "get_sketch", model: "Opus 5.5", builder: true, input: { sketch: "d4098d0f546548c8" }, done: true },
+    { type: "text", text: "The hero sketch is on the canvas, under a new Hero topic. «Создаём» runs edge to edge.", builder: true },
+  ];
+
+  test("names what was made and carries the builder's words", () => {
+    const note = builderNews([handover]);
+    expect(note).toContain("made the sketch “Hero: edge to edge” (d4098d0f546548c8)");
+    expect(note).toContain("edited the sketch d4098d0f546548c8 (2 times)");
+    expect(note).toContain("placed 3 saves under “Hero”");
+    expect(note).toContain("The hero sketch is on the canvas");
+    expect(note).not.toContain("Fixing the leading.");
+    expect(note).toContain("get_project");
+    expect(note).toContain("get_sketch");
+    // Nothing of the page itself.
+    expect(note).not.toContain("<");
+    expect(note).not.toContain("doctype");
+    expect(note.length).toBeLessThan(700);
+  });
+
+  test("no builder work: no note", () => {
+    const plain: Part[] = [{ type: "tool", id: "t1", name: "search_library", done: true }, { type: "text", text: "Three references." }];
+    expect(builderNews([plain])).toBe("");
+    expect(builderNews([])).toBe("");
+  });
+
+  test("given once: an answer the planner took part in was told already", () => {
+    const plain: Part[] = [{ type: "text", text: "Which one do you like?" }];
+    expect(builderNews([plain, handover])).toBe("");
+  });
+
+  test("builder-only answers (a pointed edit) add up until the planner hears", () => {
+    const pointed: Part[] = [
+      { type: "tool", id: "p1", name: "edit_sketch", builder: true, input: { sketch: "d4098d0f546548c8" }, done: true },
+      { type: "text", text: "Made the headline darker.", builder: true },
+    ];
+    const note = builderNews([pointed, handover]);
+    expect(note).toContain("made the sketch “Hero: edge to edge”");
+    expect(note).toContain("edited the sketch d4098d0f546548c8 (3 times)");
+    expect(note).toContain("Made the headline darker.");
+  });
+
+  test("anything that failed is said", () => {
+    const failed: Part[] = [{ type: "tool", id: "f1", name: "make_sketch", builder: true, input: { title: "Hero" }, error: "The page has no <body>.", done: true }];
+    expect(builderNews([failed])).toContain("make_sketch failed");
+  });
+});
+
+describe("the builder's conversation in the database", () => {
+  let p: TestPanel;
+  afterAll(async () => {
+    await p?.stop();
+  });
+
+  test("two columns are added to a library that didn't have them, empty", async () => {
+    p = await startPanel({}, `
+      CREATE TABLE chats (id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', session_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      INSERT INTO chats (id, title, session_id, created_at, updated_at) VALUES ('0000000000000001', 'An older conversation', 'old-session', '2026-01-01', '2026-01-01');
+    `);
+    const cols = (p.db.query("PRAGMA table_info(chats)").all() as { name: string }[]).map((c) => c.name);
+    expect(cols).toContain("builder_session_id");
+    expect(cols).toContain("builder_card_hash");
+    const row = p.db.query("SELECT session_id, builder_session_id, builder_card_hash FROM chats WHERE id = '0000000000000001'").get();
+    expect(row).toEqual({ session_id: "old-session", builder_session_id: null, builder_card_hash: null });
+  });
+});

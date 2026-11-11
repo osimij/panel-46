@@ -32,6 +32,7 @@ Requires `ffmpeg`/`ffprobe` (verification and thumbnails). `yt-dlp` is an option
   media/<refId>/0.loop.mp4   a small silent copy of a video, for the grid to play
   projects/               sketches and materials, per project
   fonts/                  the fonts you uploaded, for sketches
+  brand/                  each project's brand assets (logos, icons, brand books)
   backups/<date>/         a daily snapshot of the database and projects
   models/                 the two small models for search by meaning and by look
 ```
@@ -58,6 +59,14 @@ The grid shows 200 saves and brings in more as you scroll; only the cards near t
 **Fonts** (in the sidebar) are the typefaces you upload: a licensed font, a client's brand font, anything that isn't on Google Fonts. Drop .woff2, .woff, .ttf or .otf files anywhere in Panel, or use Upload fonts. Panel reads each file's family, weight and style from inside it, and shows every face set in a line you can type over (Russian and Tajik by default). A family missing Cyrillic or the Tajik letters says so, because those letters would show in another font. Rename a family (that's the name sketches use) or delete it.
 
 Every sketch Panel shows has your fonts loaded, so naming one to FRIDAY is enough: "set the hero in Söhne", or type `@` and pick it from the list. FRIDAY knows which fonts you have (and Claude Code does too, through `get_fonts`), and won't look for them on the web.
+
+### Brand assets
+
+**Brand assets** (in the sidebar) are the real files of the brands you work on: each project's logos, icons, pictures, patterns and brand books. Click **Add files** and pick the project (or "Not in a project"), use **Add** on a project, or drop files on the page: on a project to add them to it, anywhere else and Panel asks which. They show grouped by project, then by kind, with a Light/Dark backdrop for white logos. Each file's kind is guessed from its name and format (a PDF is a guideline, "logo" in the name is a logo); the `···` menu changes it, renames it, moves it to another project, downloads it, or moves it to the Trash. Deleting a project keeps its assets, under "Not in a project".
+
+In FRIDAY, type `@` and open **Brand assets**: they're listed by project and kind ("Navtech · Logos"), and each project starts with its whole kit. Mention one asset or the kit, and FRIDAY gets the real files: a sketch puts the logo in with `<img src="/brand/…">` instead of drawing one, and a build copies the file. A project's assets also come with the project itself (its card, and `get_project`). Click a mentioned asset in a message to see it on the Brand assets page.
+
+The files live in `<library>/brand/` and are in the daily snapshot.
 
 ### Honest status
 
@@ -101,16 +110,17 @@ Any AI app that speaks MCP (Claude Code, Claude Desktop, Cursor…) can search t
 | Tool | What it does |
 | --- | --- |
 | `library_overview` | Counts, tags, collections, and the words the reads use (moods, fonts, motion techniques…) |
-| `search_library` | Words and meaning, optionally inside facets (color, typography, layout, imagery, motion, mood, components), plus filters. With `look`, by the pictures themselves ("a dark dashboard with glowing charts") |
+| `search_library` | Words and meaning, optionally inside facets (color, typography, layout, imagery, motion, mood, components), plus filters. With `look`, by the pictures themselves ("a dark dashboard with glowing charts"). Answers with short cards for the best 12 and one line each for up to 60 more (`detail: "full"` gives the whole cards) |
 | `find_by_color` | Measured palettes near given hex colors (CIEDE2000), optionally by role (background, accent…) |
 | `similar_to` | Saves like one save, by the facets you choose; `look` compares the pictures themselves |
 | `get_verdicts` | What you've chosen and ruled out across all projects, grouped by the reason you gave |
 | `gather_for_brief` | The best saves per facet for a brief, so color, type and motion can come from different saves |
-| `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from |
+| `get_reference` | Everything about a save, its files on this Mac, and the pictures the read was made from. With `facets`, only those parts of the read and what's worth taking |
 | `list_projects` | Your projects, most recently worked on first |
 | `get_project` | A project's canvas as decisions: your rules first (see below), then its brief and materials, then each topic, locked or exploring, with the saves chosen, kept, suggested and ruled out, and your notes on why. Optionally with pictures of the chosen saves |
 | `get_design_rules` | Your standing rules for every design, from [unugly.md](unugly.md) |
 | `get_fonts` | The fonts you uploaded, which every sketch has loaded |
+| `get_brand_assets` | Each project's logos, icons, pictures and brand books: the src a sketch uses, the file's path, and pictures of them (an SVG's code too) |
 | `get_project_material` | One of a project's materials: a file's text (PDF, Word, text), a picture to look at, or a linked page's text. With `find`, the passages where some words appear, so a detail in a 500-page spec is one call |
 | `place_on_board` | Puts saves under a topic on a project's canvas as suggestions, each with a short why; makes the topic if needed |
 | `add_topic`, `connect_topics`, `add_note` | Grow the canvas: a new decision (optionally after another), Typography → Color, a note on a topic or save |
@@ -172,7 +182,7 @@ Under **Projects** in the sidebar, each project is a canvas for working out a de
 - **Undo**: ⌘Z undoes your own changes, one at a time. After the assistant changes the canvas, a note above the dock says what it did, with **Undo**, which takes back its whole reply (a topic, the saves under it, a note) at once. Claude Code's changes show up and undo the same way.
 - **About the project.** On the canvas the project is just its name in the corner. Click it for About: the name, what the project is, and its **materials**: drop in files (specs, brand books, screenshots) or paste links. Claude reads them (PDF and Word text, pictures, the linked page) to understand the project. Deleting the project is there too.
 - **What FRIDAY knows about the project.** A long document gets a one-page summary for design work, written once by Claude when it's added (what the product is, who uses it, its screens and states, the words to use, hard requirements, what's open); read it under the document in About, or have it written again. The first message of each conversation on the canvas brings FRIDAY the project card: your description, short materials whole and long ones as their summary. It isn't sent again unless the project or the card changes. For details FRIDAY looks things up in the full text (`find`) instead of reading it from the start. Documents are kept up to 2 million characters.
-- **Long conversations stay sharp.** Claude Code summarizes a conversation when it gets full ("compacting"); for FRIDAY that happens at about 290K tokens instead of near 1M, so a long chat full of pictures doesn't slow down and lose focus. Right after, the project card is given again in full, and the answer shows a line where it happened. The model menu shows how full the conversation is; the chip shows it once it's past half. To summarize sooner, type **/compact** (add what to keep after it: "/compact keep the type decisions") or press **Summarize now** in the model menu.
+- **Long conversations stay sharp.** Claude Code summarizes a conversation when it gets full ("compacting"); for FRIDAY that happens at about 210K tokens instead of near 1M, so a long chat full of pictures doesn't slow down and lose focus. Right after, the project card is given again in full, and the answer shows a line where it happened. The model menu shows how full the conversation is; the chip shows it once it's past half. To summarize sooner, type **/compact** (add what to keep after it: "/compact keep the type decisions") or press **Summarize now** in the model menu.
 - **Ask about what's selected.** Click a card, topic or note (or select several) and FRIDAY talks about it: "On the canvas: 3 saves" shows above the message box, and "this" or "these" means them. The **Ask FRIDAY** button in the card's toolbar opens FRIDAY right there.
 - **Claude reads it as decisions**, not as boxes: `get_project` returns each topic in the order you connected them, what was chosen and ruled out, and your notes. When FRIDAY is open on a canvas it knows which project you mean.
 - **Live**: every change is a small logged step (`project_events`), so a change made anywhere, including from Claude Code over MCP (its own process), shows up on an open canvas within half a second.

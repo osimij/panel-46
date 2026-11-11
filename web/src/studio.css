@@ -206,44 +206,122 @@
 .st-dir-sub { font-size: 11px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .st-dir-sub.chosen { color: var(--text); font-weight: 500; }
 
-/* ---- Knobs: the page's own variables, as swatches and sliders ---- */
-.kn-scroll { flex: 1; overflow-y: auto; padding: 2px 14px 14px; display: flex; flex-direction: column; gap: 18px; }
-.kn-group { display: flex; flex-direction: column; gap: 9px; }
+/* ---- Knobs: the page's own variables, as bars, swatches and font pickers ---- */
+.kn-scroll { flex: 1; overflow-y: auto; padding: 2px 14px 14px; display: flex; flex-direction: column; gap: 22px; }
+.kn-group { display: flex; flex-direction: column; gap: 8px; }
 .kn-group h4 { margin: 0; font-size: 11.5px; font-weight: 500; color: var(--faint); }
-.kn-row { display: grid; grid-template-columns: 84px 1fr auto; align-items: center; gap: 8px; min-height: 24px; font-size: 12px; }
-.kn-name { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.kn-val { min-width: 44px; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
-.kn-row input[type="range"] { width: 100%; min-width: 0; height: 18px; accent-color: var(--text); }
-.kn-swatch { position: relative; width: 24px; height: 24px; border-radius: 50%; box-shadow: inset 0 0 0 1px var(--line), 0 0 0 1px var(--line); cursor: pointer; overflow: hidden; justify-self: start; }
-.kn-swatch input { position: absolute; inset: -6px; width: 200%; height: 200%; opacity: 0; cursor: pointer; }
-.kn-row:has(.kn-swatch) { grid-template-columns: 84px 24px 1fr; }
-.kn-text { min-width: 0; height: 24px; padding: 0 7px; background: var(--fill); border: 0; outline: 0; font: inherit; font-size: 11.5px; color: var(--text); border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner); }
-.kn-text:focus { box-shadow: inset 0 0 0 1.5px var(--faint); }
-.kn-text.wide { grid-column: 2 / -1; }
+/* A part inside a group: one type style (Display: its font, size, weight, width), a set of colors. */
+.kn-block { display: flex; flex-direction: column; gap: 6px; }
+.kn-block + .kn-block, .kn-grid + .kn-block, .kn-palettes + .kn-grid { margin-top: 6px; }
+.kn-sub { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 500; color: var(--muted); min-height: 16px; }
+.kn-sub-note { font-weight: 400; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn-faint { color: var(--faint); }
+.kn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.kn-grid > .wide { grid-column: 1 / -1; }
+
+/* A number: a bar filled as far as it goes, its name on it, its value at the end. Drag it or click to type. */
+.kn-bar {
+  position: relative; min-width: 0; height: 30px; padding: 0 10px; display: flex; align-items: center; gap: 6px;
+  background: var(--fill); border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); overflow: hidden;
+  font-size: 12px; cursor: ew-resize; user-select: none; -webkit-user-select: none; touch-action: none;
+}
+.kn-fill {
+  position: absolute; inset: 0 auto 0 0; background: var(--fill-hover); pointer-events: none;
+  box-shadow: inset -1.5px 0 0 var(--faint); transition: box-shadow 0.15s var(--ease);
+}
+.kn-bar:hover .kn-fill, .kn-bar:focus-visible .kn-fill { box-shadow: inset -1.5px 0 0 var(--muted); }
+.kn-bar-name { position: relative; flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn-bar-val { position: relative; flex: none; color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.kn-bar.changed .kn-bar-name { color: var(--text); }
+.kn-bar.typing { cursor: text; }
+.kn-bar-input {
+  position: relative; flex: none; width: 84px; height: 22px; margin-right: -6px; padding: 0 6px; text-align: right;
+  background: var(--bg); border: 0; outline: 0; font: inherit; color: var(--text); font-variant-numeric: tabular-nums;
+  border-radius: calc(5px * var(--smooth)); corner-shape: var(--corner); box-shadow: 0 0 0 1px var(--line);
+}
+/* Where a changed knob started: a small mark at the bottom of its bar. */
+.kn-was { position: absolute; bottom: 4px; width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%; background: var(--muted); pointer-events: none; }
+/* The dot by a changed knob's name puts it back. */
+.kn-dot { position: relative; flex: none; width: 14px; height: 14px; margin: 0 -4px 0 -5px; padding: 0; display: grid; place-items: center; cursor: pointer; }
+.kn-dot::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text); transition: transform 0.15s var(--ease); }
+.kn-dot:hover::after { transform: scale(1.4); }
+:root.kn-scrubbing, :root.kn-scrubbing * { cursor: ew-resize !important; }
+
+/* A color: its swatch, its name, its hex. Opens the picker. */
+.kn-chip { flex: none; width: 22px; height: 22px; padding: 0; border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner); box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.2); }
+.kn-color {
+  min-width: 0; height: 32px; padding: 0 8px 0 4px; display: flex; align-items: center; gap: 8px; font-size: 12px; text-align: left;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner); transition: background 0.15s var(--ease);
+}
+.kn-color:hover, .kn-color.open { background: var(--fill); }
+.kn-color-name { flex: 1; min-width: 0; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn-color.changed .kn-color-name { color: var(--text); }
+.kn-hex { flex: none; color: var(--faint); font-size: 11.5px; text-transform: uppercase; font-variant-numeric: tabular-nums; }
+/* A set of colors made together (one per product): one strip of swatches. */
+.kn-strip { display: flex; flex-wrap: wrap; gap: 6px; }
+.kn-chip.big { width: 34px; height: 34px; border-radius: calc(9px * var(--smooth)); transition: transform 0.15s var(--ease); position: relative; }
+.kn-chip.big:hover { transform: scale(1.06); }
+.kn-chip.big.open { box-shadow: inset 0 0 0 1px oklch(0.5 0 0 / 0.2), 0 0 0 2px var(--bg), 0 0 0 3.5px var(--text); }
+.kn-chip.big.changed::after { content: ""; position: absolute; left: 50%; bottom: -7px; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--text); }
+.kn-strip:has(.changed) { padding-bottom: 6px; }
+
+/* The color picker. */
+.kn-pop { max-width: none; padding: 10px; gap: 10px; transform-origin: top right; }
+.kn-sv {
+  position: relative; height: 150px; cursor: crosshair; touch-action: none; border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+  background-image: linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent);
+}
+.kn-hue {
+  position: relative; height: 14px; cursor: ew-resize; touch-action: none; border-radius: 999px;
+  background: linear-gradient(to right, #f00, #ff0 17%, #0f0 33%, #0ff 50%, #00f 67%, #f0f 83%, #f00);
+}
+.kn-sv > i, .kn-hue > i {
+  position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%; pointer-events: none;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px oklch(0 0 0 / 0.25), 0 2px 6px oklch(0 0 0 / 0.3);
+}
+.kn-hue > i { top: 50%; }
+.kn-pop-row { display: flex; align-items: center; gap: 6px; }
+.kn-hex-input {
+  flex: 1; min-width: 0; height: 28px; padding: 0 8px; background: var(--fill); border: 0; outline: 0; font: inherit; font-size: 12.5px; color: var(--text);
+  text-transform: uppercase; font-variant-numeric: tabular-nums; border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+}
+.kn-hex-input:focus { box-shadow: inset 0 0 0 1.5px var(--faint); }
+.kn-before { width: 28px; height: 28px; cursor: pointer; }
+.kn-alpha { font-size: 12px; }
+.kn-icon { flex: none; width: 28px; height: 28px; display: grid; place-items: center; color: var(--muted); border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner); }
+.kn-icon:hover { background: var(--fill); color: var(--text); }
+.kn-pop-label { font-size: 11.5px; color: var(--faint); margin-bottom: -4px; }
+.kn-pop-swatches { display: flex; flex-wrap: wrap; gap: 5px; }
+.kn-pop-swatches .kn-chip { width: 20px; height: 20px; border-radius: calc(5px * var(--smooth)); cursor: pointer; transition: transform 0.15s var(--ease); }
+.kn-pop-swatches .kn-chip:hover { transform: scale(1.12); }
+
 /* A font knob: the font's name in its own face, opening a list of fonts to pick from. */
 .kn-font {
-  grid-column: 2 / -1; min-width: 0; height: 28px; padding: 0 8px 0 9px; display: flex; align-items: center; gap: 6px;
-  background: var(--fill); color: var(--text); border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner);
+  width: 100%; min-width: 0; height: 34px; padding: 0 9px 0 10px; display: flex; align-items: center; gap: 6px;
+  background: var(--fill); color: var(--text); border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
   transition: background 0.15s var(--ease);
 }
 .kn-font:hover, .kn-font.open { background: var(--fill-hover); }
 .kn-font > svg { flex: none; color: var(--faint); transition: transform 0.2s var(--ease); }
 .kn-font.open > svg { transform: rotate(180deg); }
-.kn-font-name { flex: 1; min-width: 0; text-align: left; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.kn-font-name { flex: 1; min-width: 0; text-align: left; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kn-fonts { max-width: 300px; max-height: min(360px, 60vh); overflow-y: auto; }
 .kn-font-item { height: 34px; }
 .kn-fonts .menu-item + .menu-label { margin-top: 6px; }
 .kn-fonts-note { margin: 4px 9px 5px; font-size: 11.5px; color: var(--faint); }
 /* A font the sketch names that isn't anywhere: the page shows a stand-in instead. */
 .kn-missing { flex: none; font-size: 11px; color: var(--faint); cursor: help; }
-@media (prefers-reduced-motion: reduce) { .kn-font > svg { transition: none; } }
 .kn-palettes { display: flex; flex-wrap: wrap; gap: 6px; }
 .kn-palette { display: flex; height: 22px; padding: 0; border-radius: 999px; overflow: hidden; box-shadow: 0 0 0 1px var(--line); transition: transform 0.15s var(--ease); }
 .kn-palette:hover { transform: scale(1.06); }
 .kn-palette i { width: 13px; height: 100%; }
+.kn-hint { margin: -6px 0 0; font-size: 11.5px; line-height: 1.45; color: var(--faint); }
 .kn-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 14px 12px; box-shadow: 0 -1px 0 var(--line); }
 .kn-empty { padding: 4px 14px; font-size: 12px; line-height: 1.5; color: var(--muted); display: flex; flex-direction: column; align-items: flex-start; gap: 8px; margin: 0; }
 .kn-empty p { margin: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .kn-font > svg, .kn-fill, .kn-dot::after, .kn-chip.big, .kn-palette, .kn-color { transition: none; }
+}
 
 /* ---- Compare: directions side by side, scrolled together ---- */
 .cmp { min-width: 0; }

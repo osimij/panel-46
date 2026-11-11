@@ -15,6 +15,7 @@ import { Assistant, type AssistantHandle } from "./Assistant.tsx";
 import { Mark } from "./Glow.tsx";
 import { Popover, TagRow } from "./TagRow.tsx";
 import { Fonts } from "./Fonts.tsx";
+import { Brand, type BrandDrop } from "./Brand.tsx";
 
 // The canvas (and React Flow with it) loads only when a project is opened.
 const ProjectCanvas = lazy(() => import("./Canvas.tsx"));
@@ -59,11 +60,14 @@ type Scope =
   | { kind: "project"; id: string }
   /** The designer's own fonts, for sketches. */
   | { kind: "fonts" }
+  /** Each project's logos and files; `focus` brings one asset or project into view. */
+  | { kind: "brand"; focus?: string }
   /** Saves the assistant brought up, shown together in the grid. */
   | { kind: "picked"; ids: string[]; title: string };
 type MediaFilter = "all" | "image" | "video";
 
-const sameScope = (a: Scope, b: Scope) => JSON.stringify(a) === JSON.stringify(b);
+// The brand page is the same page whichever asset it was opened onto.
+const sameScope = (a: Scope, b: Scope) => (a.kind === "brand" && b.kind === "brand") || JSON.stringify(a) === JSON.stringify(b);
 const looksLikeUrl = (s: string) => /^https?:\/\/\S+$/i.test(s.trim());
 /** Search text that reads like a question for the assistant rather than words to match. */
 const looksLikeQuestion = (s: string) => {
@@ -510,6 +514,8 @@ export function App() {
     return () => removeEventListener("keydown", onKey);
   }, [overlayOpen]);
 
+  // While the brand assets page is open, files dropped or pasted go to it (Brand.tsx sets this).
+  const brandDrop = useRef<BrandDrop | null>(null);
   // Paste anywhere (outside a text field) to save a link or files.
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -517,6 +523,8 @@ export function App() {
       const files = [...(e.clipboardData?.files ?? [])];
       if (files.length) {
         e.preventDefault();
+        // Pasted on the brand assets page: brand assets, and Panel asks for which project.
+        if (brandDrop.current) return brandDrop.current(files, undefined, { x: innerWidth / 2 - 110, y: innerHeight / 3 });
         return void uploadFiles(files);
       }
       const text = e.clipboardData?.getData("text") ?? "";
@@ -546,6 +554,11 @@ export function App() {
       dragDepth.current = 0;
       setDragging(false);
       const files = [...e.dataTransfer.files];
+      // On the brand assets page, files are brand assets: for the project they were dropped on.
+      if (files.length && brandDrop.current) {
+        const on = (e.target as Element | null)?.closest?.("[data-brand-project]")?.getAttribute("data-brand-project") ?? undefined;
+        return brandDrop.current(files, on, { x: e.clientX, y: e.clientY });
+      }
       if (files.length) return void uploadFiles(files);
       const url = (e.dataTransfer.getData("text/uri-list") || e.dataTransfer.getData("text")).split("\n")[0] ?? "";
       if (looksLikeUrl(url)) void saveLink(url.trim());
@@ -854,6 +867,8 @@ export function App() {
       <main className="main">
         {scope.kind === "fonts" ? (
           <Fonts version={fontsVersion} onError={sayError} onSay={say} />
+        ) : scope.kind === "brand" ? (
+          <Brand projects={projects} version={0} dropRef={brandDrop} focus={scope.focus} onError={sayError} onSay={say} />
         ) : scope.kind === "project" ? (
           <Suspense fallback={null}>
             <ProjectCanvas
@@ -942,7 +957,7 @@ export function App() {
             <div ref={setDockSlot} style={{ display: "contents" }} />
             {askButton}
           </>
-        ) : scope.kind === "fonts" ? (
+        ) : scope.kind === "fonts" || scope.kind === "brand" ? (
           askButton
         ) : selecting ? (
           <div className="select-bar" role="toolbar" aria-label="Selection" key="select">
@@ -1035,6 +1050,7 @@ export function App() {
         onGoTo={(p) => setScope(p ? { kind: "project", id: p } : { kind: "all" })}
         picked={scope.kind === "project" && canvasPick?.project === scope.id ? canvasPick : null}
         onOpenRef={openFromAsk}
+        onOpenBrand={(focus) => setScope({ kind: "brand", focus })}
         onShowInGrid={showPicked}
         onRunning={setAskRunning}
         onDoing={setAskDoing}
@@ -1043,7 +1059,7 @@ export function App() {
 
       {settingsOpen && stats && <Settings stats={stats} online={online} onClose={() => setSettingsOpen(false)} />}
 
-      <div className={`dropzone ${dragging ? "show" : ""}`} aria-hidden={!dragging}>
+      <div className={`dropzone ${dragging && scope.kind !== "brand" ? "show" : ""}`} aria-hidden={!dragging}>
         <div className="dropzone-card">
           <Icon name="download" size={22} />
           <p>Drop to save to your library</p>
@@ -1090,6 +1106,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
     }
     case "project": return { title: "Project", subtitle: "" };
     case "fonts": return { title: "Fonts", subtitle: "" };
+    case "brand": return { title: "Brand assets", subtitle: "" };
   }
 }
 
@@ -1376,6 +1393,7 @@ function Sidebar(props: {
         {link({ kind: "people" }, "People & Accounts", stats?.people)}
         {link({ kind: "skills" }, "Skills", stats?.skills)}
         {link({ kind: "fonts" }, "Fonts")}
+        {link({ kind: "brand" }, "Brand assets")}
         {link({ kind: "hidden" }, "Hidden", stats?.hidden, undefined, "H")}
       </div>
 

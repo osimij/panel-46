@@ -1,0 +1,74 @@
+/* ============ Brand assets: each project's logos and files ============ */
+
+.brand-page { max-width: 1100px; }
+.brand-page .title-row { flex-wrap: wrap; row-gap: 8px; }
+.brand-kinds { margin-top: 14px; flex-wrap: wrap; }
+.brand-n { color: var(--faint); font-variant-numeric: tabular-nums; font-weight: 400; }
+.seg button.on .brand-n { color: var(--muted); }
+
+/* The empty page: three marks, the way a brand starts. */
+.brand-empty-mark { display: flex; justify-content: center; align-items: flex-end; gap: 10px; height: 56px; }
+.brand-empty-mark span { width: 34px; height: 34px; background: var(--fill-hover); animation: float 3s var(--ease) infinite; }
+.brand-empty-mark span:nth-child(1) { border-radius: 50%; }
+.brand-empty-mark span:nth-child(2) { height: 48px; border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner); animation-delay: 0.2s; background: var(--text); opacity: 0.85; }
+.brand-empty-mark span:nth-child(3) { width: 0; height: 0; background: none; border-left: 18px solid transparent; border-right: 18px solid transparent; border-bottom: 32px solid var(--fill-hover); animation-delay: 0.4s; }
+
+/* A project: its name, then its kinds, each a row of tiles. A drag over it lights it up. */
+.brand-project {
+  margin: 0 -14px; padding: 18px 14px 24px; border-radius: calc(16px * var(--smooth)); corner-shape: var(--corner);
+  animation: title-in var(--slow) var(--ease) both;
+  transition: background-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.brand-project + .brand-project { margin-top: 4px; }
+.brand-project.over { background: var(--fill); box-shadow: inset 0 0 0 1.5px var(--text); }
+.brand-project.lit { background: var(--fill); }
+.brand-project-head { display: flex; align-items: baseline; gap: 2px 12px; min-height: 34px; }
+.brand-project-head h2 { margin: 0; font-size: 22px; font-weight: 600; line-height: 1.2; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.brand-project-head .ff-act { align-self: center; }
+.brand-project:hover .ff-act, .brand-project.over .ff-act { opacity: 1; }
+
+.brand-kind { margin-top: 14px; }
+.brand-kind-name { color: var(--muted); font-weight: 500; margin-bottom: 8px; }
+.brand-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 220px)); gap: 14px 12px; }
+
+/* One asset: the file on its backdrop, its name and what it is. */
+.brand-tile { position: relative; min-width: 0; }
+.brand-look {
+  display: grid; place-items: center; aspect-ratio: 4 / 3; padding: 18px; overflow: hidden;
+  /* A real light or dark surface whatever Panel's own theme, since that's what a logo is checked on. */
+  background: oklch(0.965 0 0); border-radius: calc(12px * var(--smooth)); corner-shape: var(--corner);
+  transition: background-color var(--med) var(--ease), box-shadow var(--fast) var(--ease), transform var(--fast) var(--ease);
+}
+.brand-look:hover { box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px -10px oklch(0 0 0 / 0.3); }
+.brand-look img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.brand-dark .brand-look { background: oklch(0.2 0 0); }
+.brand-format { font-size: 13px; font-weight: 600; letter-spacing: 0.02em; color: oklch(0 0 0 / 0.3); }
+.brand-dark .brand-format { color: oklch(1 0 0 / 0.4); }
+.brand-tile.lit .brand-look { box-shadow: 0 0 0 2px var(--text); }
+
+.brand-caption { display: flex; flex-direction: column; gap: 1px; padding: 7px 2px 0; min-width: 0; }
+.brand-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.brand-meta { color: var(--faint); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.brand-rename { font: inherit; height: 22px; margin: -2px 0 -1px -4px; padding: 0 4px; }
+
+.brand-more {
+  position: absolute; top: 6px; right: 6px; width: 26px; height: 26px; display: grid; place-items: center;
+  color: var(--text); background: var(--raised); opacity: 0;
+  border-radius: calc(7px * var(--smooth)); corner-shape: var(--corner); box-shadow: 0 0 0 1px var(--line), 0 2px 8px -2px oklch(0 0 0 / 0.2);
+  transition: opacity var(--fast) var(--ease);
+}
+.brand-tile:hover .brand-more, .brand-tile.menu-open .brand-more, .brand-more:focus-visible { opacity: 1; }
+
+/* Menus that list projects stay short and scroll. */
+.brand-menu { max-width: 280px; }
+.brand-menu-list { display: flex; flex-direction: column; max-height: 260px; overflow-y: auto; }
+.brand-menu-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.brand-menu a.menu-item { text-decoration: none; }
+
+@media (max-width: 720px) {
+  .brand-tiles { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-project, .brand-empty-mark span { animation: none; }
+}
+.brand-menu-go { margin-left: auto; color: var(--faint); display: grid; place-items: center; }

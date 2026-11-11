@@ -4,7 +4,7 @@
 
 import { createPortal } from "react-dom";
 import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
-import { api, chatApi, displayTitle, fontApi, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatFileNote, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
+import { api, brandApi, BRAND_KIND_LABEL, chatApi, displayTitle, fontApi, type BrandAsset, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatFileNote, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
@@ -126,6 +126,8 @@ export function Assistant(props: {
   /** What's selected on that canvas, if anything: what "this" and "these" mean there. */
   picked?: CanvasSelection | null;
   onOpenRef: (id: string) => void;
+  /** Open the brand assets page onto one asset, or a project's kit ("none": those in no project). */
+  onOpenBrand?: (focus: string) => void;
   onShowInGrid: (ids: string[], title: string) => void;
   onRunning: (running: boolean) => void;
   /** What it's doing right now, in a few words ("Sketching Header alt"), or null. */
@@ -539,7 +541,7 @@ export function Assistant(props: {
           ) : (
             messages.map((m, i) =>
               m.role === "user" ? (
-                <UserMessage key={keyOf(m)} m={m} cards={cards} onOpen={props.onOpenRef} />
+                <UserMessage key={keyOf(m)} m={m} cards={cards} onOpen={props.onOpenRef} onOpenBrand={props.onOpenBrand} />
               ) : (
                 <AssistantMessage
                   key={keyOf(m)}
@@ -780,15 +782,15 @@ function Welcome({ looking, picked, project, onPick }: { looking: Ref | null; pi
 
 // ---------- Messages ----------
 
-function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, RefCard>; onOpen: (id: string) => void }) {
+function UserMessage({ m, cards, onOpen, onOpenBrand }: { m: ChatMessage; cards: Map<string, RefCard>; onOpen: (id: string) => void; onOpenBrand?: (focus: string) => void }) {
   const about = m.context?.open ? cards.get(m.context.open) : null;
   const pick = m.context?.label ? m.context : null;
   // A reply starts with what it replies to, as "> " lines.
   const q = m.text.match(/^((?:>[^\n]*(?:\n|$))+)\s*/);
   const quoted = q ? q[1]!.split("\n").map((l) => l.replace(/^> ?/, "")).join("\n").trim() : null;
   const body = q ? m.text.slice(q[0].length) : m.text;
-  // Saves mentioned with @ travel as [[id]] and show as their chips.
-  const pieces = body.split(/(\[\[[0-9a-f]{16}\]\])/);
+  // Saves mentioned with @ travel as [[id]] and show as their chips; brand assets as [[brand:id]], a kit as [[brandkit:id]].
+  const pieces = body.split(/(\[\[(?:brand:|brandkit:)?(?:[0-9a-f]{16}|none)\]\])/);
   const files = m.context?.files ?? [];
   return (
     <div className="msg-user">
@@ -834,6 +836,8 @@ function UserMessage({ m, cards, onOpen }: { m: ChatMessage; cards: Map<string, 
       {(body.trim() || !files.length) && (
         <div className="msg-bubble">
           {pieces.map((t, i) => {
+            const brand = t.match(/^\[\[(brand|brandkit):([0-9a-f]{16}|none)\]\]$/);
+            if (brand) return <BrandChip key={i} kit={brand[1] === "brandkit"} id={brand[2]!} onOpen={onOpenBrand} />;
             const id = t.match(/^\[\[([0-9a-f]{16})\]\]$/)?.[1];
             return id ? <RefChip key={i} id={id} ctx={{ cards, onOpen }} /> : t;
           })}
@@ -1247,6 +1251,45 @@ function fontFamilies() {
   return fontNames.list;
 }
 
+/** The designer's brand assets, asked for again at most every few seconds. The last list is kept for chips. */
+let brandNow: { at: number; list: Promise<BrandAsset[]> } | null = null;
+let brandSeen: BrandAsset[] = [];
+function brandAssets() {
+  if (!brandNow || Date.now() - brandNow.at > 5000)
+    brandNow = {
+      at: Date.now(),
+      list: brandApi.list().then((l) => (brandSeen = l)).catch(() => brandSeen),
+    };
+  return brandNow.list;
+}
+/** A logo made for dark grounds ("logo white", "inverse") shows on dark; any other on light, like it's checked. */
+const onDark = (name: string) => (/white|inverse|negative|reversed|бел/i.test(name) ? "on-dark" : "on-light");
+/** A brand kit's group key ("none" for no project) and the name it goes by. */
+const kitName = (a: { project_id: string | null; project_name: string | null }) => (a.project_id ? a.project_name ?? "Project" : "Not in a project");
+const kitLabel = (name: string, pid: string) => (pid === "none" ? "Brand assets not in a project" : `${name} brand kit`);
+
+/** One brand asset, or a project's whole kit, in a message: its picture and name; a click opens it on the brand page. */
+function BrandChip({ id, kit, onOpen }: { id: string; kit: boolean; onOpen?: (focus: string) => void }) {
+  const [list, setList] = useState(brandSeen);
+  useEffect(() => {
+    let live = true;
+    void brandAssets().then((l) => live && setList(l));
+    return () => {
+      live = false;
+    };
+  }, []);
+  const asset = kit ? null : list.find((a) => a.id === id);
+  const inKit = kit ? list.filter((a) => (a.project_id ?? "none") === id) : [];
+  const cover = asset?.thumb_url ?? inKit.find((a) => a.kind === "logo" && a.thumb_url)?.thumb_url ?? inKit.find((a) => a.thumb_url)?.thumb_url;
+  const title = asset ? asset.name : inKit.length ? kitLabel(kitName(inKit[0]!), id) : kit ? "Brand kit" : "Brand asset";
+  return (
+    <button className="ref-chip brand-chip" title={asset ? `${BRAND_KIND_LABEL[asset.kind].replace(/s$/, "")} · ${asset.format.toUpperCase()}` : `${inKit.length} brand assets`} onClick={() => onOpen?.(asset?.id ?? id)}>
+      <span className="ref-chip-thumb">{cover ? <img src={cover} alt="" draggable={false} className={onDark(asset?.name ?? "")} /> : <Icon name="brand" size={12} />}</span>
+      <span className="ref-chip-title">{title}</span>
+    </button>
+  );
+}
+
 /** The designer's collections that have something in them, asked for again at most every few seconds. */
 let collectionsNow: { at: number; list: Promise<Collection[]> } | null = null;
 function collectionList() {
@@ -1259,9 +1302,10 @@ function collectionList() {
  * Where the @ list is. It opens on the kinds of things you can mention (fonts, saves,
  * websites…); choosing one opens its list. Collections open once more, onto their saves.
  */
-type Shelf = "fonts" | "saves" | "sites" | "videos" | "favorites" | "collections" | { collection: string; name: string };
+type Shelf = "fonts" | "brand" | "saves" | "sites" | "videos" | "favorites" | "collections" | { collection: string; name: string };
 const SHELVES: { shelf: Exclude<Shelf, object>; label: string; icon: IconName }[] = [
   { shelf: "fonts", label: "Fonts", icon: "type" },
+  { shelf: "brand", label: "Brand assets", icon: "brand" },
   { shelf: "saves", label: "Saves", icon: "grid" },
   { shelf: "sites", label: "Websites", icon: "monitor" },
   { shelf: "videos", label: "Videos", icon: "play" },
@@ -1272,7 +1316,7 @@ const shelfKey = (s: Shelf | null) => (s === null ? "" : typeof s === "string" ?
 const shelfName = (s: Shelf) => (typeof s === "string" ? SHELVES.find((x) => x.shelf === s)!.label : s.name);
 
 /** A shelf's saves: the newest first, or the best matches for what's typed. */
-function shelfSaves(s: Exclude<Shelf, "fonts" | "collections">, q: string) {
+function shelfSaves(s: Exclude<Shelf, "fonts" | "brand" | "collections">, q: string) {
   const f: Filters = { q: q || undefined, limit: 40 };
   if (typeof s === "object") f.collection = s.collection;
   else {
@@ -1292,7 +1336,29 @@ type Mentionable = { group?: string } & (
   | { shelf: Shelf; label: string; icon: IconName; count?: number; cover?: string | null }
   | { font: string }
   | { card: RefCard }
+  | { asset: BrandAsset }
+  | { kit: string; name: string; count: number; cover: string | null }
 );
+
+/**
+ * Brand assets as rows of the @ list, grouped by project and then by kind ("Navtech · Logos"),
+ * each project starting with its whole kit. Narrowed by what's typed (name, project, kind, format).
+ */
+function brandRows(list: BrandAsset[], q: string): Mentionable[] {
+  const has = (a: BrandAsset) => !q || [a.name, a.project_name ?? "", BRAND_KIND_LABEL[a.kind], a.format, a.original_name].some((t) => t.toLowerCase().includes(q));
+  const rows: Mentionable[] = [];
+  const groups = new Map<string, BrandAsset[]>();
+  for (const a of list) (groups.get(a.project_id ?? "none") ?? groups.set(a.project_id ?? "none", []).get(a.project_id ?? "none")!).push(a);
+  for (const [pid, all] of groups) {
+    const name = kitName(all[0]!);
+    const shown = all.filter(has);
+    if (!shown.length) continue;
+    if (all.length > 1 && (!q || name.toLowerCase().includes(q)))
+      rows.push({ kit: pid, name, count: all.length, cover: all.find((a) => a.kind === "logo" && a.thumb_url)?.thumb_url ?? null, group: name });
+    for (const a of shown) rows.push({ asset: a, group: `${name} · ${BRAND_KIND_LABEL[a.kind]}` });
+  }
+  return rows;
+}
 const collectionRow = (c: Collection, group?: string): Mentionable => ({
   shelf: { collection: c.id, name: c.name },
   label: c.name,
@@ -1302,7 +1368,7 @@ const collectionRow = (c: Collection, group?: string): Mentionable => ({
   group,
 });
 const rowKey = (item: Mentionable) =>
-  "shelf" in item ? `shelf:${shelfKey(item.shelf)}` : "font" in item ? `font:${item.font}` : item.card.id;
+  "shelf" in item ? `shelf:${shelfKey(item.shelf)}` : "font" in item ? `font:${item.font}` : "asset" in item ? `brand:${item.asset.id}` : "kit" in item ? `kit:${item.kit}` : item.card.id;
 
 const MENTION_AT = /(?:^|\s)@((?:[^\s@]+ ?){0,4})$/;
 const labelFor = (c: RefCard) => {
@@ -1344,7 +1410,11 @@ function Composer(props: {
   const listRef = useRef<HTMLDivElement>(null);
   // Fonts mentioned with @. They stay as "@Söhne" in what's sent: Panel knows its fonts by name.
   const fontMentions = useRef(new Set<string>());
+  // Brand assets (and whole kits) mentioned with @, by their label; they travel as [[brand:id]] / [[brandkit:id]].
+  const brandMentions = useRef(new Map<string, { token: string; thumb: string | null }>());
   const [pick, setPick] = useState(0);
+  // While the mic listens, the box says so; the words come in when the designer stops it.
+  const [listening, setListening] = useState(false);
   // Esc closes the list until the next @.
   const dismissed = useRef<number | null>(null);
 
@@ -1396,6 +1466,21 @@ function Composer(props: {
     el.style.height = "0px";
     el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
   }, [value, props.inputRef]);
+  // And again when its width changes: measured while FRIDAY's panel was still opening (or after
+  // the panel is resized), the words wrap differently and the box would stay too tall or too short.
+  useEffect(() => {
+    const el = props.inputRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    let width = el.clientWidth;
+    const watch = new ResizeObserver(() => {
+      if (el.clientWidth === width) return;
+      width = el.clientWidth;
+      el.style.height = "0px";
+      el.style.height = `${Math.min(el.scrollHeight, 168)}px`;
+    });
+    watch.observe(el);
+    return () => watch.disconnect();
+  }, [props.inputRef]);
 
   /** Is an @ being typed at the caret? */
   const look = (text: string, caret: number) => {
@@ -1406,7 +1491,7 @@ function Composer(props: {
     }
     const start = caret - m[1]!.length - 1;
     // Just after a mention already made ("@Swiss poster |"): that's not a new one.
-    if (dismissed.current === start || [...mentions.current.keys(), ...fontMentions.current].some((l) => m[1]!.startsWith(l))) return setPicker(null);
+    if (dismissed.current === start || [...mentions.current.keys(), ...fontMentions.current, ...brandMentions.current.keys()].some((l) => m[1]!.startsWith(l))) return setPicker(null);
     setPicker((p) => (p?.start === start && p.query === m[1] ? p : { query: m[1]!, start }));
   };
 
@@ -1426,21 +1511,23 @@ function Composer(props: {
     const has = (name: string) => !q || name.toLowerCase().includes(q);
     const rowsFor = async (): Promise<Mentionable[]> => {
       if (shelf === null && !q) {
-        const [fonts, cols] = await Promise.all([fontFamilies(), collectionList()]);
-        return SHELVES.filter((s) => (s.shelf !== "fonts" || fonts.length) && (s.shelf !== "collections" || cols.length)).map((s) => ({
+        const [fonts, cols, brand] = await Promise.all([fontFamilies(), collectionList(), brandAssets()]);
+        return SHELVES.filter((s) => (s.shelf !== "fonts" || fonts.length) && (s.shelf !== "collections" || cols.length) && (s.shelf !== "brand" || brand.length)).map((s) => ({
           ...s,
-          count: s.shelf === "fonts" ? fonts.length : s.shelf === "collections" ? cols.length : undefined,
+          count: s.shelf === "fonts" ? fonts.length : s.shelf === "collections" ? cols.length : s.shelf === "brand" ? brand.length : undefined,
         }));
       }
       if (shelf === null) {
-        const [fonts, cols, saves] = await Promise.all([fontFamilies(), collectionList(), api.refs({ q: query, library: true, limit: 7 }).catch(() => [])]);
+        const [fonts, cols, brand, saves] = await Promise.all([fontFamilies(), collectionList(), brandAssets(), api.refs({ q: query, library: true, limit: 7 }).catch(() => [])]);
         return [
           ...fonts.filter(has).slice(0, 4).map((font) => ({ font, group: "Fonts" })),
+          ...brandRows(brand, q).slice(0, 4).map((r) => ({ ...r, group: "Brand assets" })),
           ...cols.filter((c) => has(c.name)).slice(0, 3).map((c) => collectionRow(c, "Collections")),
           ...saves.map((r) => ({ card: cardFromRef(r), group: "Saves" })),
         ];
       }
       if (shelf === "fonts") return (await fontFamilies()).filter(has).map((font) => ({ font }));
+      if (shelf === "brand") return brandRows(await brandAssets(), q);
       if (shelf === "collections") return (await collectionList()).filter((c) => has(c.name)).map((c) => collectionRow(c));
       return (await shelfSaves(shelf, query)).map((r) => ({ card: cardFromRef(r) }));
     };
@@ -1501,6 +1588,13 @@ function Composer(props: {
     if ("font" in item) {
       label = item.font;
       fontMentions.current.add(label);
+    } else if ("asset" in item || "kit" in item) {
+      const token = "asset" in item ? `[[brand:${item.asset.id}]]` : `[[brandkit:${item.kit}]]`;
+      const base = "asset" in item ? item.asset.name : kitLabel(item.name, item.kit);
+      label = base;
+      // Two with the same name stay apart.
+      for (let n = 2; brandMentions.current.has(label) && brandMentions.current.get(label)!.token !== token; n++) label = `${base} (${n})`;
+      brandMentions.current.set(label, { token, thumb: "asset" in item ? item.asset.thumb_url : item.cover });
     } else {
       label = mentionSave(item.card);
     }
@@ -1530,17 +1624,20 @@ function Composer(props: {
   const resolve = (text: string) => {
     let out = text;
     // Longest first, so "@Poster (2)" isn't taken for "@Poster".
-    for (const [label, c] of [...mentions.current].sort((a, b) => b[0].length - a[0].length)) out = out.split(`@${label}`).join(`[[${c.id}]]`);
+    const all: [string, string][] = [...[...mentions.current].map(([label, c]) => [label, `[[${c.id}]]`] as [string, string]), ...[...brandMentions.current].map(([label, b]) => [label, b.token] as [string, string])];
+    for (const [label, token] of all.sort((a, b) => b[0].length - a[0].length)) out = out.split(`@${label}`).join(token);
     return out;
   };
   const mentioned = [...mentions.current].filter(([label]) => value.includes(`@${label}`));
   const fontsMentioned = [...fontMentions.current].filter((f) => value.includes(`@${f}`));
+  const brandMentioned = [...brandMentions.current].filter(([label]) => value.includes(`@${label}`));
   const can = (!!value.trim() || ready.length > 0) && !goingUp;
   const send = () => {
     if (running || !can) return;
     const text = resolve(value);
     mentions.current.clear();
     fontMentions.current.clear();
+    brandMentions.current.clear();
     setPicker(null);
     props.onSend(text, ready.map((f) => ({ id: f.id!, name: f.name, picture: f.picture })));
     for (const f of files) if (f.preview?.startsWith("blob:")) URL.revokeObjectURL(f.preview);
@@ -1623,6 +1720,23 @@ function Composer(props: {
                     <span className="mention-thumb mention-glyph mention-font" aria-hidden>Aa</span>
                     <span className="mention-title">{item.font}</span>
                   </>
+                ) : "asset" in item ? (
+                  <>
+                    <span className={`mention-thumb mention-brand ${item.asset.thumb_url ? onDark(item.asset.name) : "mention-glyph"}`}>
+                      {item.asset.thumb_url ? <img src={item.asset.thumb_url} alt="" /> : <Icon name="file" size={14} />}
+                    </span>
+                    <span className="mention-title">{item.asset.name}</span>
+                    <span className="mention-type">{item.asset.format.toUpperCase()}</span>
+                  </>
+                ) : "kit" in item ? (
+                  <>
+                    <span className={`mention-thumb mention-brand ${item.cover ? "on-light" : "mention-glyph"}`}>
+                      {item.cover ? <img src={item.cover} alt="" /> : <Icon name="brand" size={15} />}
+                    </span>
+                    {/* Under its project's own heading it's just "the whole kit"; among other things, it says whose. */}
+                    <span className="mention-title">{item.group === item.name ? "The whole kit" : kitLabel(item.name, item.kit)}</span>
+                    <span className="mention-count">{item.count}</span>
+                  </>
                 ) : (
                   <>
                     <span className="mention-thumb">{item.card.thumb && <img src={item.card.thumb} alt="" />}</span>
@@ -1671,8 +1785,14 @@ function Composer(props: {
           </button>
         </div>
       )}
-      {(mentioned.length > 0 || fontsMentioned.length > 0) && (
+      {(mentioned.length > 0 || fontsMentioned.length > 0 || brandMentioned.length > 0) && (
         <div className="composer-mentions">
+          {brandMentioned.map(([label, b]) => (
+            <span key={`brand:${label}`} className="composer-mention" title={b.token.startsWith("[[brandkit") ? "A brand kit" : "A brand asset"}>
+              {b.thumb ? <img src={b.thumb} alt="" className={`brand-mention-img ${onDark(label)}`} /> : <Icon name="brand" size={12} />}
+              <span>{label}</span>
+            </span>
+          ))}
           {fontsMentioned.map((f) => (
             <span key={`font:${f}`} className="composer-mention" title="Your font">
               <Icon name="type" size={12} />
@@ -1719,7 +1839,7 @@ function Composer(props: {
           value={value}
           rows={1}
           // Short enough for one line in the narrowest panel.
-          placeholder={props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention" : "Ask anything · @ to mention"}
+          placeholder={listening ? "Listening… click the mic when you're done" : props.quote ? "Reply to this" : props.picked ? (props.picked.nodes.length === 1 ? "Ask about this" : "Ask about these") : context ? "Ask about this · @ to mention" : "Ask anything · @ to mention"}
           onChange={(e) => {
             props.setValue(e.target.value);
             look(e.target.value, e.target.selectionStart);
@@ -1775,12 +1895,20 @@ function Composer(props: {
             // ↑ in an empty composer brings back what you last asked, to change it.
             if (e.key === "ArrowUp" && !value && props.lastAsked) {
               e.preventDefault();
-              const again = props.lastAsked.replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
-                const c = props.cards.get(id);
-                if (!c) return all;
-                mentions.current.set(labelFor(c), c);
-                return `@${labelFor(c)}`;
-              });
+              const again = props.lastAsked
+                .replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+                  const c = props.cards.get(id);
+                  if (!c) return all;
+                  mentions.current.set(labelFor(c), c);
+                  return `@${labelFor(c)}`;
+                })
+                .replace(/\[\[(brand|brandkit):([0-9a-f]{16}|none)\]\]/g, (all, which: string, id: string) => {
+                  const a = which === "brand" ? brandSeen.find((x) => x.id === id) : brandSeen.find((x) => (x.project_id ?? "none") === id);
+                  if (!a) return all;
+                  const label = which === "brand" ? a.name : kitLabel(kitName(a), id);
+                  brandMentions.current.set(label, { token: all, thumb: a.thumb_url });
+                  return `@${label}`;
+                });
               props.setValue(again);
               return;
             }
@@ -1822,7 +1950,7 @@ function Composer(props: {
               e.target.value = "";
             }}
           />
-          <MicButton value={value} setValue={props.setValue} inputRef={props.inputRef} />
+          <MicButton value={value} setValue={props.setValue} inputRef={props.inputRef} onListening={setListening} />
           {running ? (
             <button className="composer-btn stop" key="stop" onClick={props.onStop} aria-label="Stop" title="Stop">
               <Icon name="stop" size={14} />

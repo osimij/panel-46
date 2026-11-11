@@ -1,14 +1,12 @@
-// Speaking to FRIDAY instead of typing. The mic button beside Send listens, and the words
-// appear in the message box as they're said (Deepgram's Nova-3, through Panel's server:
-// server/voice.ts). Nothing is sent on its own: the designer reads it, fixes it, sends it.
-//
-// The box holds what was there before, then the settled words, then the words still being
-// heard (they can still change). If the designer types or sends while it listens, what's in
-// the box becomes the new start and listening carries on after it.
+// Speaking to FRIDAY instead of typing. The mic button beside Send listens (Deepgram's Nova-3,
+// through Panel's server: server/voice.ts). While it listens, a row of small waves beside it
+// moves with the voice, so it's plain whether Panel hears anything; the message box is left
+// alone. Clicking the mic again stops, and the whole of what was said lands in the box at once,
+// after whatever was already there. Nothing is sent on its own: the designer reads it, fixes
+// it, sends it.
 
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon.tsx";
-import { prefersReducedMotion } from "./api.ts";
 
 const LANGS = [
   { id: "en", name: "English" },
@@ -25,6 +23,10 @@ const readLang = (): Lang => {
   }
 };
 
+/** How many bars the waves show, and how often a new one comes in on the right. */
+const BARS = 22;
+const STEP_MS = 75;
+
 type State = "off" | "starting" | "on" | "finishing";
 /** One stretch of listening: the connection, the microphone, and the words so far. */
 interface Live {
@@ -33,10 +35,11 @@ interface Live {
   stream?: MediaStream;
   audio?: AudioContext;
   frame?: number;
-  base: string;
+  /** Words Deepgram has settled on, and the words it's still hearing (they can still change). */
   said: string;
   hearing: string;
-  wrote: string;
+  /** Whether something went wrong, so "didn't hear anything" isn't said on top of it. */
+  failed?: boolean;
   then?: () => void;
 }
 const join = (...parts: string[]) => parts.map((p) => p.trim()).filter(Boolean).join(" ");
@@ -45,28 +48,20 @@ export function MicButton(props: {
   value: string;
   setValue: (v: string) => void;
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
+  /** Told when listening starts and stops, so the box can say it's listening. */
+  onListening?: (on: boolean) => void;
 }) {
   const [state, setState] = useState<State>("off");
   const [lang, setLang] = useState<Lang>(readLang);
   const [problem, setProblem] = useState("");
-  const button = useRef<HTMLButtonElement>(null);
+  const waves = useRef<HTMLSpanElement>(null);
   const live = useRef<Live | null>(null);
   /** Whether this listening is still the current one (not stopped and replaced). */
   const isMine = (l: unknown) => live.current === l;
   const valueNow = useRef(props.value);
   valueNow.current = props.value;
-
-  const write = () => {
-    const l = live.current;
-    if (!l) return;
-    // The designer changed the box (typed, or sent it): their text is the new start.
-    if (valueNow.current !== l.wrote) {
-      l.base = valueNow.current;
-      l.said = "";
-    }
-    l.wrote = join(l.base, l.said, l.hearing);
-    props.setValue(l.wrote);
-  };
+  const onListening = useRef(props.onListening);
+  onListening.current = props.onListening;
 
   const end = () => {
     const l = live.current;
@@ -77,18 +72,18 @@ export function MicButton(props: {
     l.stream?.getTracks().forEach((t) => t.stop());
     if (l.recorder?.state === "recording") l.recorder.stop();
     if (l.ws.readyState <= 1) l.ws.close();
-    // Words still being heard when it stopped are kept as they were.
-    if (l.hearing) {
-      l.said = join(l.said, l.hearing);
-      l.hearing = "";
-      write();
-    }
     setState("off");
-    button.current?.style.removeProperty("--level");
+    onListening.current?.(false);
+    // Everything that was said goes into the box in one piece, after what's already there.
+    // Words still being heard when it stopped are kept as they were.
+    const words = join(l.said, l.hearing);
+    if (words) props.setValue(join(valueNow.current, words));
+    else if (!l.failed) setProblem("Didn't hear anything.");
     const box = props.inputRef.current;
     if (box) {
       box.focus();
-      box.setSelectionRange(box.value.length, box.value.length);
+      // The box takes the new words on the next render; put the cursor after them.
+      requestAnimationFrame(() => box.setSelectionRange(box.value.length, box.value.length));
     }
     l.then?.();
   };
@@ -97,17 +92,21 @@ export function MicButton(props: {
     if (live.current) return;
     setProblem("");
     setState("starting");
+    onListening.current?.(true);
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
     } catch {
       setState("off");
+      onListening.current?.(false);
       setProblem("Allow the microphone in the address bar to speak.");
       return;
     }
     const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/listen?lang=${as}`);
-    const l: Live = { ws, stream, base: valueNow.current, said: "", hearing: "", wrote: valueNow.current };
+    const l: Live = { ws, stream, said: "", hearing: "" };
     live.current = l;
+    // The waves start with the microphone, before Deepgram answers, so the first words show too.
+    meter(l);
 
     ws.onopen = () => {
       const type = ["audio/webm;codecs=opus", "audio/mp4", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t));
@@ -121,8 +120,7 @@ export function MicButton(props: {
         if (ws.readyState === 1) ws.send(JSON.stringify({ type: "CloseStream" }));
       };
       recorder.start(200);
-      setState("on");
-      meter(l);
+      if (isMine(l)) setState("on");
     };
     ws.onmessage = (e) => {
       let m: { type?: string; is_final?: boolean; error?: string; channel?: { alternatives?: { transcript?: string }[] } };
@@ -131,24 +129,32 @@ export function MicButton(props: {
       } catch {
         return;
       }
-      if (m.type === "Panel" && m.error) return setProblem(m.error);
+      if (m.type === "Panel" && m.error) {
+        l.failed = true;
+        return setProblem(m.error);
+      }
       if (m.type !== "Results" || !isMine(l)) return;
       const words = m.channel?.alternatives?.[0]?.transcript ?? "";
       if (m.is_final) {
         l.said = join(l.said, words);
         l.hearing = "";
       } else l.hearing = words;
-      write();
     };
-    ws.onerror = () => setProblem("Couldn't start listening. Is Panel running?");
+    ws.onerror = () => {
+      l.failed = true;
+      setProblem("Couldn't start listening. Is Panel running?");
+    };
     ws.onclose = () => {
       if (isMine(l)) end();
     };
   };
 
-  /** The button swells a little with the voice, so it's plain that Panel hears it. */
+  /** The waves: a new bar on the right every moment, as tall as the voice was loud, the older
+   *  ones moving left. Silence shows as small dots. They're how the designer knows Panel hears
+   *  them, so they move even when motion is reduced (there's no easing on them then). */
   const meter = (l: Live) => {
-    if (prefersReducedMotion() || !l.stream) return;
+    const bars = waves.current ? ([...waves.current.children] as HTMLElement[]) : [];
+    if (!l.stream || !bars.length) return;
     try {
       const audio = new AudioContext();
       const analyser = audio.createAnalyser();
@@ -156,19 +162,28 @@ export function MicButton(props: {
       audio.createMediaStreamSource(l.stream).connect(analyser);
       l.audio = audio;
       const data = new Uint8Array(analyser.fftSize);
-      let level = 0;
-      const tick = () => {
+      const heights: number[] = Array(bars.length).fill(0);
+      let loudest = 0;
+      let last = performance.now();
+      const tick = (now: number) => {
         analyser.getByteTimeDomainData(data);
         let sum = 0;
         for (const v of data) sum += ((v - 128) / 128) ** 2;
-        const now = Math.min(1, Math.sqrt(sum / data.length) * 5);
-        level += (now - level) * (now > level ? 0.5 : 0.12);
-        button.current?.style.setProperty("--level", level.toFixed(3));
+        loudest = Math.max(loudest, Math.sqrt(sum / data.length));
+        if (now - last >= STEP_MS) {
+          last = now;
+          // Quiet room noise stays a dot; a normal voice fills most of the height.
+          const level = loudest < 0.012 ? 0 : Math.min(1, Math.pow(loudest * 5.5, 0.75));
+          loudest = 0;
+          heights.shift();
+          heights.push(level);
+          bars.forEach((b, i) => b.style.setProperty("--h", heights[i]!.toFixed(2)));
+        }
         l.frame = requestAnimationFrame(tick);
       };
-      tick();
+      l.frame = requestAnimationFrame(tick);
     } catch {
-      // No meter is fine; listening still works.
+      // No waves is fine; listening still works.
     }
   };
 
@@ -210,17 +225,23 @@ export function MicButton(props: {
     <>
       {problem && !on && <span className="composer-voice-problem" role="status">{problem}</span>}
       {on && (
+        <span ref={waves} className={`composer-voice-waves ${state}`} aria-hidden="true">
+          {Array.from({ length: BARS }, (_, i) => (
+            <i key={i} />
+          ))}
+        </span>
+      )}
+      {on && (
         <button className="composer-voice-lang" onClick={switchLang} title={`Listening for ${langName}. Click for ${LANGS.find((x) => x.id !== lang)!.name}.`}>
           {lang.toUpperCase()}
         </button>
       )}
       <button
-        ref={button}
         className={`composer-btn mic ${state}`}
         onClick={() => (state === "off" ? void start() : state === "on" || state === "starting" ? stop() : undefined)}
-        aria-label={on ? "Stop listening" : "Speak instead of typing"}
+        aria-label={on ? "Stop listening and write it in" : "Speak instead of typing"}
         aria-pressed={on}
-        title={on ? "Stop listening" : `Speak instead of typing (${langName})`}
+        title={on ? "Stop listening and write it in" : `Speak instead of typing (${langName})`}
       >
         <Icon name="mic" size={15} />
       </button>
