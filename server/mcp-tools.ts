@@ -12,12 +12,13 @@ import { chosenRefs, findProject, listProjects, projectsOf, summary, verdicts, R
 import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, sketchMeta, type SketchResult } from "./board.ts";
 import { figmaReading, readFrame } from "./figma.ts";
 import { existsSync } from "node:fs";
-import { DEVICES, fullUrl, readSketch, renderOf, SCREEN, sketchPath, withSkillChecks, type Device, type Render } from "./sketches.ts";
+import { DEVICES, fullUrl, keepPart, readSketch, renderOf, SCREEN, sketchPath, withSkillChecks, type Device, type Render } from "./sketches.ts";
 import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, search, similar } from "./library.ts";
 import { getReadyMade, ICON_WEIGHTS } from "./ready.ts";
 import { shortParts } from "./parts.ts";
+import { recipeText, setStep, startSteps, stopSteps } from "./steps.ts";
 
 const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
 
@@ -32,6 +33,7 @@ Use it to find references for a brief and to combine them: color from one save, 
 - get_verdicts is the designer's taste across every project: what they chose and ruled out, with their reasons. Lean on it.
 - On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
 - To try a direction before anyone builds it, make_sketch puts a quick page on the canvas: one self-contained HTML file. You get back pictures of it as rendered; look, check it against the brief and the rules, and fix it with edit_sketch before showing it. get_sketch reads one back, on any device or in any of its states.
+- A whole new piece of work (a website, a poster) is made step by step with a recipe: get_recipe lists them and reads one, start_steps begins on a project, set_step moves on when the designer agrees to a step. A step's first rough page is a wireframe: make_sketch with kind "wireframe".
 - The designer uploads their own fonts to Panel (get_fonts lists them). Every sketch has them loaded already: write font-family with the family's name, no @font-face or link. When the designer names one, use it.
 - Each project can have brand assets (get_brand_assets): the client's real logos, icons, pictures, patterns and brand books. When a sketch shows the brand, use its real logo with <img src="/brand/…"> (the src given), never a drawn stand-in. When building for real, copy the files from their path on this Mac.
 - Give a sketch knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. Where a name doesn't say what it is, write a short plain note beside it (--c1: #e2372b; /* Cortex */): the studio shows it as the knob's name. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those.
@@ -114,14 +116,23 @@ const FIGMA_HOW_TO = (sketch: string, base: number) =>
   "Figma's images are beside the page: use each by the relative path given in images (figma/…/name.png). Pictures that were in the page before stay as they were. When the frame came part by part, a part's picture shows that whole area as Figma draws it, with whatever lies over it: use one as an image only for a photo or an illustration, and draw shapes, icons and words yourself (CSS, inline SVG, text), with the sizes and places the outline gives. " +
   "Then look at the new version's render next to the Figma picture and fix what differs before you answer. Say in a line or two what changed and anything you couldn't carry over.";
 
-const made = async (r: SketchResult, device: Device = "desktop") =>
-  sketchContent({
+/** What to look at in a wireframe's pictures, in place of LOOK: it is a rough draft, not a design. */
+const WIRE_LOOK = "Look at the screens before you answer: every section has its note (its name, its job, what is in it), the order reads from top to bottom, and nothing is designed (gray only). Fix what's off with edit_sketch first. page_errors come from the page itself.";
+
+/** A wireframe's render, without what was measured against the rules and the skills: it isn't a design to judge. */
+const asWire = (render: Render): Render => ({ ...render, rules: undefined, skills: undefined, apply: undefined, skillKey: undefined });
+
+const made = async (r: SketchResult, device: Device = "desktop") => {
+  const look = r.wire ? WIRE_LOOK : LOOK;
+  return sketchContent({
     sketch: r.id, title: r.title, version: r.version, page: fullUrl(sketchPath(r.project, r.id, r.version)),
+    ...(r.wire ? { wireframe: true } : {}),
     states: r.states?.length ? r.states : undefined,
     linked_saves: r.linked_saves,
     on_canvas: "as a suggestion; the designer keeps, chooses or rules it out",
-    next: r.states && r.states.length > 1 ? `${LOOK} These pictures show the first state; look at the others with get_sketch state.` : LOOK,
-  }, await withSkillChecks(r.render, fullUrl(sketchPath(r.project, r.id, r.version)), device), true, device);
+    next: r.states && r.states.length > 1 ? `${look} These pictures show the first state; look at the others with get_sketch state.` : look,
+  }, r.wire ? asWire(r.render) : await withSkillChecks(r.render, fullUrl(sketchPath(r.project, r.id, r.version)), device), true, device);
+};
 
 const text = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 const failure = (e: unknown) => ({ content: [{ type: "text" as const, text: (e as Error).message }], isError: true });
@@ -411,6 +422,50 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
   const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
   const projectArg = z.string().describe("The project's id or name.");
 
+  // Recipes: a whole piece of work made step by step, one decision at a time (steps.ts).
+  server.registerTool("get_recipe", {
+    title: "Read a recipe",
+    description: "Recipes say how a whole piece of work is made step by step, one decision at a time (a website, a poster). With nothing: the list, each with what it is for and its steps. With a name: the whole recipe: what makes that kind of work great, what to ask first, and every step. With step: only that step. With project: also where that project stands.",
+    inputSchema: {
+      name: z.string().optional().describe("The recipe's name: \"Website\", \"Poster\"."),
+      step: z.string().optional().describe("Only this step of it: \"Sections\", \"Gem\"."),
+      project: z.string().optional().describe("A project's id or name: also where it stands."),
+    },
+    annotations: readOnly,
+  }, async (a) => {
+    try {
+      return { content: [{ type: "text" as const, text: recipeText(a) }] };
+    } catch (e) {
+      return failure(e);
+    }
+  });
+
+  server.registerTool("start_steps", {
+    title: "Start step by step",
+    description: "Start making a project step by step with a recipe, once the recipe's opening questions are answered. The first step becomes the one to work on, and the designer sees the steps in FRIDAY's panel. A decision the canvas has already locked (Color, Typography, Motion) starts as done. Only when the designer asked for a whole new thing, or asked to go step by step.",
+    inputSchema: { project: projectArg, recipe: z.string().describe("The recipe's name: \"Website\", \"Poster\".") },
+    annotations: write,
+  }, safe((a) => startSteps(a.project, a.recipe)));
+
+  server.registerTool("set_step", {
+    title: "Move the steps on",
+    description: "Move a project's steps on. done: the designer agreed to the step that is now; give the decision in a sentence, in their words where they gave them. Its topic on the canvas is locked with it, and the answer brings the next step to start on. skipped: they said to skip it. now: go back to an earlier step to change it. Only when the designer says so.",
+    inputSchema: {
+      project: projectArg,
+      step: z.string().describe("The step, by its name in the recipe: \"Sections\"."),
+      state: z.enum(["done", "skipped", "now"]),
+      decision: z.string().optional().describe("With done: the decision in a sentence."),
+    },
+    annotations: write,
+  }, safe((a) => setStep(a.project, a.step, a.state, a.decision)));
+
+  server.registerTool("stop_steps", {
+    title: "Stop going step by step",
+    description: "Stop going step by step on a project: the designer said to just make it, or to stop. What was decided stays on the canvas.",
+    inputSchema: { project: projectArg },
+    annotations: write,
+  }, safe((a) => stopSteps(a.project)));
+
   server.registerTool("place_on_board", {
     title: "Place saves on a project's canvas",
     description: "Put saves from the library on a project's canvas under a topic (Typography, Color, Layout…), as suggestions the designer then chooses, keeps or rules out. The topic is found by name or kind (\"type\" finds Typography) and made if it isn't there. Saves already under that topic, or that the designer took off it, are skipped. Give each save a short why: what to take from it for this topic, shown on its card. Place 4 to 8 at a time, the strongest first.",
@@ -462,6 +517,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       from: z.string().optional().describe("What it comes from: a topic's name, a save's id, or another sketch's id or title (a branch of it)."),
       uses: z.array(z.string()).max(12).optional().describe("Ids of the saves it takes from (type from one, color from another). Each one on the canvas gets a line to the sketch, so the designer sees where it came from."),
       device: z.enum(["desktop", "tablet", "phone"]).optional().describe("The screen it's made for, and rendered on. Default desktop; phone for a mobile app screen (390×844)."),
+      kind: z.enum(["page", "wireframe"]).optional().describe("wireframe: a gray page that only shows what each section is for and what is in it, before any design (a recipe's Sections or Layout step). It isn't checked against the rules or the skills. Leave out for a designed page."),
     },
     annotations: write,
   }, async (a) => {
@@ -516,9 +572,11 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
   }, async ({ html: withHtml = true, pictures = true, ...a }) => {
     try {
       const { render, html: page, ...head } = await getSketch(a);
-      // Measured against the skills that are on now, even if it was rendered before they were.
+      // Measured against the skills that are on now, even if it was rendered before they were. A
+      // wireframe isn't measured at all: it is a rough draft.
       const slug = head.seen_state?.match(/\(#([^)]+)\)$/)?.[1];
-      const content = await sketchContent(head, await withSkillChecks(render, head.page + (slug ? `#${slug}` : ""), head.seen_on), pictures, head.seen_on);
+      const checked = head.wireframe ? asWire(render) : await withSkillChecks(render, head.page + (slug ? `#${slug}` : ""), head.seen_on);
+      const content = await sketchContent(head, checked, pictures, head.seen_on);
       // Ready-made parts as their short tags (parts.ts): no drawing to read or retype.
       if (withHtml) content.push({ type: "text", text: shortParts(page) });
       return { content };
@@ -526,6 +584,30 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       return failure(e);
     }
   });
+
+  server.registerTool("keep_part", {
+    title: "Keep a part as a brand asset",
+    description: "Keep a part of a sketch as one of the project's brand assets: a drawing, a pattern or a picture as a real file (an <svg> part as SVG, anything else as a PNG on a see-through ground). Later sketches use it by its src, builds by its path. For something the designer approved and wants to reuse, like the gem. Only when the designer says so, or a recipe's step says to.",
+    inputSchema: {
+      project: projectArg,
+      sketch: z.string().describe("The sketch's id (or its title)."),
+      part: z.string().min(1).describe("A CSS selector that finds the part once: \"#gem svg\", \".pattern\"."),
+      name: z.string().min(1).max(120).describe("What to call it in Brand assets: \"Rohat pattern\"."),
+      kind: z.enum(BRAND_KINDS).optional().describe("What kind of asset it is. Default image."),
+      version: z.number().int().min(1).optional().describe("Default: the version on the canvas."),
+      device: z.enum(["desktop", "tablet", "phone"]).optional().describe("The screen to see it on. Default: the one it was made for."),
+      state: z.string().optional().describe("One of its states (meta panel:states), when the part shows only there."),
+    },
+    annotations: write,
+  }, safe(async (a) => {
+    const sk = sketchMeta(a.project, a.sketch);
+    const kept = await keepPart(sk.project, sk.id, { selector: a.part, name: a.name, kind: a.kind, version: a.version, device: a.device, state: a.state });
+    return {
+      id: kept.id, name: kept.name, kind: kept.kind, format: kept.format, size: kept.width && kept.height ? `${kept.width}×${kept.height}` : undefined,
+      src: kept.url, path: kept.path,
+      note: `It's in the project's brand assets now. In a sketch: <img src="${kept.url}">; when building for real, copy the file from its path.`,
+    };
+  }));
 
   server.registerTool("get_figma_frame", {
     title: "Bring a sketch back from Figma",

@@ -21,6 +21,8 @@ const paths = {
   brand: <><circle cx="8" cy="8" r="3.5" /><rect x="13" y="4.5" width="7" height="7" rx="1.5" /><path d="M8.5 13.5 12.5 20h-8l4-6.5Z" /><path d="M14 16.5h6" /></>,
   folder: <path d="M4 7a2 2 0 0 1 2-2h3.5l2 2H18a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7Z" />,
   archive: <><rect x="4" y="5" width="16" height="4" rx="1.2" /><path d="M5.5 9v8.5A1.5 1.5 0 0 0 7 19h10a1.5 1.5 0 0 0 1.5-1.5V9M10 13h4" /></>,
+  // Keep a part as a brand asset: a tray with an arrow going into it.
+  keep: <><path d="M12 3.5v9m0 0-3.5-3.5M12 12.5l3.5-3.5" /><path d="M4.5 13.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-4.5h-4l-1 2h-5l-1-2h-4Z" /></>,
   trash: <path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12" />,
   refresh: <path d="M19 12a7 7 0 1 1-2.1-5M19 4v4h-4" />,
   check: <path d="m5 12.5 4.5 4.5L19 7.5" />,

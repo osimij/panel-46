@@ -31,7 +31,8 @@ type TopicData = Enter & { title: string; facet?: TopicFacet; status?: "explorin
 type RefData = Enter & { refId: string; state?: RefState; taking?: string; reason?: string };
 type NoteData = Enter & { text: string };
 /** A quick page Claude made to try a direction; its files live at the companion, by version. */
-type SketchData = Enter & { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: Device };
+/** wire: a wireframe, a rough draft of what each section is for, not a design. */
+type SketchData = Enter & { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: Device; wire?: true };
 /** Claude Code building a chosen sketch for real; its progress comes from the companion. */
 type BuildData = Enter & { build: string; title: string };
 type TopicNode = Node<TopicData, "topic">;
@@ -61,7 +62,7 @@ function toFlow(b: BoardNode, enter?: number): AnyNode {
   }
   if (b.kind === "ref") return { id: b.id, type: "ref", position, data: { refId: b.ref_id!, state: d.state as RefState, taking: d.taking as string | undefined, reason: d.reason as string | undefined, enter } };
   if (b.kind === "sketch") {
-    return { id: b.id, type: "sketch", position, data: { title: String(d.title ?? ""), tries: d.tries as string | undefined, state: d.state as RefState, version: Number(d.version) || 1, reason: d.reason as string | undefined, device: d.device as Device | undefined, enter } };
+    return { id: b.id, type: "sketch", position, data: { title: String(d.title ?? ""), tries: d.tries as string | undefined, state: d.state as RefState, version: Number(d.version) || 1, reason: d.reason as string | undefined, device: d.device as Device | undefined, ...(d.wire === true ? { wire: true as const } : {}), enter } };
   }
   if (b.kind === "build") return { id: b.id, type: "build", position, data: { build: String(d.build ?? ""), title: String(d.title ?? ""), enter } };
   return { id: b.id, type: "note", position, data: { text: String(d.text ?? ""), enter } };
@@ -109,7 +110,7 @@ function familyOf(topicIds: string[], nodes: { id: string; type?: string }[], ed
 function stored(n: AnyNode): Record<string, unknown> {
   if (n.type === "topic") return { title: n.data.title, facet: n.data.facet, status: n.data.status, summary: n.data.summary };
   if (n.type === "ref") return { state: n.data.state, taking: n.data.taking, reason: n.data.reason };
-  if (n.type === "sketch") return { title: n.data.title, tries: n.data.tries, state: n.data.state, version: n.data.version, reason: n.data.reason, device: n.data.device };
+  if (n.type === "sketch") return { title: n.data.title, tries: n.data.tries, state: n.data.state, version: n.data.version, reason: n.data.reason, device: n.data.device, wire: n.data.wire };
   if (n.type === "build") return { build: n.data.build, title: n.data.title };
   return { text: n.data.text };
 }
@@ -453,7 +454,8 @@ const SketchView = memo(function SketchView({ id, data, selected }: NodeProps<Sk
       </div>
       <div className="sketch-meta">
         <span className="sketch-title">{data.title || "Untitled sketch"}</span>
-        {data.tries && <p className="sketch-tries">{data.tries}</p>}
+        {/* A wireframe says so, quietly, before what it tries. */}
+        {(data.wire || data.tries) && <p className="sketch-tries">{data.wire ? `Wireframe${data.tries ? ` · ${data.tries}` : ""}` : data.tries}</p>}
       </div>
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">

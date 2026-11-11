@@ -905,6 +905,9 @@ export const studioApi = {
     const sent = { edits: changes.edits, vars: changes.vars, styles: (changes.styles ?? []).map((x) => ({ ...seen(x), props: x.props })), removes: (changes.removes ?? []).map(seen) };
     return call<{ version?: number; ok?: boolean; new_errors?: number }>(`/api/projects/${project}/sketches/${sketch}/changes`, { method: "POST", body: body({ ...sent, from_version, check }) });
   },
+  /** Keep a part of a version as one of the project's brand assets: an <svg> as SVG, anything else as a see-through PNG. */
+  keep: (project: string, sketch: string, o: { selector: string; version: number; device: Device; state?: string; name?: string }) =>
+    call<BrandAsset>(`/api/projects/${project}/sketches/${sketch}/keep`, { method: "POST", body: body(o) }),
   /** Bring an older version back: its file becomes the newest version, and the sketch shows it. */
   restore: (project: string, sketch: string, version: number) =>
     call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/restore`, { method: "POST", body: body({ version }) }),
@@ -937,6 +940,11 @@ export interface Material {
   summary_error: string | null;
 }
 
+/** One step of a recipe, as a project stands on it: waiting, now, done (with its decision) or skipped. */
+export interface ProjectStep { step: string; state: "waiting" | "now" | "done" | "skipped"; decision: string }
+/** A project being made step by step: the recipe, whether it is on, stopped or finished, and each step. */
+export interface ProjectSteps { recipe: { id: string; name: string }; state: "on" | "stopped" | "finished"; steps: ProjectStep[] }
+
 export const projectApi = {
   list: () => call<ProjectSummary[]>("/api/projects"),
   /** Reasons to offer when choosing or ruling out: the designer's own most used, then a few starters. */
@@ -955,6 +963,10 @@ export const projectApi = {
   /** Why the designer took these cards off the canvas, said after they're gone. */
   whyRemoved: (id: string, nodes: string[], reason: string) =>
     call<{ ok: boolean; n: number }>(`/api/projects/${id}/turned-down`, { method: "POST", body: body({ nodes, reason }) }),
+  /** Where the project stands when it is being made step by step with a recipe; null when it never was. */
+  steps: (id: string) => call<ProjectSteps | null>(`/api/projects/${id}/steps`),
+  /** Stop going step by step (the steps row's ×): what was decided stays on the canvas. */
+  stopSteps: (id: string) => call<ProjectSteps | null>(`/api/projects/${id}/steps/stop`, { method: "POST" }),
   /** Files and links that say what the project is, for Claude to read. */
   materials: (id: string) => call<Material[]>(`/api/projects/${id}/materials`),
   /** Write a material's summary (again) now. */

@@ -204,20 +204,36 @@ async function makeView(id: string, path: string, format: string, size: number, 
 export async function addBrandAsset(file: File, projectId: string | null, kind?: string) {
   if (!file.size) throw new Error(`${file.name} is empty.`);
   if (file.size > MAX_FILE) throw new Error(`${file.name} is over ${MAX_FILE / 1024 / 1024} MB.`);
-  if (projectId && !db.query("SELECT 1 FROM projects WHERE id = ?").get(projectId)) throw new Error("That project is gone.");
   const ext = extname(file.name).toLowerCase().replace(/[^.a-z0-9]/g, "").slice(0, 9);
-  const format = ext.slice(1) || "file";
-  const id = newId();
-  const name = `${id}${ext || ""}`;
-  mkdirSync(BRAND_DIR, { recursive: true });
-  const path = join(BRAND_DIR, name);
-  await Bun.write(path, file);
-  const dims = await sizeOf(path, format);
-  const view = await makeView(id, path, format, file.size, dims).catch(() => null);
   const clean = file.name.replace(/[\u0000-\u001f]/g, "").slice(0, 200);
+  return saveAsset({ bytes: file, size: file.size, format: ext.slice(1) || "file", ext, projectId, kind: kind && BRAND_KINDS.includes(kind as BrandKind) ? kind : guessKind(file.name), name: nameFrom(clean), original: clean });
+}
+
+/**
+ * Save a file Panel made itself as a brand asset (a part of a sketch the designer kept, in
+ * sketches.ts): the same row, the same picture to show and the same checks as an upload.
+ */
+export async function addMadeAsset(o: { name: string; format: "svg" | "png"; bytes: Uint8Array | string; projectId: string | null; kind?: string }) {
+  const bytes = typeof o.bytes === "string" ? new TextEncoder().encode(o.bytes) : o.bytes;
+  if (!bytes.length) throw new Error("There was nothing to keep.");
+  if (bytes.length > MAX_FILE) throw new Error(`That is over ${MAX_FILE / 1024 / 1024} MB.`);
+  const name = o.name.replace(/[\u0000-\u001f]/g, "").replace(/\s+/g, " ").trim().slice(0, 120) || "Kept from a sketch";
+  const kind = o.kind && BRAND_KINDS.includes(o.kind as BrandKind) ? o.kind : "image";
+  return saveAsset({ bytes, size: bytes.length, format: o.format, ext: `.${o.format}`, projectId: o.projectId, kind, name, original: `${name}.${o.format}`.slice(0, 200) });
+}
+
+async function saveAsset(o: { bytes: Blob | Uint8Array; size: number; format: string; ext: string; projectId: string | null; kind: string; name: string; original: string }) {
+  if (o.projectId && !db.query("SELECT 1 FROM projects WHERE id = ?").get(o.projectId)) throw new Error("That project is gone.");
+  const id = newId();
+  const file = `${id}${o.ext || ""}`;
+  mkdirSync(BRAND_DIR, { recursive: true });
+  const path = join(BRAND_DIR, file);
+  await Bun.write(path, o.bytes);
+  const dims = await sizeOf(path, o.format);
+  const view = await makeView(id, path, o.format, o.size, dims).catch(() => null);
   db.run(
     "INSERT INTO brand_assets (id, project_id, kind, name, file, original_name, format, size, width, height, view, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    [id, projectId, kind && BRAND_KINDS.includes(kind as BrandKind) ? kind : guessKind(file.name), nameFrom(clean), name, clean, format, file.size, dims.width, dims.height, view, now()],
+    [id, o.projectId, o.kind, o.name, file, o.original, o.format, o.size, dims.width, dims.height, view, now()],
   );
   return getBrandAsset(id)!;
 }

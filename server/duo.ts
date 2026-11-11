@@ -76,7 +76,7 @@ export function builderBrief(o: {
 }
 
 /** Tools that change something on the canvas or elsewhere: the ones worth telling the planner about. */
-const MAKING = new Set(["make_sketch", "edit_sketch", "place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic", "start_build", "message_build"]);
+const MAKING = new Set(["make_sketch", "edit_sketch", "place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic", "start_build", "message_build", "keep_part"]);
 
 /**
  * What the builder did since the planner last heard, for the start of the planner's next
@@ -121,3 +121,32 @@ export function builderNews(answers: Part[][]): string {
   const said = words.length > 320 ? `${words.slice(0, 319).replace(/\s+\S*$/, "")}…` : words;
   return `Since your last message here, the builder, working in a conversation of its own, ${done.length ? done.join("; ") : "made no changes"}.${said ? ` It told the designer: “${said}”` : ""} get_project lists what's on the canvas; get_sketch shows a sketch.`;
 }
+
+// ---------- Which tools each run may use ----------
+
+/** Panel's tools that only read: the planner's, beside the steps and its own. Making and changing things is the builder's. */
+export const READ_TOOLS = new Set(
+  ["get_design_rules", "get_skill", "get_fonts", "get_brand_assets", "get_ready_made", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build", "get_recipe"]
+    .map((n) => `mcp__panel__${n}`),
+);
+
+/** The tools that move a project's steps on (steps.ts): the planner's in Plan, then build, never the builder's. */
+export const STEP_TOOLS = new Set(["start_steps", "set_step", "stop_steps"].map((n) => `mcp__panel__${n}`));
+
+/** FRIDAY's own tools, living in Panel for one turn: asking the designer, and the planner's hand-over. */
+export const ASK_TOOL = "mcp__friday__ask_designer";
+export const HANDOVER_TOOL = "mcp__friday__hand_to_builder";
+
+/** Whether a tool may run: true, or why not. */
+export type Allow = (name: string) => true | string;
+
+/** One model: every one of Panel's tools, and asking the designer. */
+export const oneModelAllows: Allow = (name) => (name.startsWith("mcp__panel__") || name === ASK_TOOL ? true : "FRIDAY only uses Panel's tools.");
+
+/** The planner: reading, the steps, asking and handing over. What makes or changes things goes in the plan. */
+export const plannerAllows = (builder: string): Allow => (name) =>
+  READ_TOOLS.has(name) || STEP_TOOLS.has(name) || name === ASK_TOOL || name === HANDOVER_TOOL ? true : `You plan and ${builder} builds: put this in the plan for hand_to_builder instead.`;
+
+/** The builder, and the side runs that make alternates: Panel's tools, but never the steps, and never asking. */
+export const builderAllows: Allow = (name) =>
+  STEP_TOOLS.has(name) ? "The planner moves the steps on." : name.startsWith("mcp__panel__") ? true : "FRIDAY only uses Panel's tools.";

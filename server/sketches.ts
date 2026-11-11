@@ -20,6 +20,8 @@ import { checkRules, type RuleFinding } from "./rulecheck.ts";
 import { checkSkills, skillKeyNow, type SkillFinding } from "./skillcheck.ts";
 import { fontFaceCss } from "./fonts.ts";
 import { fillParts } from "./parts.ts";
+import { db } from "./db.ts";
+import { addMadeAsset, brandPaths } from "./brand.ts";
 
 const ID = /^[0-9a-f]{16}$/;
 /** The screen a sketch is looked at on: a laptop, at 1×. Claude sees screens of this size. */
@@ -667,20 +669,23 @@ export function renderUrl(url: string, device: Device, file: (i: number) => stri
   return queue(() => shoot(url, device, file, maxScreens));
 }
 
-/** One render at a time, retried once with a fresh Chrome. Never throws. */
-function queue(run: () => Promise<Render>): Promise<Render> {
-  const job = line
-    .then(() =>
-      run().catch((e: Error) => {
-        // Panel not running isn't fixed by another try; a Chrome that went away is.
-        if (/isn't running|isn't answering/.test(e.message)) throw e;
-        dropChrome();
-        return run();
-      }),
-    )
-    .catch((e: Error) => ({ screens: [], height: 0, errors: [], failed: e.message }) as Render);
+/** One job in Chrome at a time, retried once with a fresh Chrome. */
+function inLine<T>(run: () => Promise<T>): Promise<T> {
+  const job = line.then(() =>
+    run().catch((e: Error) => {
+      // Panel not running isn't fixed by another try, nor is a part that isn't there; a Chrome that went away is.
+      if (e instanceof PartError || /isn't running|isn't answering/.test(e.message)) throw e;
+      dropChrome();
+      return run();
+    }),
+  );
   line = job.catch(() => {});
   return job;
+}
+
+/** One render at a time, retried once with a fresh Chrome. Never throws. */
+function queue(run: () => Promise<Render>): Promise<Render> {
+  return inLine(run).catch((e: Error) => ({ screens: [], height: 0, errors: [], failed: e.message }) as Render);
 }
 
 // ---------- Copying a sketch into Figma ----------
@@ -772,37 +777,42 @@ export const DEVICES: Record<Device, { width: number; height: number; scale: num
   phone: { width: 390, height: 844, scale: 2, mobile: true },
 };
 
-/** `fileOf` null: only measure the page (its rule and skill checks), with no pictures. */
-async function shoot(url: string, device: Device, fileOf: ((i: number) => string) | null, maxScreens = MAX_SCREENS): Promise<Render> {
+type Send = <T = unknown>(method: string, params?: object) => Promise<T>;
+
+/**
+ * Open a page in the warm Chrome on one screen and wait for it the way a person would (fonts
+ * and libraries from CDNs, then intro animations), hand it to `use`, then close it. `say` hears
+ * what went wrong in the page (script errors, failed fonts and images). `scale` is the pixels
+ * per CSS pixel, when it isn't the screen's own. Shared by a sketch's pictures and by keeping a
+ * part of one, so both see the page the same way.
+ */
+async function inPage<T>(url: string, device: Device, use: (s: Send) => Promise<T>, o: { say?: (t: string) => void; scale?: number } = {}): Promise<T> {
   const screen = DEVICES[device];
   const { cdp } = await browser();
   const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
   const { sessionId } = await cdp.send<{ sessionId: string }>("Target.attachToTarget", { targetId, flatten: true });
-  const s = <T = unknown>(method: string, params: object = {}) => cdp.send<T>(method, params, sessionId);
-
-  const errors: string[] = [];
-  const say = (t: string) => {
-    const x = t.replace(/\s+/g, " ").trim().slice(0, 300);
-    if (x && !errors.includes(x) && errors.length < 12) errors.push(x);
-  };
+  const s: Send = (method, params = {}) => cdp.send(method, params, sessionId);
+  const say = o.say;
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  const offs = [
-    cdp.on("Runtime.exceptionThrown", sessionId, (p: any) =>
-      say(String(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "A script failed").split("\n")[0]!)),
-    cdp.on("Runtime.consoleAPICalled", sessionId, (p: any) => {
-      if (p.type === "error") say(`console.error: ${(p.args ?? []).map((a: any) => a.value ?? a.description ?? "").join(" ")}`);
-    }),
-    cdp.on("Log.entryAdded", sessionId, (p: any) => {
-      if (p.entry?.level === "error") say(`${p.entry.text}${p.entry.url ? ` (${p.entry.url})` : ""}`);
-    }),
-  ];
+  const offs = say
+    ? [
+        cdp.on("Runtime.exceptionThrown", sessionId, (p: any) =>
+          say(String(p.exceptionDetails?.exception?.description ?? p.exceptionDetails?.text ?? "A script failed").split("\n")[0]!)),
+        cdp.on("Runtime.consoleAPICalled", sessionId, (p: any) => {
+          if (p.type === "error") say(`console.error: ${(p.args ?? []).map((a: any) => a.value ?? a.description ?? "").join(" ")}`);
+        }),
+        cdp.on("Log.entryAdded", sessionId, (p: any) => {
+          if (p.entry?.level === "error") say(`${p.entry.text}${p.entry.url ? ` (${p.entry.url})` : ""}`);
+        }),
+      ]
+    : [];
   /* eslint-enable @typescript-eslint/no-explicit-any */
   try {
     await s("Page.enable");
     await s("Runtime.enable");
     await s("Log.enable");
     await s("Network.enable");
-    await s("Emulation.setDeviceMetricsOverride", { width: screen.width, height: screen.height, deviceScaleFactor: screen.scale, mobile: screen.mobile });
+    await s("Emulation.setDeviceMetricsOverride", { width: screen.width, height: screen.height, deviceScaleFactor: o.scale ?? screen.scale, mobile: screen.mobile });
     if (screen.mobile) await s("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 }).catch(() => {});
     const net = trackNetwork(cdp, sessionId);
     try {
@@ -820,6 +830,23 @@ async function shoot(url: string, device: Device, fileOf: ((i: number) => string
     } finally {
       net.stop();
     }
+    return await use(s);
+  } finally {
+    offs.forEach((off) => off());
+    await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
+    closeSoon();
+  }
+}
+
+/** `fileOf` null: only measure the page (its rule and skill checks), with no pictures. */
+async function shoot(url: string, device: Device, fileOf: ((i: number) => string) | null, maxScreens = MAX_SCREENS): Promise<Render> {
+  const screen = DEVICES[device];
+  const errors: string[] = [];
+  const say = (t: string) => {
+    const x = t.replace(/\s+/g, " ").trim().slice(0, 300);
+    if (x && !errors.includes(x) && errors.length < 12) errors.push(x);
+  };
+  return inPage(url, device, async (s) => {
     // The designer's rules, where they can be measured: corners, the wordmark, fonts' letters…
     // and Panel's ready-made parts: styled by a class, filled in, in one weight (rulecheck.ts).
     const rules = await checkRules(s);
@@ -839,9 +866,144 @@ async function shoot(url: string, device: Device, fileOf: ((i: number) => string
       screens.push(file);
     }
     return { screens, height: Math.round(height), errors, rules, ...kept };
-  } finally {
-    offs.forEach((off) => off());
-    await cdp.send("Target.closeTarget", { targetId }).catch(() => {});
-    closeSoon();
+  }, { say });
+}
+
+// ---------- Keeping a part of a sketch as a brand asset ----------
+
+/** Why a part can't be kept, in the designer's words: not worth another try with a fresh Chrome. */
+export class PartError extends Error {}
+
+/** The look of each element of a kept drawing, as the browser worked it out, written into the copy. */
+const SVG_LOOK = [
+  "fill", "fill-opacity", "fill-rule", "stroke", "stroke-width", "stroke-linecap", "stroke-linejoin", "stroke-dasharray", "stroke-dashoffset",
+  "stroke-miterlimit", "stroke-opacity", "opacity", "stop-color", "stop-opacity", "flood-color", "flood-opacity", "font-family", "font-size",
+  "font-weight", "font-style", "letter-spacing", "text-anchor", "dominant-baseline", "visibility",
+];
+
+/**
+ * Runs in the sketch's page: finds the part and says what it is. A self-contained <svg> comes
+ * back as a drawing of its own: a copy with each element's look written into it, so it looks
+ * the same with no page around it (a fill from a :root variable becomes the real color), and
+ * nothing that could run or reach outside it (scripts, on… attributes, links that aren't to
+ * itself or to a picture inside it). Anything else is marked, for a picture of it alone.
+ */
+const FIND_PART = (selector: string) => `(() => {
+  let el = null;
+  try { el = document.querySelector(${JSON.stringify(selector)}); } catch (e) { return { bad: true }; }
+  if (!el) return { missing: true };
+  // A shape inside a drawing (the studio points at the deepest thing under the pointer, one
+  // circle of a rosette) is kept as the whole drawing it belongs to.
+  if (el instanceof SVGElement && el.localName !== "svg" && el.closest("svg")) el = el.closest("svg");
+  const r = el.getBoundingClientRect();
+  if (r.width < 1 || r.height < 1) return { empty: true };
+  const tag = el.localName;
+  const label = el.getAttribute("aria-label") || (tag === "svg" ? "drawing" : tag === "img" || tag === "canvas" || tag === "picture" || tag === "video" ? "picture" : "part");
+  let svg = null;
+  if (tag === "svg") {
+    const all = [el, ...el.querySelectorAll("*")];
+    const outside = all.some((n) => {
+      if (n.localName === "image" || n.localName === "foreignObject") return true;
+      if (n.localName !== "use") return false;
+      const h = (n.getAttribute("href") || n.getAttribute("xlink:href") || "").trim();
+      if (!h.startsWith("#")) return true;
+      const t = document.getElementById(h.slice(1));
+      return !t || !el.contains(t);
+    });
+    if (!outside) {
+      const copy = el.cloneNode(true);
+      const to = [copy, ...copy.querySelectorAll("*")];
+      const look = ${JSON.stringify(SVG_LOOK)};
+      const NOT_DRAWN = "defs, linearGradient, radialGradient, pattern, clipPath, mask, symbol, marker, filter";
+      all.forEach((n, i) => {
+        const c = to[i];
+        const cs = getComputedStyle(n);
+        for (const p of look) {
+          let v = cs.getPropertyValue(p);
+          if (!v) continue;
+          // A paint from a gradient or pattern in the drawing points at it by its id alone.
+          v = v.replace(/url\\(\\s*["']?[^"')]*?(#[^"')]+)["']?\\s*\\)/g, "url($1)");
+          c.setAttribute(p, v);
+        }
+        if (cs.display === "none" && !n.closest(NOT_DRAWN)) c.setAttribute("display", "none");
+        const t = cs.transform;
+        c.removeAttribute("style");
+        if (t && t !== "none" && n !== el) c.setAttribute("style", "transform: " + t + "; transform-origin: " + cs.transformOrigin + "; transform-box: " + cs.transformBox);
+      });
+      // Its look is written in now, so the page's own rules (and anything that could run) go.
+      copy.querySelectorAll("script, style").forEach((x) => x.remove());
+      for (const c of [copy, ...copy.querySelectorAll("*")]) {
+        for (const a of [...c.attributes]) {
+          if (/^on/i.test(a.name)) c.removeAttribute(a.name);
+          else if (/(^|:)href$/i.test(a.name) && !/^(#|data:image\\/)/i.test(a.value.trim())) c.removeAttribute(a.name);
+        }
+      }
+      const w = Math.round(r.width * 100) / 100, h = Math.round(r.height * 100) / 100;
+      copy.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      if (!copy.getAttribute("viewBox")) copy.setAttribute("viewBox", "0 0 " + w + " " + h);
+      copy.setAttribute("width", String(w));
+      copy.setAttribute("height", String(h));
+      svg = new XMLSerializer().serializeToString(copy);
+    }
   }
+  if (!svg) {
+    // For the picture: only the part shows, on a clear ground.
+    el.setAttribute("data-panel-keep", "");
+    const st = document.createElement("style");
+    st.textContent = "html, body { background: transparent !important; background-image: none !important; } body * { visibility: hidden !important; } [data-panel-keep], [data-panel-keep] * { visibility: visible !important; }";
+    document.head.append(st);
+  }
+  return { svg, label, x: r.left + scrollX, y: r.top + scrollY, w: r.width, h: r.height };
+})()`;
+
+/**
+ * Keep a part of a sketch as one of its project's brand assets, as a real file: an <svg> part
+ * as SVG, anything else as a PNG on a see-through ground, at 2× (less where a side would pass
+ * 4000 pixels). Opened in Chrome the way its pictures are, on the device and in the state given.
+ */
+export async function keepPart(projectId: string, sketchId: string, o: { selector: string; version?: number; device?: Device; state?: string; name?: string; kind?: string }) {
+  const row = db.query<{ data: string }, [string, string]>("SELECT data FROM board_nodes WHERE id = ? AND project_id = ? AND kind = 'sketch'").get(sketchId, projectId);
+  if (!row) throw new PartError("That sketch is gone.");
+  let data: { title?: string; version?: number; device?: Device } = {};
+  try {
+    data = JSON.parse(row.data);
+  } catch {
+    /* an unnamed sketch */
+  }
+  const version = o.version ?? (Number(data.version) || 1);
+  if (!versionsOf(projectId, sketchId).includes(version)) throw new PartError(`That sketch has no version ${version}.`);
+  const selector = String(o.selector ?? "").trim();
+  if (!selector) throw new PartError("Which part? Give its CSS path.");
+  const device: Device = o.device && o.device in DEVICES ? o.device : data.device && data.device in DEVICES ? data.device : "desktop";
+  let slug = "";
+  if (o.state?.trim()) {
+    const want = o.state.trim().toLowerCase().replace(/^#/, "");
+    const states = statesOf(readSketch(projectId, sketchId, version));
+    const found = states.find((x) => x.name.toLowerCase() === want || x.slug === want);
+    if (!found) throw new PartError(states.length ? `This sketch has no state “${o.state}”. Its states: ${states.map((x) => x.name).join(", ")}.` : "This sketch doesn't list any states.");
+    if (found !== states[0]) slug = found.slug;
+  }
+  const url = fullUrl(sketchPath(projectId, sketchId, version)) + (slug ? `#${slug}` : "");
+  const kept = await inLine(() =>
+    inPage(url, device, async (s) => {
+      const found = await evaluate<{ bad?: true; missing?: true; empty?: true; svg?: string | null; label: string; x: number; y: number; w: number; h: number }>(s, FIND_PART(selector), 10_000);
+      if (found.bad) throw new PartError("That isn't a CSS path Panel can read.");
+      if (found.missing) throw new PartError("That part isn't in the page any more.");
+      if (found.empty) throw new PartError("That part has no size to keep.");
+      if (found.svg) return { format: "svg" as const, bytes: `<?xml version="1.0" encoding="UTF-8"?>\n${found.svg}\n`, label: found.label };
+      // The page's own ground made clear, then a picture of the part's box alone.
+      await s("Emulation.setDefaultBackgroundColorOverride", { color: { r: 0, g: 0, b: 0, a: 0 } });
+      await evaluate(s, "new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(true))))", 3000).catch(() => {});
+      const scale = Math.min(1, 4000 / (2 * Math.max(found.w, found.h)));
+      const shot = await s<{ data: string }>("Page.captureScreenshot", {
+        format: "png", fromSurface: true, captureBeyondViewport: true,
+        clip: { x: found.x, y: found.y, width: found.w, height: found.h, scale },
+      });
+      return { format: "png" as const, bytes: Buffer.from(shot.data, "base64"), label: found.label };
+    }, { scale: 2 }),
+  );
+  const title = String(data.title || "").trim() || "a sketch";
+  const label = kept.label.charAt(0).toUpperCase() + kept.label.slice(1);
+  const asset = await addMadeAsset({ name: o.name?.trim() || `${label} from ${title}`, format: kept.format, bytes: kept.bytes, projectId, kind: o.kind });
+  return { ...asset, path: brandPaths(asset.id)?.file };
 }

@@ -3,8 +3,8 @@
 // you browse, knows what you have open, and keeps every conversation.
 
 import { createPortal } from "react-dom";
-import { Fragment, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
-import { api, brandApi, BRAND_KIND_LABEL, chatApi, displayTitle, fontApi, type BrandAsset, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatFileNote, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
+import { Fragment, useCallback, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, type Ref as ReactRef, useSyncExternalStore } from "react";
+import { api, brandApi, BRAND_KIND_LABEL, chatApi, displayTitle, fontApi, projectApi, type ProjectSteps, type BrandAsset, type CanvasSelection, type Collection, type Filters, type ChatEvent, type ChatFileNote, type ChatMessage, type ChatPart, type ChatSummary, type ContextUse, type Ref, type RefCard } from "./api.ts";
 import { Glow, Mark, type GlowState } from "./Glow.tsx";
 import { Icon, type IconName } from "./Icon.tsx";
 import { Gallery, highlight, RefChip, RichText, useSmoothText } from "./StreamText.tsx";
@@ -179,6 +179,22 @@ export function Assistant(props: {
 
   useEffect(() => props.onRunning(running), [running]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Where the open project stands when it is being made step by step (the row under the head).
+  // Read again when the project changes, when an answer ends, and when a step moves the steps on.
+  const [steps, setSteps] = useState<ProjectSteps | null>(null);
+  const readSteps = useCallback(() => {
+    const at = placeNow.current;
+    if (!at) return setSteps(null);
+    projectApi.steps(at).then((s) => placeNow.current === at && setSteps(s)).catch(() => {});
+  }, []);
+  useEffect(() => {
+    setSteps(null);
+    readSteps();
+  }, [place, readSteps]);
+  useEffect(() => {
+    if (!running) readSteps();
+  }, [running, readSteps]);
+
   const addCards = useCallback((list: RefCard[]) => {
     if (!list.length) return;
     setCards((prev) => {
@@ -229,6 +245,7 @@ export function Assistant(props: {
               putDraft(e.id, null);
               addCards(e.cards);
               if (toolNames.current.get(e.id) === "save_to_collection") changed.current();
+              if (STEP_TOOLS.includes(toolNames.current.get(e.id) ?? "")) readSteps();
             }
             setMessages((ms) => ms.map((m) => (m.id === runId.current || (e.t === "start" && m.id === "pending") ? applyEvent(m, e) : m)));
             if (e.t === "done") setRunning(false);
@@ -243,7 +260,7 @@ export function Assistant(props: {
           }
         });
     },
-    [addCards],
+    [addCards, readSteps],
   );
 
   const load = useCallback(
@@ -533,6 +550,16 @@ export function Assistant(props: {
           </button>
         </div>
       </header>
+      {props.project && steps?.state === "on" && (
+        <StepsRow
+          steps={steps}
+          onStop={() => {
+            const at = props.project!;
+            setSteps(null);
+            projectApi.stopSteps(at).then((s) => placeNow.current === at && setSteps(s)).catch(() => readSteps());
+          }}
+        />
+      )}
 
       <div
         className="ask-scroll"
@@ -561,6 +588,8 @@ export function Assistant(props: {
                   m={m}
                   animate={live.current.has(keyOf(m))}
                   last={i === messages.length - 1}
+                  waiting={i === messages.length - 1 && !running}
+                  onAnswer={(text) => void send(text)}
                   ctx={ctx}
                   onShowInGrid={(ids) => props.onShowInGrid(ids, title || "From FRIDAY")}
                   onRetry={() => {
@@ -869,6 +898,9 @@ function AssistantMessage(props: {
   m: ChatMessage;
   animate: boolean;
   last: boolean;
+  /** The latest answer, and FRIDAY isn't answering: its questions wait for the designer. */
+  waiting: boolean;
+  onAnswer: (text: string) => void;
   ctx: Ctx;
   onShowInGrid: (ids: string[]) => void;
   onRetry: () => void;
@@ -877,7 +909,10 @@ function AssistantMessage(props: {
   const streaming = m.status === "streaming";
   // Parts in order, with tool calls and thinking grouped into runs of steps.
   const groups: ({ kind: "steps"; parts: ChatPart[]; key: number } | { kind: "text"; text: string; key: number })[] = [];
+  // FRIDAY's questions aren't steps: they are drawn after its last words, as the questions themselves.
+  const asks = m.parts.filter((p): p is Extract<ChatPart, { type: "tool" }> => p.type === "tool" && p.name === "ask_designer");
   m.parts.forEach((p, i) => {
+    if (p.type === "tool" && p.name === "ask_designer") return;
     if (p.type === "text") groups.push({ kind: "text", text: p.text, key: i });
     else {
       const g = groups.at(-1);
@@ -924,6 +959,9 @@ function AssistantMessage(props: {
             onLive={i === groups.length - 1 ? setRevealing : undefined}
           />
         ),
+      )}
+      {asks.length > 0 && !(streaming && !asks.every((a) => a.done)) && (
+        <Questions asks={asks} waiting={props.waiting && !streaming && !revealing} onAnswer={props.onAnswer} />
       )}
       {m.status === "error" && (
         <div className="msg-error">
@@ -1055,6 +1093,25 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
       return { doing: "Looking at the ready-made parts", done: "Looked at the ready-made parts" };
     case "hand_to_builder":
       return { doing: "Writing the plan", done: <>Handed the plan to {typeof i.to === "string" ? i.to : "the builder"}</> };
+    // Making a whole thing step by step with a recipe.
+    case "ask_designer":
+      return { doing: "Asking", done: "Asking" };
+    case "get_recipe": {
+      const what = typeof i.name === "string" && i.name ? `the ${i.name.charAt(0).toUpperCase()}${i.name.slice(1)} recipe` : "the recipes";
+      return { doing: `Reading ${what}`, done: `Read ${what}` };
+    }
+    case "start_steps":
+      return { doing: "Starting step by step", done: "Started step by step" };
+    case "set_step": {
+      const step = typeof i.step === "string" ? i.step : "a step";
+      if (i.state === "skipped") return { doing: <>Skipping {q(step)}</>, done: <>Skipped {q(step)}</> };
+      if (i.state === "now") return { doing: <>Going back to {q(step)}</>, done: <>Went back to {q(step)}</> };
+      return { doing: <>Finishing {q(step)}</>, done: <>Finished {q(step)}</> };
+    }
+    case "stop_steps":
+      return { doing: "Stopping going step by step", done: "Stopped going step by step" };
+    case "keep_part":
+      return { doing: "Keeping a part", done: "Kept a part in Brand assets" };
     default:
       return { doing: p.name.replace(/_/g, " "), done: p.name.replace(/_/g, " ") };
   }
@@ -1069,8 +1126,8 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
     return ids;
   }, [parts]);
   const tools = parts.filter((p) => p.type === "tool");
-  const EDITS = ["place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic", "make_sketch", "edit_sketch"];
-  const CANVAS = ["list_projects", "get_project", "get_project_material", "get_sketch", "hand_to_builder", ...EDITS];
+  const EDITS = ["place_on_board", "add_topic", "connect_topics", "add_note", "mark_saves", "lock_topic", "make_sketch", "edit_sketch", "keep_part", ...STEP_TOOLS];
+  const CANVAS = ["list_projects", "get_project", "get_project_material", "get_sketch", "hand_to_builder", "get_recipe", ...EDITS];
   // When one model plans and another builds, each run of steps says whose it is.
   const model = parts.flatMap((p) => (p.type !== "text" && p.model ? [p.model] : []))[0];
   const planned = tools.some((p) => p.type === "tool" && p.name === "hand_to_builder");
@@ -1113,6 +1170,116 @@ function Steps({ parts, active, ctx }: { parts: ChatPart[]; active: boolean; ctx
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** The tools that move a project's steps on: when one comes back, the steps row is read again. */
+const STEP_TOOLS = ["start_steps", "set_step", "stop_steps"];
+
+interface Question { question: string; choices: string[] }
+
+/**
+ * FRIDAY's questions, after its last words. While they wait for the designer, each choice is
+ * a button: with one question, pressing a choice sends it as the designer's message; with
+ * several, pressing marks one choice per question (again to unmark), and Send sends them as
+ * one message, a line per question. Writing in the message box works as always. Once answered,
+ * or in an older answer, the questions stay as text with their choices as one quiet line.
+ */
+function Questions({ asks, waiting, onAnswer }: { asks: Extract<ChatPart, { type: "tool" }>[]; waiting: boolean; onAnswer: (text: string) => void }) {
+  const id = useId();
+  const qs: Question[] = asks
+    .flatMap((a) => (Array.isArray(a.input?.questions) ? (a.input.questions as unknown[]) : []))
+    .flatMap((x) => {
+      const o = x as Partial<Question>;
+      const choices = Array.isArray(o.choices) ? o.choices.filter((c): c is string => typeof c === "string" && !!c.trim()) : [];
+      return typeof o.question === "string" && o.question.trim() && choices.length ? [{ question: o.question.trim(), choices }] : [];
+    })
+    .slice(0, 4);
+  const [marked, setMarked] = useState<(string | null)[]>([]);
+  if (!qs.length) return null;
+  const one = qs.length === 1;
+  const all = qs.every((_, i) => marked[i]);
+  return (
+    <div className={`ask-qs ${waiting ? "waiting" : ""}`}>
+      {qs.map((q, i) => (
+        <div key={i} className="ask-q">
+          <p className="ask-q-text" id={`${id}-${i}`}>{q.question}</p>
+          {waiting ? (
+            <div className="ask-choices" role="group" aria-labelledby={`${id}-${i}`}>
+              {q.choices.map((c) => (
+                <button
+                  key={c}
+                  className={`ask-idea ask-choice ${marked[i] === c ? "on" : ""}`}
+                  aria-pressed={one ? undefined : marked[i] === c}
+                  onClick={() => (one ? onAnswer(c) : setMarked((m) => qs.map((_, k) => (k === i ? (m[i] === c ? null : c) : m[k] ?? null))))}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <p className="ask-q-was">{q.choices.join(" · ")}</p>
+          )}
+        </div>
+      ))}
+      {waiting && !one && (
+        <div className="ask-choices">
+          <button className="ask-idea ask-choice ask-send" disabled={!all} onClick={() => onAnswer(qs.map((q, i) => `${q.question} → ${marked[i]}`).join("\n"))}>
+            Send
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The open project's steps, when it is being made step by step: the recipe's name, then its
+ * steps in order as plain words. Done ones are quiet with a small check (pointing at one shows
+ * its decision), the one that is now in full ink, the rest quiet (skipped ones struck through).
+ * It never wraps: it scrolls sideways, with the step that is now in view. × stops the steps.
+ */
+function StepsRow({ steps, onStop }: { steps: ProjectSteps; onStop: () => void }) {
+  const row = useRef<HTMLDivElement>(null);
+  const now = steps.steps.findIndex((s) => s.state === "now");
+  useLayoutEffect(() => {
+    const el = row.current;
+    if (!el) return;
+    // Only the row scrolls (never the panel): the step that is now brought into view, again
+    // whenever the row's width changes (the panel opening, or being made wider or narrower).
+    const show = () => {
+      const cur = el.querySelector<HTMLElement>(".ask-step.now");
+      if (!cur || !el.clientWidth) return;
+      const r = cur.getBoundingClientRect(), b = el.getBoundingClientRect();
+      if (r.left < b.left + 8) el.scrollLeft += r.left - b.left - 24;
+      else if (r.right > b.right - 24) el.scrollLeft += r.right - b.right + 40;
+    };
+    show();
+    const ro = new ResizeObserver(show);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [now, steps]);
+  return (
+    <div className="ask-steps">
+      <div className="ask-steps-row" ref={row} role="list" aria-label={`Made step by step with the ${steps.recipe.name} recipe`}>
+        <span className="ask-steps-name">{steps.recipe.name}</span>
+        {steps.steps.map((s) => (
+          <span
+            key={s.step}
+            role="listitem"
+            className={`ask-step ${s.state}`}
+            title={s.state === "done" ? s.decision || "Done" : s.state === "now" ? "The step being worked on" : s.state === "skipped" ? "Skipped" : undefined}
+            aria-current={s.state === "now" ? "step" : undefined}
+          >
+            {s.state === "done" && <Icon name="check" size={11} />}
+            {s.step}
+          </span>
+        ))}
+      </div>
+      <button className="ask-steps-x" onClick={onStop} title="Stop going step by step" aria-label="Stop going step by step">
+        <Icon name="x" size={12} />
+      </button>
     </div>
   );
 }

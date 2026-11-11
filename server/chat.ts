@@ -21,8 +21,9 @@ import { designerSkills } from "./skilluse.ts";
 import { partialHtml } from "./partial.ts";
 import { draftWithParts, shortPartsLoosely } from "./parts.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
-import { builderBrief, builderCard, builderNews, whichConversation, type Job } from "./duo.ts";
+import { builderAllows, builderBrief, builderCard, builderNews, oneModelAllows, plannerAllows, whichConversation, type Allow, type Job } from "./duo.ts";
 import { contextParts, type ContextParts } from "./contextparts.ts";
+import { listRecipes, stepsLine } from "./steps.ts";
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS chats (
@@ -338,6 +339,20 @@ On a project's canvas (the context says which project):
 - Never choose, rule out or lock on your own. Use mark_saves and lock_topic only when the designer says so ("lock it with the second one"). When they give a reason, keep it with add_note.
 - The designer's reasons for choosing and ruling out are their taste. They're in get_project (designer_reason) and, across every project, in get_verdicts: read it before you suggest or sketch for a project, and don't bring back what they turned down for the same reason. Suggestions they took off a canvas are there too (removed_by_designer, suggestions_removed): never bring them back. When one reason has come up 3 times or more and their rules don't say it yet, tell them once and offer a line for unugly.md in their own words. They add it; you don't.
 
+Making a whole thing, step by step (on a project's canvas):
+- When the designer asks for a whole new thing or a whole redesign (a website, a landing page, a poster), don't sketch it straight away. Deciding the structure, the words, the color, the type and the motion all at once, alone, is what makes a template. Take it step by step with the recipe for that kind of work: one decision at a time, each shown to the designer and agreed before the next. The recipes:
+{recipes}
+- A small ask is not this: a change, one section, "sketch the hero", "try it with the stamp", a question. Just do it, as always.
+- To begin, read the recipe whole (get_recipe with its name) and ask its opening questions: only the ones the project card, the canvas and get_verdicts don't already answer, at most four, in one message. When they have answered, start_steps. Off a canvas, say it needs a project and stop there.
+- From then on each message says where the project stands: what is done, which step is now, what is to come. Work only on the step that is now, the way the recipe says (get_recipe with step, if you haven't read it in this conversation). Never do two steps in one answer, and never start the next before the designer agreed to this one.
+- Where the recipe asks for options (three headlines, three ideas), make them different in kind, not three shades of one, and say in a line what each comes from.
+- End each step by showing what you made and asking (ask_designer), with going on as the first choice. Then stop.
+- When they agree ("yes", "go on", the first choice): set_step done, with the decision in a sentence, in their words where they gave them. Its answer brings the next step: start on it in the same answer.
+- When they want a change, make it and ask again. "Skip it": set_step skipped. Going back to an earlier step: set_step now. "Just make it" or "skip the steps": stop_steps, then make it from what is decided so far.
+- Every step builds on the ones before it: the words fit the sections, the color comes from the gem, the motion serves both. A wireframe has no colors, so the question about colors (under Sketches) waits for the Color step, which settles them.
+- Ask before you assume, but little: beyond the closing question, one question per step at most. For a question about feeling, show two or three saves in a row and ask which is closer.
+- ask_designer: one to four questions, each with two to four short choices the designer can press; they can also write their own answer. Call it last, after your words. A question with no clear choices is asked in your words instead. Without that tool, ask everything in words.
+
 Sketches (on a project's canvas):
 - When the designer wants to see how something could look ("sketch the hero", "try it with the stamp", "show me three directions"), make it with make_sketch: one self-contained page that shows the idea, not a whole site. Make it from what's settled: the locked decisions, their chosen saves (look at them first), the brief and materials. Use real content in the project's language, never lorem ipsum.
 - Hang it from what it came from (from: the topic, save or sketch). For several directions, make one sketch each, from the same thing, each with a short title and a tries line that says how it differs.
@@ -360,7 +375,20 @@ Building it for real:
 - When the designer has chosen a sketch and wants it built, it goes to Claude Code, which builds it in their code. The studio has a "Build with Claude Code" button for that. If they ask you to and name the folder, use start_build; if they don't name one, ask which folder, or point them at the button.
 - A build card on the canvas is Claude Code working. get_build says how it's going and what it said. To change the built version, message_build passes the request on, in the designer's words plus what you know (what they pointed at, the sketch). Report back in a line or two; the card shows the rest.`;
 
-/** The instructions for a turn: Panel's, then the designer's rules, read fresh so edits apply to the next message. */
+/**
+ * The section on making a whole thing step by step, as it stands in SYSTEM, with {recipes} in
+ * it. systemPrompt fills in the recipes (read fresh, so a new one applies to the next message)
+ * or, with none in the folder, leaves the whole section out.
+ */
+const STEPS_SECTION = SYSTEM.slice(SYSTEM.indexOf("Making a whole thing, step by step"), SYSTEM.indexOf("Sketches (on a project's canvas):"));
+
+/** SYSTEM with the recipes filled in, or without the step by step section when there are none. */
+function withRecipes(system: string) {
+  const recipes = listRecipes();
+  if (!recipes.length) return system.replace(STEPS_SECTION, "");
+  return system.replace("{recipes}", recipes.map((r) => `  - ${r.name}: ${r.for}`).join("\n"));
+}
+
 /** Whether a message has this name as a whole word, with or without @, in any case. */
 function namesWord(text: string, name: string) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -394,7 +422,8 @@ const RULE_CHECKS_LINE = /^- The answer also carries rule_checks:.*$/m;
 export function systemPrompt(reader: Reader = "solo") {
   const rules = designRules();
   const skills = designerSkills(reader);
-  const system = skills ? SYSTEM.replace(RULE_CHECKS_LINE, (line) => line + SKILL_CHECKS_NOTE) : SYSTEM;
+  const base = withRecipes(SYSTEM);
+  const system = skills ? base.replace(RULE_CHECKS_LINE, (line) => line + SKILL_CHECKS_NOTE) : base;
   const withSkills = (text: string) => (skills ? `${text}\n\n${skills}` : text);
   if (!rules) return withSkills(system + fontsNote());
   return withSkills(`${system}${fontsNote()}
@@ -541,6 +570,13 @@ export async function send(chatId: string, text: string, context: SendContext = 
       }
       run.keep = card;
       cardFor = { text: card, hash };
+      // Going step by step with a recipe: where the project stands, on every message (steps.ts).
+      // The planner runs the steps, so the builder's conversation never gets it.
+      const where = compacting ? "" : stepsLine(p.id);
+      if (where) {
+        mainOnly.add(said.length);
+        said.push(where);
+      }
       const sel = picked ? describeSelection(p.id, picked.nodes) : [];
       if (sel.length) said.push(`They have selected on the canvas: ${sel.join("; ")}. “This” and “these” mean what's selected; look at the saves with get_reference before you answer about them.`);
       const pt = context.point;
@@ -781,7 +817,8 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
     const prompt: Prompt = o.attached?.length ? [{ type: "text", text: words }, ...o.attached] : words;
     const r = reader(chatId, run, { side: true, model });
     // In Plan, then build these branch from the builder's conversation, so they get the builder's instructions.
-    return viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle: r.handle, model, effort, fork: true, ...(duo ? { system: systemPrompt("builder") } : {}) }).then((res) => ({ ...res, ...r.state, name }));
+    // Alternates never move the steps and never ask: one answer comes back from them all.
+    return viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle: r.handle, model, effort, fork: true, allow: builderAllows, ...(duo ? { system: systemPrompt("builder") } : {}) }).then((res) => ({ ...res, ...r.state, name }));
   });
   const done = await Promise.all(jobs);
   if (run.stopped) return;
@@ -803,27 +840,38 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
 
 // ---------- Two models on one answer: one plans, one builds ----------
 
-/** What the planner may use: Panel's tools that only read. Making and changing things is the builder's. */
-const READ_TOOLS = new Set(
-  ["get_design_rules", "get_skill", "get_fonts", "get_brand_assets", "get_ready_made", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
-    .map((n) => `mcp__panel__${n}`),
-);
-
-/** The planner's way to hand over: a tool of its own, living in Panel for the length of one turn. */
-function handOver(got: (plan: string) => void) {
+/**
+ * FRIDAY's own tools, living in Panel for the length of one turn. ask_designer always: a
+ * question with choices the designer presses (the app draws them as buttons). hand_to_builder
+ * only for the planner (given `handOver`), its way to hand the plan on.
+ */
+function fridayTools(handOver?: (plan: string) => void) {
   return createSdkMcpServer({
     name: "friday",
     version: "1.0.0",
     tools: [
       tool(
-        "hand_to_builder",
-        "Hand your plan to the builder, the model that makes things (sketches, edits, placing saves on the canvas). Call it once, as your very last step, after your note to the designer.",
-        { plan: z.string().min(40).describe("The whole plan, as numbered steps with concrete values: everything the builder needs, since it won't search or judge taste on its own.") },
-        async ({ plan }) => {
-          got(plan);
-          return { content: [{ type: "text", text: "The builder has the plan and is starting on it now. Your turn is over: write nothing more." }] };
+        "ask_designer",
+        "Ask the designer one to four questions, each with choices they can press. Use it for a step's closing question (going on as the first choice) and for anything you would otherwise guess. Call it last, after your words to the designer: write them first (with any saves to look at as [[id]]s together on a line of their own), then call this, and write nothing after it.",
+        {
+          questions: z.array(z.object({
+            question: z.string().min(1).max(200),
+            choices: z.array(z.string().min(1).max(40)).min(2).max(4),
+          })).min(1).max(4),
         },
+        async () => ({ content: [{ type: "text", text: "The designer sees the questions with the choices as buttons, and can also write their own answer. Your turn is over: write nothing more." }] }),
       ),
+      ...(handOver
+        ? [tool(
+            "hand_to_builder",
+            "Hand your plan to the builder, the model that makes things (sketches, edits, placing saves on the canvas). Call it once, as your very last step, after your note to the designer.",
+            { plan: z.string().min(40).describe("The whole plan, as numbered steps with concrete values: everything the builder needs, since it won't search or judge taste on its own.") },
+            async ({ plan }) => {
+              handOver(plan);
+              return { content: [{ type: "text" as const, text: "The builder has the plan and is starting on it now. Your turn is over: write nothing more." }] };
+            },
+          )]
+        : []),
     ],
   });
 }
@@ -834,7 +882,8 @@ How you work right now: you are the planner, ${planner}, paired with a builder, 
 - When the message only needs an answer (a question, an opinion, a search, a comparison), answer it yourself as usual and don't hand anything over.
 - When it needs something made or changed, think it through first: read what you need, search and look at the saves, decide. Then tell the designer in two or three lines what you're having made and why, and call hand_to_builder as your last step.
 - The builder doesn't see this conversation. It works in a conversation of its own and gets only your plan, the designer's message (with what they have selected or open) and the project card. So the plan must stand on its own: never "as above" or "the one we discussed"; write out each save's [[id]], each value and each piece of content again. After it has built, the designer's next message here starts with a short note of what it made.
-- The plan is everything the builder needs, since it won't search or judge taste on its own. Say what to make and where it hangs (from:, the project and topic), and each save to use with what to take from it ([[id]] and the exact thing: the hex, the font, the layout move). Give the structure part by part with the real content in the project's language, the type (families, sizes, weights, line heights), the color (hex and where each goes), spacing and corners, the states, and the knobs. Name the rules that matter most here, what to check in the pictures before finishing, and what not to do. Concrete values, not adjectives. Number the steps.`;
+- The plan is everything the builder needs, since it won't search or judge taste on its own. Say what to make and where it hangs (from:, the project and topic), and each save to use with what to take from it ([[id]] and the exact thing: the hex, the font, the layout move). Give the structure part by part with the real content in the project's language, the type (families, sizes, weights, line heights), the color (hex and where each goes), spacing and corners, the states, and the knobs. Name the rules that matter most here, what to check in the pictures before finishing, and what not to do. Concrete values, not adjectives. Number the steps.
+- Step by step: you run the steps. You read the recipe, ask the designer (ask_designer), decide each step and move the steps on yourself (start_steps, set_step and stop_steps are yours to call). What a step makes (the wireframe, a study, the hero) goes in the plan for the builder like anything else: say which step it is for and what to hang it from. For a wireframe, say it is one (make_sketch with kind "wireframe") and write out the recipe's starting page and what goes in each row.`;
 
 /** The last few answers in a conversation, newest first, without the one being written now. */
 function recentAnswers(chatId: string, except: string): Part[][] {
@@ -876,8 +925,8 @@ async function duo(chatId: string, run: Run, sessionId: string | null, prompt: P
   const p = reader(chatId, run, { model: planner, tag: plannerName });
   const first = await viaSdk(run, {
     bin, token, prompt, sessionId, mcpUrl, handle: p.handle, model: planner, effort: chatSettings.planEffort(),
-    servers: { friday: handOver((x) => (plan = x)) },
-    allow: (n) => (READ_TOOLS.has(n) || n === "mcp__friday__hand_to_builder" ? true : `You plan and ${builderName} builds: put this in the plan for hand_to_builder instead.`),
+    servers: { friday: fridayTools((x) => (plan = x)) },
+    allow: plannerAllows(builderName),
     system: systemPrompt("planner") + plannerNote(plannerName, builderName),
   });
   if (run.stopped) return;
@@ -926,7 +975,7 @@ async function build(chatId: string, run: Run, o: { effort: Effort; tag?: boolea
   const before = run.parts.length;
   const b = reader(chatId, run, { model: builder, builder: true, ...(o.tag ? { tag: modelName(builder) } : {}) });
   // The builder's own instructions, the same on every builder run (hand-over, pointed edit, Figma rebuild).
-  const res = await viaSdk(run, { bin, token, prompt, sessionId: given.session, mcpUrl, handle: b.handle, model: builder, effort: o.effort, system: systemPrompt("builder") });
+  const res = await viaSdk(run, { bin, token, prompt, sessionId: given.session, mcpUrl, handle: b.handle, model: builder, effort: o.effort, system: systemPrompt("builder"), allow: builderAllows });
   if (run.stopped) return;
   // Its conversation is gone (cleared by Claude Code): a new one starts quietly, with the card.
   if (given.session && run.parts.length === before && (lost(res.stderr) || lost(b.state.resultError ?? ""))) {
@@ -1124,7 +1173,8 @@ async function drive(chatId: string, run: Run, sessionId: string | null, prompt:
   // line stays as the fallback (chat_engine = "cli", or when the SDK can't start).
   let cli = getSetting("chat_engine") === "cli";
   if (!cli) {
-    ({ code, stderr } = await viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle, model, effort }));
+    // With FRIDAY's own ask_designer beside Panel's tools (the command line has no such tool: it asks in words).
+    ({ code, stderr } = await viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle, model, effort, servers: { friday: fridayTools() } }));
     if (stderr && !state.gotResult && !run.parts.length && !run.stopped) {
       console.error("Chat: the Agent SDK couldn't answer, using the command line:", stderr);
       cli = true;
@@ -1264,7 +1314,7 @@ interface SdkTurn {
   /** Tools of this turn's own, beside Panel's (the planner's hand-over). */
   servers?: Record<string, McpServerConfig>;
   /** Whether a tool may run: true, or why not. Panel's tools only, by default. */
-  allow?: (name: string) => true | string;
+  allow?: Allow;
   /** Instructions for this turn, when they aren't Panel's usual ones. */
   system?: string;
 }
@@ -1289,11 +1339,9 @@ const COMPACT_WINDOW = 500_000;
  */
 const wideWindow = (model: string) => (model === "claude-fable-5-2" ? `${model}[1m]` : model);
 
-const panelOnly = (name: string): true | string => (name.startsWith("mcp__panel__") ? true : "FRIDAY only uses Panel's tools.");
-
 async function viaSdk(run: Run, t: SdkTurn) {
   const abort = new AbortController();
-  const allow = t.allow ?? panelOnly;
+  const allow = t.allow ?? oneModelAllows;
   // Words go as they are; a message with pictures or documents goes as one streamed message.
   const content = t.prompt;
   const q = query({

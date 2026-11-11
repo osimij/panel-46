@@ -44,6 +44,7 @@
   transition: background-color var(--fast) var(--ease);
 }
 .st-title:hover, .st-title[aria-expanded="true"] { background: var(--fill); }
+.st-wire { font-weight: 450; color: var(--muted); }
 .st-about { left: 0; right: auto; width: 340px; }
 .st-about .st-pop-title { margin-bottom: 10px; line-height: 1.35; overflow-wrap: anywhere; }
 .st-about .st-pop-text { margin: 0; }
@@ -178,6 +179,11 @@
   animation: st-pill 0.3s var(--ease);
 }
 .st-fresh { background: color-mix(in oklch, var(--ok) 85%, black); color: #fff; animation: st-pill 0.3s var(--ease), st-out 0.4s var(--ease) 2.2s forwards; }
+/* A part that couldn't be kept: the plain reason, in the same place, without the green. */
+.st-fresh.bad { background: color-mix(in oklch, var(--text) 88%, transparent); color: var(--bg); }
+/* Keep at work: the icon breathes until the file is made. */
+.st-icon.busy { animation: st-busy 1s var(--ease) infinite alternate; }
+@keyframes st-busy { to { opacity: 0.35; } }
 @keyframes st-pill { from { opacity: 0; transform: translate(-50%, -6px); } }
 @keyframes st-out { to { opacity: 0; } }
 
@@ -552,6 +558,6 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .studio, .st-strip, .st-pop, .st-rail, .st-hint, .st-fresh, .st-unsaved { animation: none !important; }
+  .studio, .st-strip, .st-pop, .st-rail, .st-hint, .st-fresh, .st-unsaved, .st-icon.busy { animation: none !important; }
   .st-stage.glide .st-device, .st-stage.glide .st-device iframe { transition: none; }
 }

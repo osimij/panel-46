@@ -4,7 +4,7 @@
 // planner gets about what was made. `bun test tests/duo.test.ts`.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { builderBrief, builderNews, whichConversation, type Job } from "../server/duo.ts";
+import { builderAllows, builderBrief, builderNews, oneModelAllows, plannerAllows, whichConversation, type Job } from "../server/duo.ts";
 import type { Part } from "../server/chat.ts";
 import { startPanel, type TestPanel } from "./helpers.ts";
 
@@ -176,5 +176,36 @@ describe("the builder's conversation in the database", () => {
     expect(cols).toContain("builder_card_hash");
     const row = p.db.query("SELECT session_id, builder_session_id, builder_card_hash FROM chats WHERE id = '0000000000000001'").get();
     expect(row).toEqual({ session_id: "old-session", builder_session_id: null, builder_card_hash: null });
+  });
+});
+
+describe("which tools each run may use", () => {
+  const panel = (n: string) => `mcp__panel__${n}`;
+  const steps = ["start_steps", "set_step", "stop_steps"].map(panel);
+
+  test("One model: every one of Panel's tools, and asking, but nothing else", () => {
+    for (const n of [panel("make_sketch"), panel("get_recipe"), ...steps, "mcp__friday__ask_designer"]) expect(oneModelAllows(n)).toBe(true);
+    expect(oneModelAllows("mcp__friday__hand_to_builder")).toBe("FRIDAY only uses Panel's tools.");
+    expect(oneModelAllows("Bash")).toBe("FRIDAY only uses Panel's tools.");
+  });
+
+  test("the planner runs the steps and asks; making is the builder's", () => {
+    const planner = plannerAllows("Opus 5.5");
+    for (const n of [panel("get_project"), panel("get_recipe"), ...steps, "mcp__friday__ask_designer", "mcp__friday__hand_to_builder"]) expect(planner(n)).toBe(true);
+    for (const n of [panel("make_sketch"), panel("edit_sketch"), panel("place_on_board"), panel("keep_part"), panel("lock_topic")]) {
+      expect(planner(n)).toBe("You plan and Opus 5.5 builds: put this in the plan for hand_to_builder instead.");
+    }
+  });
+
+  test("the builder and the alternates never move the steps and never ask", () => {
+    for (const n of steps) expect(builderAllows(n)).toBe("The planner moves the steps on.");
+    for (const n of [panel("make_sketch"), panel("keep_part"), panel("get_recipe")]) expect(builderAllows(n)).toBe(true);
+    expect(builderAllows("mcp__friday__ask_designer")).toBe("FRIDAY only uses Panel's tools.");
+    expect(builderAllows("mcp__friday__hand_to_builder")).toBe("FRIDAY only uses Panel's tools.");
+  });
+
+  test("what the builder made with keep_part is told to the planner", () => {
+    const parts: Part[] = [{ type: "tool", id: "k1", name: "keep_part", builder: true, input: { name: "Stamp" }, done: true }];
+    expect(builderNews([parts])).toContain("keep part");
   });
 });

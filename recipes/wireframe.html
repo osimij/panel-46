@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wireframe</title>
+<style>
+  /* A wireframe: what each section is for and what is in it. Gray only, no design. */
+  :root {
+    --wf-ink: #1a1a1a;    /* Notes */
+    --wf-note: #6b6b6b;   /* Small notes */
+    --wf-faint: #9a9a9a;  /* Placeholder words */
+    --wf-block: #ececec;  /* Blocks */
+    --wf-ground: #fafafa; /* The page */
+    --wf-line: #dcdcdc;   /* Lines between sections */
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { font: 14px/1.45 -apple-system, "SF Pro Text", Inter, system-ui, sans-serif; color: var(--wf-ink); background: #fff; padding: 40px; }
+  .wf { max-width: 1320px; margin: 0 auto; }
+  .wf-top { margin-bottom: 32px; }
+  .wf-top h1 { font-size: 20px; font-weight: 600; }
+  .wf-top p { margin-top: 4px; color: var(--wf-note); max-width: 64ch; }
+  /* One row per section: the note on the left, the section in gray on the right. */
+  .wf-row { display: grid; grid-template-columns: 260px 1fr; gap: 32px; padding: 24px 0; border-top: 1px dashed var(--wf-line); }
+  .wf-note h2 { font-size: 14px; font-weight: 600; }
+  .wf-note .for { margin-top: 4px; }
+  .wf-note ul { margin-top: 8px; padding-left: 16px; color: var(--wf-note); font-size: 13px; }
+  .wf-mock { display: grid; gap: 16px; align-content: start; padding: 28px; background: var(--wf-ground); min-height: 120px; }
+  .wf-nav { display: flex; align-items: center; justify-content: space-between; gap: 20px; color: var(--wf-note); font-size: 13px; }
+  .wf-nav .links { display: flex; gap: 20px; }
+  .wf-h { font-size: 34px; line-height: 1.1; font-weight: 600; color: var(--wf-faint); max-width: 20ch; }
+  .wf-h.small { font-size: 22px; }
+  .wf-p { color: var(--wf-faint); max-width: 56ch; }
+  .wf-btns { display: flex; flex-wrap: wrap; gap: 10px; }
+  .wf-btn { padding: 9px 16px; background: var(--wf-block); color: var(--wf-note); font-size: 13px; }
+  .wf-btn.main { background: #cfcfcf; color: var(--wf-ink); }
+  .wf-media { display: grid; place-items: center; padding: 16px; background: var(--wf-block); color: var(--wf-note); font-size: 13px; text-align: center; aspect-ratio: 16 / 9; }
+  .wf-split { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: center; }
+  .wf-cols { display: grid; grid-template-columns: repeat(var(--n, 3), 1fr); gap: 16px; }
+  .wf-card { display: grid; gap: 8px; align-content: start; padding: 16px; background: var(--wf-block); color: var(--wf-note); font-size: 13px; min-height: 96px; }
+  @media (max-width: 800px) {
+    body { padding: 16px; }
+    .wf-row { grid-template-columns: 1fr; gap: 12px; }
+    .wf-split, .wf-cols { grid-template-columns: 1fr; }
+    /* On a phone the row stays inside the screen: the navbar wraps, the gray block is narrower. */
+    .wf-row > * { min-width: 0; }
+    .wf-mock { padding: 16px; }
+    .wf-nav, .wf-nav .links { flex-wrap: wrap; }
+  }
+</style>
+</head>
+<body>
+<div class="wf">
+  <header class="wf-top">
+    <h1>NAME OF THE SITE: wireframe</h1>
+    <p>ONE LINE: what the page is for, and who reads it.</p>
+  </header>
+
+  <!-- One .wf-row per section. Give each an id. This first one shows every kind of block. -->
+  <section class="wf-row" id="hero">
+    <div class="wf-note">
+      <h2>Hero</h2>
+      <p class="for">ITS JOB, in one line.</p>
+      <ul>
+        <li>Navbar: the name, four links, one button</li>
+        <li>Headline and one line under it</li>
+        <li>Two buttons</li>
+        <li>Media: what it will show</li>
+      </ul>
+    </div>
+    <div class="wf-mock">
+      <div class="wf-nav"><span>Name</span><span class="links"><span>Link</span><span>Link</span><span>Link</span><span>Link</span></span><span class="wf-btn">Button: what it does</span></div>
+      <div class="wf-split">
+        <div style="display:grid;gap:16px">
+          <p class="wf-h">Headline: the one promise</p>
+          <p class="wf-p">One line under it: who it is for and what they get.</p>
+          <div class="wf-btns"><span class="wf-btn main">Main button: what it does</span><span class="wf-btn">Second button</span></div>
+        </div>
+        <div class="wf-media">Media: what it will show</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="wf-row" id="how">
+    <div class="wf-note">
+      <h2>NAME OF THE SECTION</h2>
+      <p class="for">ITS JOB, in one line.</p>
+      <ul><li>What is in it</li></ul>
+    </div>
+    <div class="wf-mock">
+      <p class="wf-h small">Heading: what this section says</p>
+      <div class="wf-cols" style="--n:3">
+        <div class="wf-card">Card: what it says</div>
+        <div class="wf-card">Card: what it says</div>
+        <div class="wf-card">Card: what it says</div>
+      </div>
+    </div>
+  </section>
+</div>
+</body>
+</html>

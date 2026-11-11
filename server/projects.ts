@@ -112,7 +112,7 @@ export interface TopicData { title: string; facet?: TopicFacet; status?: "explor
 export interface RefData { state?: RefState; taking?: string }
 export interface NoteData { text: string }
 /** A sketch: what it is, what it tries, the designer's verdict, and the version it shows. */
-export interface SketchData { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: "desktop" | "tablet" | "phone" }
+export interface SketchData { title: string; tries?: string; state?: RefState; version: number; reason?: string; device?: "desktop" | "tablet" | "phone"; wire?: true }
 /** A build: Claude Code making a chosen sketch for real, in the designer's code. Its progress lives in builds.ts. */
 export interface BuildData { build: string; title: string }
 
@@ -228,6 +228,8 @@ function cleanData(kind: BoardNode["kind"], data: Record<string, unknown>): Reco
     if ("version" in data) out.version = Number.isInteger(data.version) && (data.version as number) >= 1 && (data.version as number) < 100_000 ? data.version : 1;
     if ("reason" in data) out.reason = str(data.reason, 400);
     if ("device" in data) out.device = ["desktop", "tablet", "phone"].includes(data.device as string) ? data.device : "desktop";
+    // A wireframe: a gray page of what each section is for, before any design. Only ever true.
+    if ("wire" in data) out.wire = data.wire === true ? true : undefined;
   } else if (kind === "build") {
     if ("build" in data) out.build = typeof data.build === "string" && /^[0-9a-f]{16}$/.test(data.build) ? data.build : "";
     if ("title" in data) out.title = str(data.title, 120) ?? "";
@@ -732,6 +734,8 @@ export function summary(idOrName: string) {
     return {
       sketch: n.id,
       title: String(n.data.title || "Untitled sketch"),
+      // A rough draft of what each section is for, not a design.
+      wireframe: n.data.wire === true || undefined,
       tries: (n.data.tries as string) || undefined,
       state: String(n.data.state ?? "kept"),
       why_ruled_out: n.data.state === "ruled_out" && n.data.reason ? String(n.data.reason) : undefined,

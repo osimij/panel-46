@@ -229,6 +229,80 @@ export function lockTopic(o: { project: string; topic: string; decision?: string
   return { topic: name(topic), status: o.unlock ? "exploring" : "locked", chosen };
 }
 
+/** Where a step's topic is: its own (by id), else one of the same name, else a new one, after another topic (by id). */
+export interface StepTopic { title: string; facet?: TopicFacet; topic?: string | null; after?: string | null; afterLock?: boolean }
+
+/**
+ * What moving a project's steps on does to its canvas (steps.ts), as ONE logged change, so the
+ * designer's one undo takes it all back: lock a step's topic with its decision, reopen one,
+ * take an empty one off, and make sure the step that is now has a topic of its own, connected
+ * after the topic of the step before it. A step locked before it had a topic gets one first.
+ * Returns the id of the topic of the step that is now, and of the one locked.
+ */
+export function stepOnCanvas(project: string, o: {
+  lock?: StepTopic & { decision: string };
+  reopen?: string;
+  remove?: string;
+  now?: StepTopic;
+}): { topic?: string; locked?: string; removed?: boolean } {
+  const b = board(project);
+  const ops: Op[] = [];
+  const said: string[] = [];
+  const byId = (id: string | null | undefined) => (id ? b.full.nodes.find((n) => n.kind === "topic" && n.id === id) : undefined);
+  /** The step's topic, made (with its line from the one before) if it isn't on the canvas. */
+  const ensure = (s: StepTopic) => {
+    const after = byId(s.after);
+    const want = words(s.title);
+    const t = byId(s.topic) ?? b.full.nodes.find((n) => n.kind === "topic" && words(name(n)) === want);
+    if (t) {
+      if (after && after.id !== t.id && !b.linked(t.id).has(after.id)) {
+        ops.push({ op: "add_edge", edge: { source: after.id, target: t.id } });
+        b.full.edges.push({ id: "", source: after.id, target: t.id, label: "" });
+        said.push(`connected ${name(after)} to ${name(t)}`);
+      }
+      return t;
+    }
+    const made = newTopicOps(b, s.title.trim(), s.facet, after);
+    ops.push(...made.ops);
+    if (after) b.full.edges.push({ id: "", source: after.id, target: made.id, label: "" });
+    said.push(`added ${s.title.trim()}${after ? ` after ${name(after)}` : ""}`);
+    return made.node;
+  };
+  let removed = false;
+  if (o.remove) {
+    const t = byId(o.remove);
+    // Only a topic nothing hangs from: a save, note, sketch or build under it keeps it there.
+    const holds = t && b.full.nodes.some((n) => n.kind !== "topic" && b.linked(t.id).has(n.id));
+    if (t && !holds) {
+      ops.push({ op: "remove_node", id: t.id });
+      said.push(`took ${name(t)} off`);
+      removed = true;
+      b.full.nodes = b.full.nodes.filter((n) => n.id !== t.id);
+    }
+  }
+  let locked: string | undefined;
+  if (o.lock) {
+    const t = ensure(o.lock);
+    locked = t.id;
+    ops.push({ op: "update_node", id: t.id, data: { status: "locked", summary: o.lock.decision } });
+    said.push(`locked ${name(t)}`);
+  }
+  if (o.reopen) {
+    const t = byId(o.reopen);
+    if (t && t.data.status === "locked") {
+      ops.push({ op: "update_node", id: t.id, data: { status: "exploring" } });
+      said.push(`reopened ${name(t)}`);
+    }
+  }
+  // afterLock: the step that is now follows the one just locked (whose topic may be new).
+  const topic = o.now ? ensure(o.now.afterLock && locked ? { ...o.now, after: locked } : o.now).id : undefined;
+  if (ops.length) {
+    const label = said.join(", ");
+    apply(b.p.id, ops, "assistant", { label: label.charAt(0).toUpperCase() + label.slice(1) });
+  }
+  return { topic, locked, removed };
+}
+
 /** For tools that want the project's link. */
 export const projectLink = (project: string) => {
   const p = findProject(project);
@@ -285,9 +359,11 @@ export interface SketchResult {
   /** The states it says it has (meta panel:states). */
   states?: string[];
   linked_saves?: string[];
+  /** A wireframe: a rough draft, not checked against the rules or the skills. */
+  wire?: true;
 }
 
-export async function makeSketch(o: { project: string; title: string; tries?: string; html: string; from?: string; uses?: string[]; device?: Device }): Promise<SketchResult> {
+export async function makeSketch(o: { project: string; title: string; tries?: string; html: string; from?: string; uses?: string[]; device?: Device; kind?: "page" | "wireframe" }): Promise<SketchResult> {
   const first = board(o.project);
   if (o.from && !findSource(first, o.from)) throw new Error(`Nothing called “${o.from}” on this canvas: give a sketch's id or title, a save's id or a topic's name.`);
   const id = newId();
@@ -297,7 +373,9 @@ export async function makeSketch(o: { project: string; title: string; tries?: st
   // Rendering takes a few seconds; place it on the canvas as it is now.
   const b = board(o.project);
   const from = o.from ? findSource(b, o.from) : undefined;
-  const ops: Op[] = [{ op: "add_node", node: { id, kind: "sketch", data: { title, tries: o.tries?.trim().slice(0, 300), state: "proposed", version, ...(device ? { device } : {}) }, ...sketchSpot(b, from) } }];
+  // A wireframe says so on its card; a sketch made from one is a wireframe only if it says so itself.
+  const wire = o.kind === "wireframe";
+  const ops: Op[] = [{ op: "add_node", node: { id, kind: "sketch", data: { title, tries: o.tries?.trim().slice(0, 300), state: "proposed", version, ...(device ? { device } : {}), ...(wire ? { wire: true } : {}) }, ...sketchSpot(b, from) } }];
   if (from) ops.push({ op: "add_edge", edge: { source: from.id, target: id } });
   // The saves it took from, when they're on the canvas: a line from each, so the designer sees where it came from.
   const used: string[] = [];
@@ -309,7 +387,7 @@ export async function makeSketch(o: { project: string; title: string; tries?: st
     }
   }
   apply(b.p.id, ops, "assistant", { label: `Sketched ${title}` });
-  return { project: b.p.id, id, title, version, render, states: statesOf(o.html).map((x) => `${x.name} (#${x.slug})`), linked_saves: used.length ? used : undefined };
+  return { project: b.p.id, id, title, version, render, states: statesOf(o.html).map((x) => `${x.name} (#${x.slug})`), linked_saves: used.length ? used : undefined, ...(wire ? { wire: true as const } : {}) };
 }
 
 export interface Edit { find: string; replace: string; all?: boolean }
@@ -343,11 +421,11 @@ export async function editSketch(o: { project: string; sketch: string; html?: st
     if (!Object.keys(meta).length) throw new Error("Nothing to change: give html, edits, or a new title or tries.");
     apply(b.p.id, [{ op: "update_node", id: node.id, data: meta }], "assistant", { label: `Renamed a sketch to ${title}` });
     const v = Number(node.data.version) || 1;
-    return { project: b.p.id, id: node.id, title, version: v, render: renderOf(b.p.id, node.id, v) };
+    return { project: b.p.id, id: node.id, title, version: v, render: renderOf(b.p.id, node.id, v), ...(node.data.wire === true ? { wire: true as const } : {}) };
   }
   const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "friday", what: o.tries ?? "" });
   apply(b.p.id, [{ op: "update_node", id: node.id, data: { ...meta, version } }], "assistant", { label: `Changed ${title} (version ${version})` });
-  return { project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`) };
+  return { project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`), ...(node.data.wire === true ? { wire: true as const } : {}) };
 }
 
 /**
@@ -474,6 +552,7 @@ export async function getSketch(o: { project: string; sketch: string; version?: 
     // "sketch", not "id": Ask reads "id" in a tool's answer as a save to show.
     sketch: node.id,
     title: sketchName(node),
+    wireframe: node.data.wire === true || undefined,
     tries: (node.data.tries as string) || undefined,
     state: String(node.data.state ?? "kept"),
     designer_reason: (node.data.reason as string) || undefined,
@@ -557,6 +636,7 @@ function versionsFromHistory(projectId: string, sketchId: string, title: string)
 /** What the studio needs about one sketch: its versions, with what each render saw and who made it, and its states. */
 export function sketchInfo(projectId: string, sketchId: string) {
   const node = getProject(projectId)?.nodes.find((n) => n.id === sketchId);
+  const wire = node?.data.wire === true;
   let history: Map<number, VersionNote> | null = null;
   const versions = versionsOf(projectId, sketchId).map((v) => {
     const r = renderOf(projectId, sketchId, v);
@@ -566,10 +646,11 @@ export function sketchInfo(projectId: string, sketchId: string) {
       const h = history.get(v);
       if (h) Object.assign(note, { by: h.by, what: note.what || h.what });
     }
-    return { v, errors: r.errors.length, height: r.height, rules: r.rules ?? [], at: note.at ?? "", by: note.by, what: note.what ?? "" };
+    // A wireframe is a rough draft, not a design: the studio counts no rule findings on it.
+    return { v, errors: r.errors.length, height: r.height, rules: wire ? [] : r.rules ?? [], at: note.at ?? "", by: note.by, what: note.what ?? "" };
   });
   const last = versions.at(-1)?.v;
   const states = last ? statesOf(readSketch(projectId, sketchId, last)) : [];
   // The Figma frame it was last brought back from, so the studio can say where "Bring back" looks.
-  return { versions, states, family: sketchFamily(projectId, sketchId), figma: rememberedFrame(projectId, sketchId) ?? undefined };
+  return { versions, states, family: sketchFamily(projectId, sketchId), figma: rememberedFrame(projectId, sketchId) ?? undefined, ...(wire ? { wire: true as const } : {}) };
 }

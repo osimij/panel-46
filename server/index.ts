@@ -12,7 +12,7 @@ import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
 import { startSummaries, summarize } from "./digest.ts";
 import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, setArchived, setTurnedDownReason, undoLast, verdictReasons, type Op } from "./projects.ts";
-import { captureForFigma, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
+import { captureForFigma, keepPart, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
 import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
 import { addBrandAsset, brandFile, listBrand, removeBrandAsset, updateBrandAsset } from "./brand.ts";
@@ -27,6 +27,7 @@ import { addChatFile, chatFile, removeChatFile } from "./chatfiles.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 import { listening, VOICE_LANGUAGES, type Listening, type VoiceLanguage } from "./voice.ts";
 import { ICON_WEIGHTS, iconDrawings, loadingPiece, readyMade, type IconWeight } from "./ready.ts";
+import { stepsOf, stopSteps } from "./steps.ts";
 import { describeOne, readView, setLead, setSkillUse, skillsPageNow } from "./skilluse.ts";
 import { notReadYet, queueReads, readIfAuto, readQueue, setReadEdits, startSkillReads, stopReads } from "./skillreads.ts";
 import { addFromFolder, addFromGithub, checkPack, listPacks, lookAtFolder, lookAtGithub, packLicense, PackError, skillFileText, skillOrigin } from "./skillpacks.ts";
@@ -808,6 +809,26 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
+  // Keep: a part of a sketch (pointed at in the studio) becomes one of the project's brand assets,
+  // as a real file: an <svg> part as SVG, anything else as a PNG on a see-through ground (no AI).
+  const keepRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/keep$/);
+  if (keepRoute && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { selector?: unknown; version?: unknown; device?: unknown; state?: unknown; name?: unknown; kind?: unknown };
+    const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+    try {
+      return json(await keepPart(keepRoute[1]!, keepRoute[2]!, {
+        selector: str(b.selector) ?? "",
+        version: Number.isInteger(b.version) ? (b.version as number) : undefined,
+        device: (["desktop", "tablet", "phone"] as const).find((d) => d === b.device),
+        state: str(b.state),
+        name: str(b.name),
+        kind: str(b.kind),
+      }));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+
   // Bringing an older version back: its file, as it was, becomes the newest version (no AI).
   const restoreRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/restore$/);
   if (restoreRoute && m === "POST") {
@@ -874,6 +895,23 @@ async function handle(req: Request): Promise<Response> {
       }
     } catch (e) {
       return bad((e as Error).message);
+    }
+  }
+
+  // Where a project stands when it is being made step by step with a recipe (steps.ts), for
+  // FRIDAY's panel; null when it never was. Stop: the panel's ×, the same as "just make it".
+  const stepsRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/steps(\/stop)?$/);
+  if (stepsRoute) {
+    const [, pid, stopping] = stepsRoute as unknown as [string, string, string | undefined];
+    if (!getProject(pid)) return bad("That project is gone.", 404);
+    if (!stopping && m === "GET") return json(stepsOf(pid));
+    if (stopping && m === "POST") {
+      try {
+        stopSteps(pid);
+        return json(stepsOf(pid));
+      } catch (e) {
+        return bad((e as Error).message);
+      }
     }
   }
 

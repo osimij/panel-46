@@ -39,6 +39,8 @@ export interface StudioSketch {
   version: number;
   reason?: string;
   device?: Device;
+  /** A wireframe: a rough draft of what each section is for, not a design. */
+  wire?: true;
 }
 
 const DEVICES: Record<Device, { w: number; h: number; label: string; icon: IconName }> = {
@@ -192,7 +194,9 @@ export function Studio(props: {
   const [viewAt, setViewAt] = useState<DOMRect | null>(null);
   const [closing, setClosing] = useState(false);
   /** A short notice over the page when a new version arrives, saying where it came from. */
-  const [fresh, setFresh] = useState<{ v: number; text: string } | null>(null);
+  const [fresh, setFresh] = useState<{ v: number; text: string; bad?: boolean } | null>(null);
+  /** A part being kept as a brand asset (Keep in the part's strip). */
+  const [keepBusy, setKeepBusy] = useState(false);
   // Words being edited in the page right now.
   const [editing, setEditing] = useState(false);
   /** When the designer last kept something themselves (knobs, words), so its new version isn't credited to FRIDAY. */
@@ -539,10 +543,10 @@ export function Studio(props: {
    * Save: everything changed by hand on this version becomes one new version together.
    * Only knob values the browser accepts are written into the page.
    */
-  const save = async () => {
+  const save = async (): Promise<{ version?: number; failed?: true }> => {
     const h = handRef.current;
     const good = Object.fromEntries(Object.entries(h.vars).filter(([, v]) => v.trim() && !/[;{}<>]/.test(v)));
-    if ((!Object.keys(good).length && !h.words.length && !h.styles.length && !h.removes.length) || keeping) return;
+    if ((!Object.keys(good).length && !h.words.length && !h.styles.length && !h.removes.length) || keeping) return {};
     setKeeping(true);
     keptAt.current = Date.now();
     const from = key;
@@ -566,8 +570,10 @@ export function Studio(props: {
             : `Saved as version ${res.version}, but the page now reports an error it didn't before. Press ‹ to go back to v${sketch.version}.`,
         );
       }
+      return { version: res.version };
     } catch (e) {
       props.onError((e as Error).message);
+      return { failed: true };
     } finally {
       setKeeping(false);
       // A moment longer, in case the new version is still on its way to the canvas.
@@ -578,6 +584,34 @@ export function Studio(props: {
   };
   const saveRef = useRef(save);
   saveRef.current = save;
+
+  /**
+   * Keep: the part selected becomes one of the project's brand assets, as a real file. Changes
+   * waiting by hand are saved first (as Save does), so what is kept is what the designer sees:
+   * it is kept from that new version, on the screen and in the state showing.
+   */
+  const keepPart = async (p: Picked) => {
+    if (keepBusy) return;
+    setKeepBusy(true);
+    const say = (text: string, bad = false) => {
+      setFresh({ v: sketch.version, text, bad: bad || undefined });
+      setTimeout(() => setFresh((f) => (f?.text === text ? null : f)), 2600);
+    };
+    try {
+      let v = sketch.version;
+      if (handCount(handRef.current)) {
+        const saved = await save();
+        if (saved.failed) return;
+        if (saved.version) v = saved.version;
+      }
+      await studioApi.keep(project, sketch.id, { selector: p.selector, version: v, device, ...(p.state || state ? { state: p.state || state } : {}) });
+      say("Kept in Brand assets");
+    } catch (e) {
+      say((e as Error).message, true);
+    } finally {
+      setKeepBusy(false);
+    }
+  };
   /** Put back everything not saved on this version, as one step (⌘Z brings it all back). */
   const putBack = () => step(NONE);
 
@@ -940,6 +974,8 @@ export function Studio(props: {
         <button className="st-icon tip-start" onClick={close} aria-label="Back to the canvas" data-tip="Back to the canvas (Esc)"><Icon name="arrow-left" size={15} /></button>
         <div className="st-name">
           <button className="st-title" onClick={() => setAboutOpen((v) => !v)} aria-expanded={aboutOpen} aria-haspopup="dialog">
+            {/* A wireframe says so, quietly (not twice when its title already does). */}
+            {sketch.wire && !/^wireframe\b/i.test(sketch.title) && <span className="st-wire">Wireframe · </span>}
             {sketch.title || "Untitled sketch"}
           </button>
           {aboutOpen && (
@@ -1190,9 +1226,11 @@ export function Studio(props: {
                 onAlternates={() => ask("", "alternates")}
                 onKnobs={knobsForPart}
                 onDelete={() => deletePart(seenOf(picked))}
+                keeping={keepBusy}
+                onKeep={() => void keepPart(picked)}
               />
             )}
-            {fresh && <div className="st-fresh" key={fresh.v}>{fresh.text}</div>}
+            {fresh && <div className={`st-fresh ${fresh.bad ? "bad" : ""}`} key={`${fresh.v}:${fresh.text}`} role="status">{fresh.text}</div>}
           </div>
           {!askOpen && (
             <AskBar
@@ -1339,6 +1377,9 @@ function PointStrip(props: {
   onAlternates: () => void;
   onKnobs: () => void;
   onDelete: () => void;
+  /** Keeping it as a brand asset right now. */
+  keeping: boolean;
+  onKeep: () => void;
 }) {
   const { picked } = props;
   // Clicks on the strip stay on the strip (the page would take them as pointing).
@@ -1364,6 +1405,9 @@ function PointStrip(props: {
       </button>
       <button className={`st-icon ${props.knobsOn ? "on" : ""}`} onClick={props.onKnobs} aria-pressed={props.knobsOn} aria-label="Knobs for this (K)" data-tip="Knobs for this (K)">
         <Icon name="sliders" size={15} />
+      </button>
+      <button className={`st-icon ${props.keeping ? "busy" : ""}`} onClick={props.onKeep} disabled={props.keeping} aria-busy={props.keeping} aria-label="Keep as a brand asset" data-tip={props.keeping ? "Keeping it…" : "Keep as a brand asset"}>
+        <Icon name="keep" size={15} />
       </button>
       <button className="st-icon" onClick={props.onDelete} aria-label="Delete (⌫)" data-tip="Delete (⌫)">
         <Icon name="trash" size={15} />
