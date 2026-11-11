@@ -8,6 +8,7 @@
     { "name": "panel-copy-voice", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4767", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist-voice", "bun", "server/index.ts"], "port": 4767 },
     { "name": "panel-copy-canvas", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4777", "PANEL_LIBRARY_DIR=.copy/lib-canvas", "PANEL_DIST=.copy/dist-canvas", "bun", "server/index.ts"], "port": 4777 },
     { "name": "panel-copy-search", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4757", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist", "bun", "server/index.ts"], "port": 4757 },
+    { "name": "panel-copy-window", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4797", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist", "bun", "server/index.ts"], "port": 4797 },
     { "name": "panel-copy-ready", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4787", "PANEL_LIBRARY_DIR=.copy/lib-ready", "PANEL_DIST=.copy/dist-ready", "bun", "server/index.ts"], "port": 4787 }
   ]
 }

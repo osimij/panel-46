@@ -67,3 +67,24 @@ withChrome("words edited in the studio are kept as a new version", async () => {
   expect(page).toContain("<h1>Справки за минуту</h1>");
   expect(page).toContain("<p>Подпись</p>");
 }, 60_000);
+
+withChrome("several word changes and a knob are saved as one version", async () => {
+  const made = await tool("make_sketch", { project, title: "Many words", html: PAGE(":root{--accent:#111}", `<main><h1>Один</h1><p>Два</p><p>Три</p></main>`) });
+  const id = made.first.sketch ?? made.first.id;
+  const edit = (n: number, before: string, after: string) => ({ path: `body > main:nth-child(1) > ${n === 1 ? "h1" : "p"}:nth-child(${n})`, before, after, before_text: before, after_text: after });
+  const edits = [edit(1, "Один", "One"), edit(2, "Два", "Two"), edit(3, "Три", "Three")];
+  // Checking writes nothing.
+  const checked = await p.send("POST", `/api/projects/${project}/sketches/${id}/changes`, { edits, from_version: 1, check: true });
+  expect(checked.status).toBe(200);
+  expect((await (await p.send("GET", `/api/projects/${project}/sketches/${id}`)).json()).versions.length).toBe(1);
+  // Words that aren't in the file are turned down.
+  const wrong = await p.send("POST", `/api/projects/${project}/sketches/${id}/changes`, { edits: [edit(2, "Нет", "No")], from_version: 1, check: true });
+  expect(wrong.status).toBe(400);
+  // Save: all of it, one new version.
+  const res = await p.send("POST", `/api/projects/${project}/sketches/${id}/changes`, { edits, vars: { "--accent": "#e2372b" }, from_version: 1 });
+  expect(res.status).toBe(200);
+  expect((await res.json()).version).toBe(2);
+  const page = await (await fetch(`${p.url}/sketches/${project}/${id}/v2.html`)).text();
+  for (const w of ["<h1>One</h1>", "<p>Two</p>", "<p>Three</p>", "#e2372b"]) expect(page).toContain(w);
+  expect((await (await p.send("GET", `/api/projects/${project}/sketches/${id}`)).json()).versions.length).toBe(2);
+}, 60_000);

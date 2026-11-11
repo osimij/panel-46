@@ -841,12 +841,14 @@ export interface Build {
   updated_at: string;
 }
 
+/** Words the designer edited in place in the studio: where, and the HTML and words before and after. */
+export interface WordEdit { path: string; before: string; after: string; before_text: string; after_text: string }
+
 export const studioApi = {
   sketch: (project: string, sketch: string) => call<SketchInfo>(`/api/projects/${project}/sketches/${sketch}`),
   /** Keep the knobs as they are now: a new version with these :root variables changed. */
   setVars: (project: string, sketch: string, vars: Record<string, string>, from_version: number) =>
     call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/vars`, { method: "POST", body: body({ vars, from_version }) }),
-  /** Words the designer edited in place in the studio, kept as a new version. */
   /** One version on one screen and in one state, as Figma pastes it (editable layers). */
   figmaCopy: async (project: string, sketch: string, o: { version: number; device: Device; state?: string }) => {
     const res = await fetch(`/api/projects/${project}/sketches/${sketch}/figma/copy`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(o) });
@@ -855,8 +857,12 @@ export const studioApi = {
   },
   figmaRead: (project: string, sketch: string, version: number) =>
     call<FigmaRead>(`/api/projects/${project}/sketches/${sketch}/figma/read`, { method: "POST", body: body({ version }) }),
-  setText: (project: string, sketch: string, edit: { path: string; before: string; after: string; before_text: string; after_text: string }, from_version: number) =>
-    call<{ version: number }>(`/api/projects/${project}/sketches/${sketch}/text`, { method: "POST", body: body({ ...edit, from_version }) }),
+  /**
+   * Save: every word edited in place and every knob moved on this version, as one new version.
+   * With check, nothing is written; it only fails if a change can't be kept.
+   */
+  saveChanges: (project: string, sketch: string, changes: { edits: WordEdit[]; vars: Record<string, string> }, from_version: number, check = false) =>
+    call<{ version?: number; ok?: boolean }>(`/api/projects/${project}/sketches/${sketch}/changes`, { method: "POST", body: body({ ...changes, from_version, check }) }),
   folders: () => call<{ recent: string[]; found: string[]; home: string }>("/api/builds/folders"),
   build: (o: { project: string; sketch: string; folder: string; note?: string }) => call<Build>("/api/builds", { method: "POST", body: body(o) }),
   getBuild: (id: string) => call<Build>(`/api/builds/${id}`),

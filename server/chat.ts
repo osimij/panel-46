@@ -1253,14 +1253,13 @@ interface SdkTurn {
  * Where FRIDAY's conversations get summarized, in tokens. Claude Code's own default for a
  * 1M-token model is near the end of the window (about 967K), so a long design chat, full
  * of pictures, would grow slow and costly and lose focus long before. Claude Code summarizes
- * a little before the window it is given, so 240K means about 210K; the project card comes
- * back right after (see viaSdk). It was 320K (about 290K) until Nov 2026: across 550 past
- * requests the average conversation was 141K tokens and a quarter of all requests ran above
- * 210K. Every step re-reads the whole conversation, and one picked up after an hour is
- * written again in full, so its size is what both cost. The designer chose the middle
- * between 150K and 320K.
+ * a little before the window it is given, so 500K means about 467K; the project card comes
+ * back right after (see viaSdk). It was 320K, then 240K (about 207K) for a day in Nov 2026
+ * to spend fewer tokens. The designer's plan has room, so spend stopped being the reason,
+ * and long sessions were being summarized too often. 500K keeps them whole for much longer
+ * while staying well short of where a very long chat gets slow and loses focus.
  */
-const COMPACT_WINDOW = 240_000;
+const COMPACT_WINDOW = 500_000;
 
 /**
  * The name Claude Code is given for a model. Fable under its plain name gets a 200K window,

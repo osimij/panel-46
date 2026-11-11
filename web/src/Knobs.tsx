@@ -1,7 +1,8 @@
 // The studio's knobs: a sketch's own CSS variables (its colors, fonts, sizes, radius, spacing)
 // as controls a designer can read at a glance. Moving one changes the live page at once, with
 // no AI involved, and a palette measured from any save on the canvas can be tried on in a
-// click. Nothing is kept until "Keep as a new version", which writes the values into the page's :root.
+// click. Nothing is kept until Save, which writes the values into the page's :root (with any words
+// edited in the page, as one new version).
 //
 // A variable's name alone says little (--w-num, --c4, --stop), so the page tells the studio
 // more about each one (see the kit in sketches.ts): the note written beside it, the lines it
@@ -1040,7 +1041,7 @@ export function Knobs(props: {
         <button className="st-quiet" disabled={!changed || props.keeping} onClick={props.onReset} title="Put every knob back as it was">
           <Icon name="refresh" size={13} /> Reset{changed > 0 ? ` ${changed}` : ""}
         </button>
-        <button className="st-send" disabled={!changed || props.keeping} onClick={props.onKeep}>{props.keeping ? "Keeping…" : `Keep as v${props.nextVersion}`}</button>
+        <button className="st-send" disabled={!changed || props.keeping} onClick={props.onKeep}>{props.keeping ? "Saving…" : `Save as v${props.nextVersion}`}</button>
       </div>
       {openKnob && open && (
         <ColorPop

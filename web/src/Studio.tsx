@@ -13,9 +13,11 @@
 // FRIDAY's panel belongs to the app, so the studio folds it away and brings it back.
 //
 // What FRIDAY changes arrives as a new version on the canvas, and loads here in place.
+// What the designer changes by hand (words typed over in the page, knobs moved) waits, shown
+// live, until they press Save: then all of it becomes one new version, however many changes.
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { studioApi, type Device, type FigmaRead, type RefState, type RuleFinding, type SketchInfo, type SketchPoint } from "./api.ts";
+import { studioApi, type Device, type FigmaRead, type RefState, type RuleFinding, type SketchInfo, type SketchPoint, type WordEdit } from "./api.ts";
 import { Icon, type IconName } from "./Icon.tsx";
 import { Knobs, type PageVar, type Palette } from "./Knobs.tsx";
 import { Compare } from "./Compare.tsx";
@@ -40,15 +42,17 @@ const DEVICES: Record<Device, { w: number; h: number; label: string; icon: IconN
 
 // "?studio=4": the studio's own address for a page, so a copy a browser kept from before the
 // kit was added (pages used to be cached forever) is never used. Bump it when the kit changes.
-const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=4`;
+const pageOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.html?studio=5`;
 const pictureOf = (project: string, id: string, v: number) => `/sketches/${project}/${id}/v${v}.jpg`;
 
 /**
- * Knob changes not yet kept, per sketch and version. They outlive the studio closing, so
+ * Knob changes not saved yet, per sketch and version. They outlive the studio closing, so
  * stepping to another version, FRIDAY delivering a new one, or Esc never drops them; only
- * "Keep as vN" and Reset empty them. (A reload of Panel does.)
+ * Save and Reset empty them. (A reload of Panel does.)
  */
 const pending = new Map<string, Record<string, string>>();
+/** Words edited in the page and not saved yet, per sketch and version, kept the same way. */
+const pendingWords = new Map<string, WordEdit[]>();
 const pendingKey = (project: string, id: string, v: number) => `${project}/${id}/v${v}`;
 
 /** How far the header has given things up as it narrowed, 0 (nothing) to FOLDS (all it can). */
@@ -112,9 +116,8 @@ export function Studio(props: {
   const [figmaOpen, setFigmaOpen] = useState(false);
   const [closing, setClosing] = useState(false);
   const [fresh, setFresh] = useState<{ v: number; mine: boolean } | null>(null);
-  // Words being edited in the page, and being kept as a new version.
+  // Words being edited in the page right now.
   const [editing, setEditing] = useState(false);
-  const [keepingText, setKeepingText] = useState(false);
   /** When the designer last kept something themselves (knobs, words), so its new version isn't credited to FRIDAY. */
   const keptAt = useRef(0);
   // Knobs: the page's own variables, what's been moved and not yet kept (on this version).
@@ -135,6 +138,17 @@ export function Studio(props: {
     else pending.delete(keyRef.current);
     editsRef.current = next;
     setEditsState(next);
+  }, []);
+  // Words edited and not saved yet (on this version), the same way.
+  const [words, setWordsState] = useState<WordEdit[]>(() => pendingWords.get(key) ?? []);
+  const wordsRef = useRef(words);
+  wordsRef.current = words;
+  const setWords = useCallback((next: WordEdit[], at = keyRef.current) => {
+    if (next.length) pendingWords.set(at, next);
+    else pendingWords.delete(at);
+    if (at !== keyRef.current) return;
+    wordsRef.current = next;
+    setWordsState(next);
   }, []);
   /** The version knob changes are being kept from: its new version starts with nothing pending. */
   const keepingFrom = useRef<string | null>(null);
@@ -215,6 +229,7 @@ export function Studio(props: {
         // The page (re)loaded: read its knobs, and put back what was being tried.
         post({ t: "vars" });
         if (Object.keys(editsRef.current).length) post({ t: "set", vars: editsRef.current });
+        if (wordsRef.current.length) post({ t: "text", edits: wordsRef.current });
       } else if (m.t === "vars") {
         const list: PageVar[] = Array.isArray(m.vars) ? m.vars : [];
         setVars(list);
@@ -233,9 +248,14 @@ export function Studio(props: {
         setPicked({ label: m.label, selector: m.selector, text: m.text, html: m.html, style: m.style ?? {}, rect: m.rect, state: m.state ?? "", editable: !!m.editable });
       } else if (m.t === "editing") {
         setEditing(!!m.on);
+        // The bubble's box may have taken the keyboard on the first click: typing goes into the words.
+        if (m.on) frame.current?.focus();
       } else if (m.t === "edited") {
+        // Done with these words: let go of them, so the bubble doesn't sit over the next ones.
         setEditing(false);
-        void keepText({ path: String(m.path ?? ""), before: String(m.before ?? ""), after: String(m.after ?? ""), before_text: String(m.beforeText ?? ""), after_text: String(m.afterText ?? "") });
+        setPicked(null);
+        post({ t: "release" });
+        void addWords({ path: String(m.path ?? ""), before: String(m.before ?? ""), after: String(m.after ?? ""), before_text: String(m.beforeText ?? ""), after_text: String(m.afterText ?? "") });
       } else if (m.t === "cancel") {
         escapeRef.current(null);
       }
@@ -272,16 +292,28 @@ export function Studio(props: {
     shownKey.current = key;
     carried.current = false;
     const sameSketch = was.startsWith(`${project}/${sketch.id}/v`);
-    if (sameSketch && isNew(sketch.version) && keepingFrom.current !== was && pending.has(was) && !pending.has(key)) {
+    const handedOn = sameSketch && isNew(sketch.version) && keepingFrom.current !== was;
+    if (handedOn && pending.has(was) && !pending.has(key)) {
       pending.set(key, pending.get(was)!);
       pending.delete(was);
       carried.current = true;
+    }
+    // Words waiting on the version before come along too, as far as they still fit the new one.
+    let carriedWords: WordEdit[] = [];
+    if (handedOn && pendingWords.has(was) && !pendingWords.has(key)) {
+      carriedWords = pendingWords.get(was)!;
+      pendingWords.set(key, carriedWords);
+      pendingWords.delete(was);
     }
     setVars(null);
     setRulesOpen(false);
     const now = pending.get(key) ?? {};
     editsRef.current = now;
     setEditsState(now);
+    const nowWords = pendingWords.get(key) ?? [];
+    wordsRef.current = nowWords;
+    setWordsState(nowWords);
+    if (carriedWords.length) void fitWords(key, sketch.version, carriedWords);
   }, [key]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const turn = useCallback((changes: Record<string, string>) => {
@@ -295,19 +327,29 @@ export function Studio(props: {
     post({ t: "set", vars: Object.fromEntries(Object.keys(editsRef.current).map((k) => [k, null])) });
     setEdits({});
   }, [post, setEdits]);
-  const keepKnobs = async () => {
-    // Only values the browser accepts are written into the page.
+  /**
+   * Save: the words and the knobs changed on this version become one new version together.
+   * Only knob values the browser accepts are written into the page.
+   */
+  const save = async () => {
     const good = Object.fromEntries(Object.entries(edits).filter(([, v]) => v.trim() && !/[;{}<>]/.test(v)));
-    if (!Object.keys(good).length || keeping) return;
+    const list = words;
+    if ((!Object.keys(good).length && !list.length) || keeping) return;
     setKeeping(true);
     keptAt.current = Date.now();
     const from = key;
     keepingFrom.current = from;
     try {
-      await studioApi.setVars(project, sketch.id, good, sketch.version);
-      // Kept: nothing waits on that version any more, and its new version starts clean.
+      const res = await studioApi.saveChanges(project, sketch.id, { edits: list, vars: good }, sketch.version);
+      // Saved: nothing waits on that version any more, and its new version starts clean.
       pending.delete(from);
-      if (shownKey.current === from) setEdits({});
+      pendingWords.delete(from);
+      if (shownKey.current === from) {
+        setEdits({});
+        setWords([]);
+        // Nothing changed in the file after all: show the page as it really is.
+        if (res.version === sketch.version) setReload((n) => n + 1);
+      }
     } catch (e) {
       props.onError((e as Error).message);
     } finally {
@@ -318,23 +360,56 @@ export function Studio(props: {
       }, 4000);
     }
   };
+  /** Put back everything not saved on this version: the knobs and the words. */
+  const putBack = () => {
+    resetKnobs();
+    if (wordsRef.current.length) {
+      setWords([]);
+      setReload((n) => n + 1);
+    }
+  };
 
-  /** Words the designer edited in the page, kept as a new version (no AI). */
-  const keepText = async (edit: { path: string; before: string; after: string; before_text: string; after_text: string }) => {
+  /**
+   * Words the designer just edited in the page. They wait with the others until Save, but are
+   * checked against the file now, so words Panel can't find there are turned down at once.
+   * The same part edited twice is one change, from its first words to its last.
+   */
+  const addWords = async (edit: WordEdit) => {
     if (edit.after === edit.before) return;
-    setKeepingText(true);
-    keptAt.current = Date.now();
+    const at = keyRef.current, v = sketch.version;
+    const was = wordsRef.current;
+    const list = [...was];
+    const same = list.findIndex((x) => x.path === edit.path && x.after === edit.before);
+    if (same >= 0) {
+      const first = list[same]!;
+      if (edit.after === first.before) list.splice(same, 1);
+      else list[same] = { ...first, after: edit.after, after_text: edit.after_text };
+    } else list.push(edit);
+    setWords(list, at);
+    if (!list.length) return;
     try {
-      const res = await studioApi.setText(project, sketch.id, edit, sketch.version);
-      // Nothing changed in the file after all: put the page back as it is.
-      if (res.version === sketch.version) setReload((n) => n + 1);
+      await studioApi.saveChanges(project, sketch.id, { edits: list, vars: {} }, v, true);
     } catch (e) {
       props.onError((e as Error).message);
-      // The page still shows the words that weren't kept: load it again as it really is.
-      setReload((n) => n + 1);
-    } finally {
-      setKeepingText(false);
+      // Let this one go: back to the words waiting before it, and the page loads again with them.
+      if (pendingWords.get(at) === list) setWords(was, at);
+      if (at === keyRef.current) setReload((n) => n + 1);
     }
+  };
+  /**
+   * Words carried over to a new version from FRIDAY: the ones that no longer fit its file
+   * (FRIDAY changed those words too, say) are let go, and the designer is told.
+   */
+  const fitWords = async (at: string, v: number, list: WordEdit[]) => {
+    const fits = async (l: WordEdit[]) => studioApi.saveChanges(project, sketch.id, { edits: l, vars: {} }, v, true).then(() => true, () => false);
+    if (await fits(list)) return;
+    const kept: WordEdit[] = [];
+    for (const e of list) if (await fits([...kept, e])) kept.push(e);
+    if (pendingWords.get(at) !== list) return;
+    setWords(kept, at);
+    const gone = list.length - kept.length;
+    props.onError(`${gone === 1 ? "One word change" : `${gone} word changes`} you hadn't saved didn't fit the new version, so ${gone === 1 ? "it was" : "they were"} let go.`);
+    if (at === keyRef.current) setReload((n) => n + 1);
   };
 
   const close = useCallback(() => {
@@ -542,6 +617,8 @@ export function Studio(props: {
 
   /** Knob changes are waiting on this version while Knobs is closed. */
   const waiting = Object.keys(edits).length > 0 && column !== "knobs";
+  /** Everything changed by hand on this version and not saved yet: words and knobs. */
+  const unsaved = words.length + Object.keys(edits).length;
   const comparing = view === "compare" && hasDirections;
 
   return (
@@ -585,9 +662,9 @@ export function Studio(props: {
           </button>
         )}
         <div className="st-seg st-cols" role="group" aria-label="Beside the page">
-          <button className={column === "knobs" ? "on" : ""} aria-pressed={column === "knobs"} onClick={() => toggleColumn("knobs")} title={waiting ? "Knobs: you have changes here not kept yet" : "Knobs: change its colors, type, corners and spacing yourself, live"}>
+          <button className={column === "knobs" ? "on" : ""} aria-pressed={column === "knobs"} onClick={() => toggleColumn("knobs")} title={waiting ? "Knobs: you have changes here not saved yet" : "Knobs: change its colors, type, corners and spacing yourself, live"}>
             <Icon name="sliders" size={14} /><span className="st-l-col">Knobs</span>
-            {waiting && <i className="st-dot" aria-label="changes not kept yet" />}
+            {waiting && <i className="st-dot" aria-label="changes not saved yet" />}
           </button>
           {hasDirections && (
             <button className={column === "directions" ? "on" : ""} aria-pressed={column === "directions"} onClick={() => toggleColumn("directions")} title="Directions: the sketches branched from this one">
@@ -715,6 +792,13 @@ export function Studio(props: {
                 )}
               </span>
             )}
+            {unsaved > 0 && (
+              <span className="st-unsaved" role="group" aria-label="Changes not saved">
+                <span className="st-unsaved-text">{unsaved} {unsaved === 1 ? "change" : "changes"} not saved</span>
+                <button className="st-quiet sm" disabled={keeping} onClick={putBack} title="Put back every change not saved yet">Put back</button>
+                <button className="st-send sm" disabled={keeping} onClick={() => void save()} title="Save every change as one new version">{keeping ? "Saving…" : `Save as v${(versions.at(-1)?.v ?? sketch.version) + 1}`}</button>
+              </span>
+            )}
             <span className="st-size">{d.w}×{device === "desktop" ? Math.round(fit.h) : d.h}{fit.scale < 1 ? ` · ${Math.round(fit.scale * 100)}%` : ""}</span>
             <a className="st-icon sm" href={src} target="_blank" rel="noopener noreferrer" aria-label="Open in a new tab" title="Open in a new tab"><Icon name="external" size={13} /></a>
             {/* With FRIDAY's panel showing, its box is the place to ask; Alternates waits here. */}
@@ -738,8 +822,6 @@ export function Studio(props: {
                 picked={picked}
                 style={bubble}
                 editing={editing}
-                keeping={keepingText}
-                nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
                 onSend={ask}
                 onEdit={() => {
                   // The page takes the keyboard, so typing goes into the words.
@@ -753,7 +835,7 @@ export function Studio(props: {
                 }}
               />
             )}
-            {fresh && <div className="st-fresh" key={fresh.v}>{fresh.mine ? `Kept as version ${fresh.v}` : `Version ${fresh.v} from FRIDAY`}</div>}
+            {fresh && <div className="st-fresh" key={fresh.v}>{fresh.mine ? `Saved as version ${fresh.v}` : `Version ${fresh.v} from FRIDAY`}</div>}
           </div>
           {!askOpen && (
             <AskBar
@@ -778,7 +860,7 @@ export function Studio(props: {
             nextVersion={(versions.at(-1)?.v ?? sketch.version) + 1}
             onChange={turn}
             onReset={resetKnobs}
-            onKeep={() => void keepKnobs()}
+            onKeep={() => void save()}
             onAskForKnobs={() => props.ask("Rewrite this sketch so its colors, fonts, type sizes, corner radius and spacing are CSS variables on :root (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space and whatever else it needs), used everywhere in place of the fixed values. Give each one a short note in plain words beside it where its name doesn't say it (--c1: #e2372b; /* Cortex */). Change nothing about how it looks.", undefined, undefined, true)}
             onShow={showVar}
           />
@@ -818,8 +900,6 @@ function PointBubble(props: {
   picked: Picked;
   style: { left: number; top: number };
   editing: boolean;
-  keeping: boolean;
-  nextVersion: number;
   onSend: (t: string, mode?: "change" | "alternates") => void;
   onEdit: () => void;
   onEditEnd: (keep: boolean) => void;
@@ -830,19 +910,19 @@ function PointBubble(props: {
   const input = useRef<HTMLTextAreaElement>(null);
   // Not while the words are being edited: the page has the keyboard then.
   useEffect(() => {
-    if (!props.editing && !props.keeping) input.current?.focus();
+    if (!props.editing) input.current?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  if (props.editing || props.keeping) {
+  if (props.editing) {
     return (
       <div className="st-bubble" style={style} onPointerDown={(e) => e.stopPropagation()}>
         <div className="st-bubble-head">
           <span className="st-bubble-dot" />
-          <span className="st-bubble-label">{props.keeping ? "Keeping your words…" : "Editing the words in the page"}</span>
+          <span className="st-bubble-label">Editing the words in the page</span>
         </div>
-        <p className="st-bubble-note">Type over them. ↵ keeps them as version {props.nextVersion}, Esc puts them back. ⇧↵ for a new line.</p>
+        <p className="st-bubble-note">Type over them. ↵ when done, Esc puts them back, ⇧↵ for a new line. Nothing is saved until you press Save.</p>
         <div className="st-bubble-actions">
-          <button className="st-quiet" disabled={props.keeping} onClick={() => props.onEditEnd(false)}>Put back</button>
-          <button className="st-send" disabled={props.keeping} onClick={() => props.onEditEnd(true)}>Keep as v{props.nextVersion}</button>
+          <button className="st-quiet" onClick={() => props.onEditEnd(false)}>Put back</button>
+          <button className="st-send" onClick={() => props.onEditEnd(true)}>Done</button>
         </div>
       </div>
     );

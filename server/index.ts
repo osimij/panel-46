@@ -16,7 +16,7 @@ import { captureForFigma, readSketch, SKETCH_CSP, servedSketch, sketchFile, stat
 import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
 import { addBrandAsset, brandFile, listBrand, removeBrandAsset, updateBrandAsset } from "./brand.ts";
-import { setSketchText, setSketchVars, sketchInfo, sketchMeta } from "./board.ts";
+import { saveSketchChanges, setSketchText, setSketchVars, sketchInfo, sketchMeta } from "./board.ts";
 import { buildShot, folderSuggestions, getBuild, messageBuild, startBuild, startPreview, stopBuild, stopPreview } from "./builds.ts";
 import { parseMeasured } from "./sitefacts.ts";
 import { startMeasuring } from "./measure.ts";
@@ -776,6 +776,25 @@ async function handle(req: Request): Promise<Response> {
       return json(await setSketchText(textRoute[1]!, textRoute[2]!, {
         path: str(b.path), before: str(b.before), after: str(b.after), beforeText: str(b.before_text), afterText: str(b.after_text),
       }, Number.isInteger(b.from_version) ? b.from_version : undefined));
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+
+  // The studio's Save: every word edited in place and every knob moved on one version, kept
+  // together as one new version (no AI). With check: true it only says whether they all fit.
+  const changesRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})\/sketches\/([0-9a-f]{16})\/changes$/);
+  if (changesRoute && m === "POST") {
+    const b = (await req.json().catch(() => ({}))) as { edits?: unknown; vars?: unknown; from_version?: number; check?: boolean };
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    const edits = (Array.isArray(b.edits) ? b.edits : []).map((e: Record<string, unknown>) => ({
+      path: str(e?.path), before: str(e?.before), after: str(e?.after), beforeText: str(e?.before_text), afterText: str(e?.after_text),
+    }));
+    const vars = b.vars && typeof b.vars === "object" && !Array.isArray(b.vars)
+      ? Object.fromEntries(Object.entries(b.vars as Record<string, unknown>).filter(([, v]) => typeof v === "string")) as Record<string, string>
+      : {};
+    try {
+      return json(await saveSketchChanges(changesRoute[1]!, changesRoute[2]!, { edits, vars }, Number.isInteger(b.from_version) ? b.from_version : undefined, b.check === true));
     } catch (e) {
       return bad((e as Error).message);
     }

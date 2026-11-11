@@ -384,6 +384,48 @@ export async function setSketchText(projectId: string, sketchId: string, edit: T
   return { version, rules: render.rules ?? [], errors: render.errors.length };
 }
 
+/**
+ * The studio's Save: everything the designer changed by hand on one version (words edited in
+ * place, knobs moved), written as ONE new version, no AI involved. Five word changes and a
+ * color are one save, not six versions.
+ *
+ * With check, nothing is written: it only says whether every change still fits the page. The
+ * studio asks this as each word edit is made, so one that can't be kept is turned down while
+ * the designer is looking at it, not later when they press Save.
+ */
+export async function saveSketchChanges(
+  projectId: string,
+  sketchId: string,
+  changes: { edits?: TextEdit[]; vars?: Record<string, string> },
+  fromVersion?: number,
+  check = false,
+) {
+  const b = board(projectId);
+  const node = findSketch(b, sketchId);
+  if (!node) throw new Error("That sketch is gone.");
+  const base = fromVersion ?? (Number(node.data.version) || 1);
+  if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
+  const edits = (changes.edits ?? []).slice(0, 200);
+  const vars = changes.vars ?? {};
+  const before = readSketch(b.p.id, node.id, base);
+  // One after another, each on the page as the ones before it left it.
+  let html = before;
+  for (const e of edits) html = withText(html, e);
+  if (Object.keys(vars).length) html = withVars(html, vars);
+  if (check) return { ok: true };
+  if (html === before) return { version: base, rules: [], errors: 0 };
+  const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined);
+  const n = Object.keys(vars).length;
+  const parts: string[] = [];
+  if (edits.length === 1) {
+    const words = edits[0]!.afterText.replace(/\s+/g, " ").trim();
+    parts.push(`the words to “${words.length > 40 ? `${words.slice(0, 39)}…` : words}”`);
+  } else if (edits.length > 1) parts.push(`the words in ${edits.length} places`);
+  if (n) parts.push(`${n} ${n === 1 ? "value" : "values"}`);
+  apply(b.p.id, [{ op: "update_node", id: node.id, data: { version } }], "designer", { label: `Changed ${parts.join(" and ") || "the page"} in ${sketchName(node)} (version ${version})` });
+  return { version, rules: render.rules ?? [], errors: render.errors.length };
+}
+
 export async function getSketch(o: { project: string; sketch: string; version?: number; device?: Device; state?: string }) {
   const b = board(o.project);
   const node = findSketch(b, o.sketch);

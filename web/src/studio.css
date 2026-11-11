@@ -95,6 +95,12 @@
 .st-bar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px; flex: none; }
 .st-address { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .st-size { font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Changes made by hand and not saved yet: how many, Put back, Save. */
+.st-unsaved { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; animation: st-unsaved 0.22s var(--ease); }
+.st-unsaved-text { font-size: 12px; color: var(--muted); margin-right: 4px; font-variant-numeric: tabular-nums; }
+.st-quiet.sm, .st-send.sm { height: 26px; font-size: 12px; }
+.st-send.sm { padding: 0 11px; }
+@keyframes st-unsaved { from { opacity: 0; transform: translateY(-3px); } }
 .st-errors { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--bad); white-space: nowrap; }
 
 /* The states map: the page's screens and states, to jump between. */
@@ -463,9 +469,10 @@
 }
 @container (max-width: 760px) {
   .st-ask .st-ask-alts { display: none; }
+  .st-unsaved-text { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .studio, .st-bubble, .st-pop, .st-rail, .st-hint, .st-fresh { animation: none !important; }
+  .studio, .st-bubble, .st-pop, .st-rail, .st-hint, .st-fresh, .st-unsaved { animation: none !important; }
   .st-stage.glide .st-device, .st-stage.glide .st-device iframe { transition: none; }
 }

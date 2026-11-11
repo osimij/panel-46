@@ -197,6 +197,8 @@ const KIT = `<script data-panel-kit>(() => {
     if ((m.t === "pick" || m.t === "release") && editing) endEdit(false);
     if (m.t === "edit") startEdit(hold);
     if (m.t === "edit-end") endEdit(!!m.keep);
+    // Words edited but not saved yet: the page loaded again, so they go back where they were.
+    if (m.t === "text" && Array.isArray(m.edits)) for (const x of m.edits) { try { const el = document.querySelector(x.path); if (el && el.innerHTML === x.before) el.innerHTML = x.after; } catch (e) {} }
     if (m.t === "pick") { picking = !!m.on; hold = null; over = null; ui(); if (!picking) { box.style.display = "none"; tag.style.display = "none"; } document.documentElement.style.cursor = picking ? "crosshair" : ""; }
     if (m.t === "release") { hold = null; over = null; if (box) { box.style.display = "none"; tag.style.display = "none"; } }
     if (m.t === "state") { const h = m.slug ? "#" + m.slug : ""; if (location.hash !== h) { if (h) location.hash = h; else { history.replaceState(null, "", location.pathname + location.search); dispatchEvent(new HashChangeEvent("hashchange")); } } }
