@@ -655,9 +655,26 @@ a.mat-name:hover { text-decoration: underline; text-decoration-color: var(--fain
 .bn-tool.icon { width: 28px; padding: 0; justify-content: center; }
 .bn-tools-sep { width: 1px; height: 16px; margin: 0 4px; align-self: center; background: var(--line); flex: none; }
 
-/* The "why?" strip wraps onto a second line when the canvas is narrow (FRIDAY's panel open),
-   so its reasons and field stay inside the canvas instead of running under the panel. */
-.canvas-notice.verdict {
-  flex-wrap: wrap; justify-content: center; row-gap: 4px; height: auto; min-height: 38px; padding: 5px 6px 5px 14px;
-  white-space: nowrap; border-radius: calc(19px * var(--smooth)); corner-shape: var(--corner);
+/* The "why?" strip is one row, always. When the canvas is narrow (FRIDAY's panel open) the
+   reasons scroll sideways in their own room, fading at the edge that has more; what it is,
+   the field for your own words and × stay whole. */
+.canvas-notice.verdict { gap: 4px; padding: 0 5px 0 16px; }
+.verdict-what { flex: none; }
+.verdict-chips {
+  display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; overflow-x: auto;
+  scrollbar-width: none; overscroll-behavior-x: contain;
+  --fade-start: 0px; --fade-end: 0px;
+  mask-image: linear-gradient(to right, transparent, #000 var(--fade-start), #000 calc(100% - var(--fade-end)), transparent);
 }
+.verdict-chips.more-start { --fade-start: 28px; }
+.verdict-chips.more-end { --fade-end: 40px; }
+.verdict-chips::-webkit-scrollbar { display: none; }
+.verdict-chip { flex: none; height: 26px; padding: 0 10px 0 8px; font-weight: 450; }
+/* Your own words: a field of its own, a light hairline capsule, so it doesn't read as a reason. */
+/* It grows with what's typed (up to a point, then the reasons beside it give way), so a long
+   sentence stays in sight. */
+.verdict-input { flex: none; field-sizing: content; width: auto; min-width: 132px; max-width: min(420px, 52vw); height: 26px; margin-left: 6px; padding: 0 11px; border-radius: 999px; box-shadow: inset 0 0 0 1px var(--line); transition: box-shadow var(--fast) var(--ease); }
+.verdict-input:focus { box-shadow: inset 0 0 0 1px var(--faint); }
+/* Writing your own reason: the offered ones step aside for it, and come back if it's cleared. */
+.canvas-notice.verdict:has(.verdict-input:not(:placeholder-shown)) .verdict-chips { display: none; }
+.canvas-notice.verdict .canvas-notice-x { flex: none; }

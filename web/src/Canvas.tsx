@@ -959,11 +959,15 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   );
   // The strip steps aside by itself: quickly once a reason is given, in a while if not.
   // Not while Review is open: it asks why right beside the picture, and waits for an answer.
+  // Not while the designer is writing a reason of their own either (the cursor is in its field,
+  // or there are words in it): then it waits, and its while starts again when they stop.
+  const [writingWhy, setWritingWhy] = useState(false);
   useEffect(() => {
-    if (!judged || reviewing) return;
+    if (!judged || reviewing || (writingWhy && !judged.reason)) return;
     const t = setTimeout(() => setJudged((j) => (j?.key === judged.key ? null : j)), judged.reason ? 1600 : 12_000);
     return () => clearTimeout(t);
-  }, [judged, reviewing]);
+  }, [judged, reviewing, writingWhy]);
+  useEffect(() => setWritingWhy(false), [judged?.key]);
   const judgedRef = useRef(judged);
   judgedRef.current = judged;
   // With a sketch open in the studio, the keys belong to it.
@@ -1841,6 +1845,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
             offered={reasons[judged.verdict]}
             onReason={giveReason}
             onClose={() => setJudged(null)}
+            onWriting={setWritingWhy}
           />
         )}
 
@@ -1960,8 +1965,38 @@ function describePicked(project: string, picked: AnyNode[], cards: Map<string, R
 }
 
 /** After a verdict: why? The reasons used most, by number or by click, or a few words of your own. None is needed. */
-function VerdictNote(props: { verdict: "chosen" | "ruled_out"; label?: string; count: number; reason?: string; offered: string[]; onReason: (text: string) => void; onClose: () => void }) {
+function VerdictNote(props: {
+  verdict: "chosen" | "ruled_out";
+  label?: string;
+  count: number;
+  reason?: string;
+  offered: string[];
+  onReason: (text: string) => void;
+  onClose: () => void;
+  /** The designer is writing a reason of their own: the strip waits for them. */
+  onWriting?: (on: boolean) => void;
+}) {
   const [text, setText] = useState("");
+  const [focused, setFocused] = useState(false);
+  const { onWriting } = props;
+  useEffect(() => onWriting?.(focused || !!text.trim()), [focused, text, onWriting]);
+  // Which ends of the reasons have more beyond them, so only those fade.
+  const [more, setMore] = useState({ start: false, end: false });
+  const chips = useRef<HTMLDivElement>(null);
+  const measure = useCallback(() => {
+    const el = chips.current;
+    if (!el) return;
+    const next = { start: el.scrollLeft > 1, end: el.scrollLeft + el.clientWidth < el.scrollWidth - 1 };
+    setMore((m) => (m.start === next.start && m.end === next.end ? m : next));
+  }, []);
+  useLayoutEffect(() => {
+    const el = chips.current;
+    if (!el) return;
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [measure, props.reason]);
   // After removing, the strip says what was removed ("Removed 3 suggestions") and offers the ruled-out reasons.
   const what = props.label ?? (props.verdict === "chosen" ? "Chosen" : "Ruled out");
   if (props.reason) {
@@ -1975,18 +2010,23 @@ function VerdictNote(props: { verdict: "chosen" | "ruled_out"; label?: string; c
   return (
     <div className="canvas-notice verdict" role="group" aria-label={`${what}. Why?`}>
       <span className="verdict-what">{what}{props.count > 1 && !props.label ? ` ${props.count}` : ""} <span className="canvas-notice-more">· why?</span></span>
-      {props.offered.map((r, i) => (
-        <button key={r} className="verdict-chip" onClick={() => props.onReason(r)} title={`Press ${i + 1}`}>
-          <span className="verdict-n">{i + 1}</span>
-          {r}
-        </button>
-      ))}
+      {/* The reasons scroll sideways in their own room when the canvas is narrow; the rest stays whole. */}
+      <div ref={chips} className={`verdict-chips ${more.start ? "more-start" : ""} ${more.end ? "more-end" : ""}`} onScroll={measure}>
+        {props.offered.map((r, i) => (
+          <button key={r} className="verdict-chip" onClick={() => props.onReason(r)} title={`Press ${i + 1}`}>
+            <span className="verdict-n">{i + 1}</span>
+            {r}
+          </button>
+        ))}
+      </div>
       <input
         className="verdict-input"
         value={text}
         placeholder="or in your words"
         aria-label="Your reason"
         onChange={(e) => setText(e.target.value)}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && text.trim()) props.onReason(text);
           if (e.key === "Escape") props.onClose();
