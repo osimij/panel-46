@@ -1,0 +1,41 @@
+<!-- Bouncing dots · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-bouncing-dots {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-bouncing-dots {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--ld-size, 1.25em) * 0.2);
+  width: auto;
+}
+
+.ld-bouncing-dots-dot {
+  width: calc(var(--ld-size, 1.25em) * 0.25);
+  height: calc(var(--ld-size, 1.25em) * 0.25);
+  background: currentColor;
+  border-radius: 9999px;
+  animation: ld-bouncing-dots-bounce var(--ld-duration, 500ms) ease-in-out alternate infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 500ms) * (var(--ld-step) - 3) / 3);
+}
+
+@keyframes ld-bouncing-dots-bounce {
+  from {
+    transform: translateY(28%);
+  }
+  to {
+    transform: translateY(-72%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-bouncing-dots,
+  .ld-bouncing-dots * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-bouncing-dots" aria-hidden="true"><div class="ld-bouncing-dots-dot" style="--ld-step:0"></div><div class="ld-bouncing-dots-dot" style="--ld-step:1"></div><div class="ld-bouncing-dots-dot" style="--ld-step:2"></div></div>

@@ -1,0 +1,222 @@
+{
+ "source": "loading.dev 0.3.8 by Jakub Krehel and Paul Faivret (MIT), github.com/jakubkrehel/loading",
+ "how": "Paste the file as it is. It takes the colour of the text around it (currentColor) and its size from --ld-size (1.25em when not set, 20px in 16px text). --ld-duration changes its speed. Hidden from screen readers: put the words (Loading…) beside it.",
+ "loading": [
+  {
+   "name": "arc",
+   "title": "Arc",
+   "line": "A single open stroke rotating in a circle.",
+   "duration_ms": 800
+  },
+  {
+   "name": "atom",
+   "title": "Atom",
+   "line": "Three rings tumbling inside a circle.",
+   "duration_ms": 1000
+  },
+  {
+   "name": "blocks",
+   "title": "Blocks",
+   "line": "Nine blocks shrinking and growing in a sweep across a grid.",
+   "duration_ms": 1300
+  },
+  {
+   "name": "bouncing-dots",
+   "title": "Bouncing dots",
+   "line": "Three staggered dots bouncing up and down.",
+   "duration_ms": 500
+  },
+  {
+   "name": "cascade",
+   "title": "Cascade",
+   "line": "Three nested arcs fanning into a spiral and snapping back in line.",
+   "duration_ms": 1500
+  },
+  {
+   "name": "chevrons",
+   "title": "Chevrons",
+   "line": "Three chevrons lighting up in turn, pointing forward.",
+   "duration_ms": 1000
+  },
+  {
+   "name": "circular-dots",
+   "title": "Circular dots",
+   "line": "Eight dots in a ring, the brightest hopping around.",
+   "duration_ms": 800
+  },
+  {
+   "name": "classic",
+   "title": "Classic",
+   "line": "Twelve fading bars arranged in a radial pattern.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "classic-v2",
+   "title": "Classic v2",
+   "line": "Two lit ticks stepping around a ring of eight.",
+   "duration_ms": 800
+  },
+  {
+   "name": "clock",
+   "title": "Clock",
+   "line": "A clock hand sweeping around a faint face.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "comet",
+   "title": "Comet",
+   "line": "A full ring fading into its tail.",
+   "duration_ms": 700
+  },
+  {
+   "name": "compass",
+   "title": "Compass",
+   "line": "Four ticks turning a quarter turn at a time.",
+   "duration_ms": 500
+  },
+  {
+   "name": "dual",
+   "title": "Dual",
+   "line": "Two arcs turning in opposite directions.",
+   "duration_ms": 1000
+  },
+  {
+   "name": "eclipse",
+   "title": "Eclipse",
+   "line": "Two dots trading places, one passing behind the other.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "fill",
+   "title": "Fill",
+   "line": "A circle filling clockwise like a pie, then emptying.",
+   "duration_ms": 1600
+  },
+  {
+   "name": "flip",
+   "title": "Flip",
+   "line": "A square flipping over on one axis, then the other.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "gather",
+   "title": "Gather",
+   "line": "Four blocks pulling together, turning, and pushing apart.",
+   "duration_ms": 1600
+  },
+  {
+   "name": "leap",
+   "title": "Leap",
+   "line": "Three dots in a row, the last one leaping to the front.",
+   "duration_ms": 1800
+  },
+  {
+   "name": "linear-dots",
+   "title": "Linear dots",
+   "line": "Three dots lighting up in turn from left to right.",
+   "duration_ms": 900
+  },
+  {
+   "name": "loading",
+   "title": "Loading",
+   "line": "The loading.dev mark, its brightest block circling the ring.",
+   "duration_ms": 1000
+  },
+  {
+   "name": "loop",
+   "title": "Loop",
+   "line": "A dash running along a figure-eight.",
+   "duration_ms": 1600
+  },
+  {
+   "name": "morph",
+   "title": "Morph",
+   "line": "A square rounding into a circle and back as it turns.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "orbit",
+   "title": "Orbit",
+   "line": "A fading half-arc rotating around a dot.",
+   "duration_ms": 750
+  },
+  {
+   "name": "phases",
+   "title": "Phases",
+   "line": "A moon moving through its phases.",
+   "duration_ms": 3000
+  },
+  {
+   "name": "pulse",
+   "title": "Pulse",
+   "line": "A ring rippling outward from a dot.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "radar",
+   "title": "Radar",
+   "line": "A fading beam sweeping around a faint dish.",
+   "duration_ms": 1500
+  },
+  {
+   "name": "ring",
+   "title": "Ring",
+   "line": "An arc rotating in a faint circle.",
+   "duration_ms": 800
+  },
+  {
+   "name": "ripple",
+   "title": "Ripple",
+   "line": "Three rings spreading out from the center.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "scan",
+   "title": "Scan",
+   "line": "A line sweeping down a page and back up.",
+   "duration_ms": 1800
+  },
+  {
+   "name": "slide",
+   "title": "Slide",
+   "line": "Three dots sliding into the empty corner of a square.",
+   "duration_ms": 2400
+  },
+  {
+   "name": "snake",
+   "title": "Snake",
+   "line": "An arc stretching and shrinking as it circles.",
+   "duration_ms": 1400
+  },
+  {
+   "name": "split",
+   "title": "Split",
+   "line": "A dot splitting in two and merging back.",
+   "duration_ms": 1400
+  },
+  {
+   "name": "steps",
+   "title": "Steps",
+   "line": "Four segments lighting up in turn, then clearing in turn.",
+   "duration_ms": 1600
+  },
+  {
+   "name": "swirl",
+   "title": "Swirl",
+   "line": "A bright cell chasing its trail around a square.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "trace",
+   "title": "Trace",
+   "line": "A dash tracing the outline of a rounded square.",
+   "duration_ms": 1200
+  },
+  {
+   "name": "wave",
+   "title": "Wave",
+   "line": "Five bars rising and falling in a wave.",
+   "duration_ms": 900
+  }
+ ]
+}

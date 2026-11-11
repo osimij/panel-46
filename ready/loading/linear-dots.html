@@ -1,0 +1,50 @@
+<!-- Linear dots · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-linear-dots {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-linear-dots {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--ld-size, 1.25em) * 0.1875);
+  width: auto;
+}
+
+.ld-linear-dots-dot {
+  width: calc(var(--ld-size, 1.25em) * 0.1875);
+  height: calc(var(--ld-size, 1.25em) * 0.1875);
+  background: currentColor;
+  border-radius: 9999px;
+  animation: ld-linear-dots-fade var(--ld-duration, 900ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 900ms) * (var(--ld-step) - 3) / 3);
+}
+
+@keyframes ld-linear-dots-fade {
+  0% {
+    opacity: 1;
+  }
+  66.67% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-linear-dots-dot {
+    opacity: 0.75;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-linear-dots,
+  .ld-linear-dots * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-linear-dots" aria-hidden="true"><div class="ld-linear-dots-dot" style="--ld-step:0"></div><div class="ld-linear-dots-dot" style="--ld-step:1"></div><div class="ld-linear-dots-dot" style="--ld-step:2"></div></div>

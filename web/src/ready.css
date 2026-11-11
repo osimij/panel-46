@@ -1,0 +1,103 @@
+/* ============ Ready-made: loading animations, colors and icons that come with Panel ============ */
+
+.ready { max-width: 1100px; }
+.ready-spacer { flex: 1; }
+.ready-faint { color: var(--faint); }
+.ready-body { animation: title-in var(--slow) var(--ease) both; }
+.ready-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 12px; margin: 6px 0 18px; }
+
+/* ---- Loading ---- */
+
+.ready-loading { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; margin-top: 6px; }
+.ready-tile {
+  display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 18px 8px 12px;
+  background: var(--fill); border-radius: calc(12px * var(--smooth)); corner-shape: var(--corner);
+  transition: background-color var(--fast) var(--ease);
+}
+.ready-tile:hover { background: var(--fill-hover); }
+.ready-tile.on { background: var(--fill-hover); box-shadow: inset 0 0 0 1px var(--line); }
+/* The frame shows the piece; clicks go to the tile around it. */
+.ready-tile-frame { width: 72px; height: 48px; border: 0; pointer-events: none; display: block; }
+.ready-name { max-width: 100%; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ready-tile:hover .ready-name, .ready-tile.on .ready-name { color: var(--text); }
+
+/* One animation large, above the grid. */
+.ready-stage {
+  display: flex; align-items: center; gap: 28px; padding: 22px 26px; margin: 6px 0 14px;
+  background: var(--fill); border-radius: calc(16px * var(--smooth)); corner-shape: var(--corner);
+  animation: sheet-in var(--slow) var(--ease) both;
+}
+.ready-stage-frame { width: 168px; height: 128px; border: 0; flex: none; display: block; }
+.ready-stage-text { min-width: 0; }
+.ready-stage-text h2 { margin: 0 0 4px; font-size: 20px; font-weight: 500; color: var(--text); }
+.ready-stage-text p { margin: 2px 0; color: var(--muted); }
+.ready-stage-text p.ready-faint { color: var(--faint); font-size: 12px; }
+.ready-stage-actions { display: flex; align-items: center; gap: 12px; margin-top: 14px; }
+.ready-stage-actions .text-btn { margin-left: 0; align-self: center; }
+.ready-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 14px;
+  border-radius: 999px; background: var(--text); color: var(--bg); font-weight: 500;
+  transition: opacity var(--fast) var(--ease);
+}
+.ready-btn:hover { opacity: 0.86; }
+
+/* ---- Colors ---- */
+
+/* Each mode's swatches sit on that mode's own background, so the steps read as they're meant to. */
+.ready-colors { padding: 16px 18px 20px; border-radius: calc(16px * var(--smooth)); corner-shape: var(--corner); }
+.ready-colors.light { background: #ffffff; color: oklch(0.15 0 0); box-shadow: inset 0 0 0 1px var(--line); }
+.ready-colors.dark { background: oklch(0.16 0 0); color: oklch(0.95 0 0); }
+.ready-palette { display: grid; grid-template-columns: 150px 1fr; align-items: center; gap: 14px; min-height: 34px; }
+.ready-palette-name { color: inherit; opacity: 0.62; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+a.ready-palette-name:hover { opacity: 1; }
+.ready-swatches { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); gap: 4px; }
+.ready-swatch {
+  height: 28px; padding: 0; border-radius: calc(6px * var(--smooth)); corner-shape: var(--corner);
+  transition: transform var(--fast) var(--ease);
+}
+.ready-swatch:hover { transform: scale(1.08); }
+.ready-steps { min-height: 22px; }
+.ready-steps .ready-swatches span { text-align: center; font-size: 11px; opacity: 0.4; font-variant-numeric: tabular-nums; }
+.ready-sub { margin: 18px 0 6px; font-size: 12px; font-weight: 500; opacity: 0.62; }
+
+/* ---- Icons ---- */
+
+.ready-search {
+  flex: 1 1 260px; min-width: 0; height: 30px; padding: 0 12px; border: 0; outline: 0;
+  font: inherit; color: var(--text); background: var(--fill);
+  border-radius: 999px;
+  transition: background-color var(--fast) var(--ease);
+}
+.ready-search:hover, .ready-search:focus { background: var(--fill-hover); }
+.ready-search::-webkit-search-cancel-button { display: none; }
+.ready-count { font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 76px; text-align: right; }
+.ready-none { padding: 40px 0; text-align: center; }
+
+.ready-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px; }
+/* 1,512 of them: the browser skips drawing the ones off screen. */
+.ready-icon {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+  height: 88px; padding: 0 6px; border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner);
+  content-visibility: auto; contain-intrinsic-size: auto 88px;
+  transition: background-color var(--fast) var(--ease);
+}
+.ready-icon:hover { background: var(--fill); }
+.ready-icon .ready-name { font-size: 11px; color: var(--faint); }
+.ready-icon:hover .ready-name { color: var(--muted); }
+.ready-glyph { width: 24px; height: 24px; flex: none; display: block; }
+
+/* ---- Credits ---- */
+
+.ready-credits { margin: 36px 0 0; color: var(--faint); font-size: 12px; line-height: 1.6; }
+.ready-credits a { color: var(--muted); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; }
+.ready-credits a:hover { color: var(--text); }
+
+@media (max-width: 720px) {
+  .ready-palette { grid-template-columns: 1fr; gap: 4px; }
+  .ready-stage { flex-direction: column; align-items: flex-start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ready-body, .ready-stage { animation: none; }
+  .ready-swatch { transition: none; }
+  .ready-swatch:hover { transform: none; }
+}

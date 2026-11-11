@@ -1,0 +1,38 @@
+<!-- Steps · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-steps {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-steps-segment {
+  animation: ld-steps-light var(--ld-duration, 1600ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1600ms) * (var(--ld-step) - 8) / 8);
+}
+
+@keyframes ld-steps-light {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  60%,
+  100% {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-steps-segment {
+    opacity: calc(1 - var(--ld-step) * 0.25);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-steps,
+  .ld-steps * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-steps" aria-hidden="true" fill="currentColor" role="presentation" viewBox="0 0 24 24"><rect class="ld-steps-segment" height="6" rx="1.25" style="--ld-step:0" width="4" x="1" y="9"/><rect class="ld-steps-segment" height="6" rx="1.25" style="--ld-step:1" width="4" x="7" y="9"/><rect class="ld-steps-segment" height="6" rx="1.25" style="--ld-step:2" width="4" x="13" y="9"/><rect class="ld-steps-segment" height="6" rx="1.25" style="--ld-step:3" width="4" x="19" y="9"/></svg>

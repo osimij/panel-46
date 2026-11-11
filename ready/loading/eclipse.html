@@ -1,0 +1,65 @@
+<!-- Eclipse · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-eclipse {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-eclipse {
+  position: relative;
+}
+
+.ld-eclipse-dot {
+  position: absolute;
+  top: 30%;
+  left: 30%;
+  width: 40%;
+  height: 40%;
+  background: currentColor;
+  border-radius: 50%;
+  animation: ld-eclipse-slide var(--ld-duration, 1200ms) ease-in-out infinite, ld-eclipse-depth var(--ld-duration, 1200ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1200ms) * (var(--ld-step) - 2) / 2);
+}
+
+@keyframes ld-eclipse-slide {
+  0%,
+  100% {
+    translate: 75% 0;
+  }
+  50% {
+    translate: -75% 0;
+  }
+}
+
+@keyframes ld-eclipse-depth {
+  0%,
+  50%,
+  100% {
+    opacity: 0.75;
+    scale: 1;
+  }
+  25% {
+    opacity: 1;
+    scale: 1.3;
+  }
+  75% {
+    opacity: 0.5;
+    scale: 0.7;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-eclipse-dot {
+    translate: calc(var(--ld-step) * 150% - 75%) 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-eclipse,
+  .ld-eclipse * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-eclipse" aria-hidden="true"><div class="ld-eclipse-dot" style="--ld-step:0"></div><div class="ld-eclipse-dot" style="--ld-step:1"></div></div>

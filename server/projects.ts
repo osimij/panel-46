@@ -71,6 +71,30 @@ if (!eventCols.includes("label")) db.exec("ALTER TABLE project_events ADD COLUMN
 if (!eventCols.includes("undo_of")) db.exec("ALTER TABLE project_events ADD COLUMN undo_of INTEGER");
 if (!eventCols.includes("undone")) db.exec("ALTER TABLE project_events ADD COLUMN undone INTEGER NOT NULL DEFAULT 0");
 
+// What the designer took off a canvas: a suggestion they never judged, or a save or sketch
+// they had ruled out. The card is gone, so this is the only trace that they said no. A
+// removed suggestion is a quiet "no": FRIDAY must not bring it back to that topic, and must
+// not read a taste into it unless the designer gave a reason. Undoing the removal (⌘Z)
+// takes the record back. A table of its own, so the older app, which never reads it, keeps
+// working beside it.
+db.exec(`
+CREATE TABLE IF NOT EXISTS board_turned_down (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  ref_id TEXT,
+  node_id TEXT NOT NULL,
+  topic_id TEXT,
+  topic TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  was TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS board_turned_down_project ON board_turned_down(project_id);
+CREATE INDEX IF NOT EXISTS board_turned_down_ref ON board_turned_down(ref_id);
+`);
+
 // ---------- What's on a canvas ----------
 
 export const TOPIC_FACETS = ["typography", "color", "layout", "imagery", "motion", "components", "other"] as const;
@@ -227,8 +251,25 @@ export function apply(projectId: string, ops: Op[], actor: Actor = "designer", o
   const ts = now();
   const owned = (id: string) => db.query<NodeRow, [string, string]>("SELECT * FROM board_nodes WHERE id = ? AND project_id = ?").get(id, projectId);
   const edgesOf = (id: string) => db.query<BoardEdge, [string, string]>("SELECT id, source, target, label FROM board_edges WHERE source = ? OR target = ?").all(id, id);
+  // Only the designer saying no is remembered: not an undo, not FRIDAY taking back its own work.
+  const remember = actor === "designer" && !opts.undoOf;
 
   const seq = db.transaction(() => {
+    // The topic each removed card sat under, read before anything goes: when a topic and its
+    // saves are removed together, the lines to the topic are gone by the time a save is.
+    const topicBefore = new Map<string, NodeRow | null>();
+    if (remember) {
+      for (const o of ops) {
+        if (o.op !== "remove_node" || topicBefore.has(o.id)) continue;
+        const t = db
+          .query<NodeRow, [string, string, string]>(
+            `SELECT n.* FROM board_edges e JOIN board_nodes n ON n.id = CASE WHEN e.source = ? THEN e.target ELSE e.source END
+             WHERE (e.source = ? OR e.target = ?) AND n.kind = 'topic' ORDER BY e.created_at, e.rowid LIMIT 1`,
+          )
+          .get(o.id, o.id, o.id);
+        topicBefore.set(o.id, t ?? null);
+      }
+    }
     for (const o of ops) {
       if (o.op === "add_node") {
         const n = o.node;
@@ -246,6 +287,10 @@ export function apply(projectId: string, ops: Op[], actor: Actor = "designer", o
         );
         done.push({ op: "add_node", node: { id, kind: n.kind, ref_id: n.kind === "ref" ? n.ref_id! : null, data, x: finite(n.x), y: finite(n.y) } });
         undo.push([{ op: "remove_node", id }]);
+        // ⌘Z brought a removed card back: it was never really turned down.
+        db.run("DELETE FROM board_turned_down WHERE project_id = ? AND node_id = ?", [projectId, id]);
+        // The designer brought a save back themselves: whatever they said about it before no longer holds.
+        if (remember && n.kind === "ref") db.run("DELETE FROM board_turned_down WHERE project_id = ? AND ref_id = ?", [projectId, n.ref_id!]);
       } else if (o.op === "update_node") {
         const row = owned(o.id);
         if (!row) continue;
@@ -265,6 +310,14 @@ export function apply(projectId: string, ops: Op[], actor: Actor = "designer", o
         const row = owned(o.id);
         if (!row) continue;
         const lines = edgesOf(o.id);
+        const data = parse(row.data);
+        if (remember && (row.kind === "ref" || row.kind === "sketch") && (data.state === "proposed" || data.state === "ruled_out")) {
+          const t = topicBefore.get(o.id) ?? null;
+          db.run(
+            "INSERT INTO board_turned_down (id, project_id, kind, ref_id, node_id, topic_id, topic, title, was, reason, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [newId(), projectId, row.kind, row.ref_id, row.id, t?.id ?? null, t ? topicName(nodeOut(t)) : "", row.kind === "sketch" ? String(data.title ?? "") : "", data.state, String(data.reason ?? "").trim().slice(0, 400), ts],
+          );
+        }
         db.run("DELETE FROM board_nodes WHERE id = ?", [o.id]);
         done.push({ op: "remove_node", id: o.id });
         undo.push([
@@ -357,6 +410,50 @@ export function undoLast(projectId: string, who: { client: string } | "assistant
   return { ...res, undid: what };
 }
 
+// ---------- What the designer took off a canvas ----------
+
+interface TurnedDownRow { id: string; project_id: string; kind: "ref" | "sketch"; ref_id: string | null; node_id: string; topic_id: string | null; topic: string; title: string; was: "proposed" | "ruled_out"; reason: string; at: string }
+
+/**
+ * The designer's reason for taking cards off, given after they're gone (the strip that asks
+ * "why?" once suggestions are removed). Only this project's records for those cards change.
+ */
+export function setTurnedDownReason(projectId: string, nodeIds: string[], reason: string) {
+  const ids = nodeIds.filter((x) => typeof x === "string").slice(0, 500);
+  if (!ids.length) return 0;
+  const text = String(reason ?? "").trim().slice(0, 400);
+  return db.run(
+    `UPDATE board_turned_down SET reason = ? WHERE project_id = ? AND node_id IN (${ids.map(() => "?").join(",")})`,
+    [text, projectId, ...ids],
+  ).changes;
+}
+
+/** The saves the designer took off this topic, so they aren't suggested there again; the latest reason for each. */
+export function removedUnder(projectId: string, topicId: string) {
+  const out = new Map<string, string>();
+  for (const r of db
+    .query<{ ref_id: string; reason: string }, [string, string]>("SELECT ref_id, reason FROM board_turned_down WHERE project_id = ? AND topic_id = ? AND kind = 'ref' AND ref_id IS NOT NULL ORDER BY at DESC, rowid DESC")
+    .all(projectId, topicId)) {
+    if (!out.has(r.ref_id) || (!out.get(r.ref_id) && r.reason)) out.set(r.ref_id, out.get(r.ref_id) || r.reason);
+  }
+  return out;
+}
+
+/** Every record of a "no", newest first, with its project's name. */
+function turnedDownAll() {
+  return db
+    .query<TurnedDownRow & { project: string }, []>("SELECT d.*, p.name project FROM board_turned_down d JOIN projects p ON p.id = d.project_id ORDER BY d.at DESC, d.rowid DESC")
+    .all();
+}
+
+/** A record as a line FRIDAY can read: `save <id> “<title>” (HUJJAT, under Color)`. */
+function turnedDownLine(r: TurnedDownRow & { project: string }, docs: Map<string, Doc>) {
+  const doc = r.ref_id ? docs.get(r.ref_id) : undefined;
+  const name = r.kind === "sketch" ? r.title || "Untitled sketch" : doc ? title(doc) : "(removed from the library)";
+  const where = r.topic ? `${r.project}, under ${r.topic}` : r.project;
+  return `${r.kind === "ref" ? `save ${r.ref_id}` : `sketch ${r.node_id}`} “${name}” (${where})`;
+}
+
 // ---------- Following a canvas live ----------
 
 const waiting = new Map<string, Set<() => void>>();
@@ -446,7 +543,9 @@ const STARTER_REASONS = {
  * given most often, in their words, filled up with a few plain starters.
  */
 export function verdictReasons() {
-  const all = judgedNodes().filter((j) => j.reason);
+  // A reason given for taking something off a canvas is a reason for ruling it out.
+  const gone = turnedDownAll().filter((r) => r.reason).map((r) => ({ state: "ruled_out" as RefState, reason: r.reason.trim() }));
+  const all = [...judgedNodes().filter((j) => j.reason), ...gone];
   const top = (state: "chosen" | "ruled_out") => {
     const n = new Map<string, { text: string; n: number }>();
     for (const j of all) {
@@ -463,20 +562,31 @@ export function verdictReasons() {
 /** Every verdict the designer has given, across projects, grouped by the reason: what they keep choosing and keep ruling out. */
 export function verdicts() {
   const all = judgedNodes();
+  const { docs } = load();
+  // Cards the designer took off a canvas. One they had ruled out, or gave a reason for, counts
+  // as ruled out; a suggestion removed without a word is only a weak no, counted apart.
+  const gone = turnedDownAll();
+  const goneOut = gone.filter((r) => r.was === "ruled_out" || r.reason.trim());
+  const goneQuiet = gone.filter((r) => r.was === "proposed" && !r.reason.trim());
   const groups = new Map<string, { verdict: string; reason: string; times: number; examples: string[] }>();
+  const group = (state: RefState, reason: string, example: string) => {
+    const k = `${state}:${reason.toLowerCase()}`;
+    const g = groups.get(k) ?? groups.set(k, { verdict: state.replace("_", " "), reason, times: 0, examples: [] }).get(k)!;
+    g.times++;
+    if (g.examples.length < 5) g.examples.push(example);
+  };
   for (const j of all) {
     if (!j.reason || (j.state !== "chosen" && j.state !== "ruled_out")) continue;
-    const k = `${j.state}:${j.reason.toLowerCase()}`;
-    const g = groups.get(k) ?? groups.set(k, { verdict: j.state.replace("_", " "), reason: j.reason, times: 0, examples: [] }).get(k)!;
-    g.times++;
-    if (g.examples.length < 5) g.examples.push(`${j.kind === "ref" ? `save ${j.id}` : `sketch ${j.id}`} “${j.title}” (${j.project})`);
+    group(j.state, j.reason, `${j.kind === "ref" ? `save ${j.id}` : `sketch ${j.id}`} “${j.title}” (${j.project})`);
   }
+  for (const r of goneOut) if (r.reason.trim()) group("ruled_out", r.reason.trim(), `${turnedDownLine(r, docs)}, taken off the canvas`);
   const count = (s: RefState) => all.filter((j) => j.state === s).length;
   return {
-    chosen: count("chosen"), kept: count("kept"), ruled_out: count("ruled_out"), still_suggested: count("proposed"),
-    without_a_reason: all.filter((j) => (j.state === "chosen" || j.state === "ruled_out") && !j.reason).length,
+    chosen: count("chosen"), kept: count("kept"), ruled_out: count("ruled_out") + goneOut.length, still_suggested: count("proposed"),
+    without_a_reason: all.filter((j) => (j.state === "chosen" || j.state === "ruled_out") && !j.reason).length + goneOut.filter((r) => !r.reason.trim()).length,
     by_reason: [...groups.values()].sort((a, b) => b.times - a.times),
-    how_to_read: "These are the designer's own verdicts and words, across every project. A reason that keeps coming back is their taste: lean on it when you suggest, place or sketch. When one has come up 3 times or more and unugly.md (get_design_rules) doesn't say it yet, tell the designer once, with the examples, and offer one line they could add to unugly.md in their own words. Never add it yourself.",
+    suggestions_removed: goneQuiet.length ? { count: goneQuiet.length, latest: goneQuiet.slice(0, 12).map((r) => turnedDownLine(r, docs)) } : undefined,
+    how_to_read: "These are the designer's own verdicts and words, across every project. A reason that keeps coming back is their taste: lean on it when you suggest, place or sketch. When one has come up 3 times or more and unugly.md (get_design_rules) doesn't say it yet, tell the designer once, with the examples, and offer one line they could add to unugly.md in their own words. Never add it yourself. suggestions_removed are suggestions the designer took off a canvas without saying why: a weak no. Don't suggest them again for that topic, and don't read a taste into them.",
   };
 }
 
@@ -556,6 +666,28 @@ export function summary(idOrName: string) {
     };
   };
 
+  // What the designer took off this canvas, by the topic it was under; one line per save or sketch, latest first.
+  const removedBy = new Map<string, { id?: string; sketch?: string; title: string; reason?: string; was_under?: string }[]>();
+  {
+    const seen = new Set<string>();
+    const rows = db.query<TurnedDownRow, [string]>("SELECT * FROM board_turned_down WHERE project_id = ? ORDER BY at DESC, rowid DESC").all(p.id);
+    for (const r of rows) {
+      const under = r.topic_id && byId.get(r.topic_id)?.kind === "topic" ? r.topic_id : "";
+      const key = `${under}:${r.ref_id ?? r.node_id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const doc = r.ref_id ? docs.get(r.ref_id) : undefined;
+      const entry = {
+        ...(r.kind === "ref" ? { id: r.ref_id ?? undefined } : { sketch: r.node_id }),
+        title: r.kind === "sketch" ? r.title || "Untitled sketch" : doc ? title(doc) : "(hidden or removed from the library)",
+        reason: r.reason || undefined,
+        // Its topic is gone from the canvas: say which it was.
+        was_under: !under && r.topic ? r.topic : undefined,
+      };
+      (removedBy.get(under) ?? removedBy.set(under, []).get(under)!).push(entry);
+    }
+  }
+
   const filed = new Set<string>();
   const decisions = ordered.map((t) => {
     const facet = t.data.facet as string | undefined;
@@ -574,6 +706,7 @@ export function summary(idOrName: string) {
       kept: kept.length ? kept : undefined,
       proposed: proposed.length ? proposed : undefined,
       ruled_out: ruled_out.length ? ruled_out : undefined,
+      removed_by_designer: removedBy.get(t.id),
       leads_to: (flowTo.get(t.id) ?? []).map((x) => topicName(byId.get(x)!)),
     };
   });
@@ -627,7 +760,8 @@ export function summary(idOrName: string) {
           notes: looseNotes.length ? looseNotes.map((n) => String(n.data.text ?? "").trim()).filter(Boolean) : undefined,
         }
       : undefined,
-    how_to_read: "The brief and materials say what the project is: read the materials that matter with get_project_material before designing. Locked topics are settled: build from their chosen saves and notes. Ruled-out saves say what to avoid. The designer's notes outrank the saves' reads. Sketches are quick pages tried for this project (suggested, kept, chosen, ruled out like saves, with the designer's reason when they gave one); look at one with get_sketch before talking about it. Builds are Claude Code making a chosen sketch for real in the designer's code.",
+    removed_by_designer: removedBy.get(""),
+    how_to_read: "The brief and materials say what the project is: read the materials that matter with get_project_material before designing. Locked topics are settled: build from their chosen saves and notes. Ruled-out saves say what to avoid. removed_by_designer are saves and sketches the designer took off the canvas: don't bring them back there, and read a taste into one only when it has a reason. The designer's notes outrank the saves' reads. Sketches are quick pages tried for this project (suggested, kept, chosen, ruled out like saves, with the designer's reason when they gave one); look at one with get_sketch before talking about it. Builds are Claude Code making a chosen sketch for real in the designer's code.",
     open: `http://127.0.0.1:${PORT}/?project=${p.id}`,
   };
 }

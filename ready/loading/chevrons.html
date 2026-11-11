@@ -1,0 +1,36 @@
+<!-- Chevrons · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-chevrons {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-chevrons-chevron {
+  animation: ld-chevrons-fade var(--ld-duration, 1000ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1000ms) * (var(--ld-step) - 3) / 3);
+}
+
+@keyframes ld-chevrons-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-chevrons-chevron {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-chevrons,
+  .ld-chevrons * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-chevrons" aria-hidden="true" fill="none" role="presentation" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" viewBox="0 0 24 24"><path class="ld-chevrons-chevron" d="M3.5 6.5l5.5 5.5-5.5 5.5" style="--ld-step:0"/><path class="ld-chevrons-chevron" d="M9 6.5l5.5 5.5-5.5 5.5" style="--ld-step:1"/><path class="ld-chevrons-chevron" d="M14.5 6.5l5.5 5.5-5.5 5.5" style="--ld-step:2"/></svg>

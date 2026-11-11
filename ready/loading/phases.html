@@ -1,0 +1,40 @@
+<!-- Phases · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-phases {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-phases-shade {
+  animation: ld-phases-wax var(--ld-duration, 3000ms) ease-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 3000ms) / -2);
+}
+
+@keyframes ld-phases-wax {
+  from {
+    transform: translateX(20.5px);
+  }
+  50% {
+    transform: translateX(0);
+    animation-timing-function: ease-in;
+  }
+  to {
+    transform: translateX(-20.5px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-phases-shade {
+    transform: translateX(-10px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-phases,
+  .ld-phases * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-phases" aria-hidden="true" fill="currentColor" role="presentation" viewBox="0 0 24 24"><defs><mask id="ld-phases-mask"><circle cx="12" cy="12" fill="white" r="10"/><circle class="ld-phases-shade" cx="12" cy="12" fill="black" r="10.25"/></mask></defs><circle cx="12" cy="12" opacity="0.2" r="10"/><circle cx="12" cy="12" mask="url(#ld-phases-mask)" r="10"/></svg>

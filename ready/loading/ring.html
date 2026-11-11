@@ -1,0 +1,37 @@
+<!-- Ring · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-ring {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-ring-spin {
+  transform-origin: center;
+  animation: ld-ring-rotate var(--ld-duration, 800ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-ring-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-ring-spin-stacked {
+  animation-name: ld-ring-rotate, ld-ring-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-ring-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-ring,
+  .ld-ring * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-ring" aria-hidden="true" fill="none" role="presentation" viewBox="0 0 24 24"><circle cx="12" cy="12" opacity="0.2" r="10" stroke="currentColor" stroke-width="2.5"/><circle class="ld-ring-spin" cx="12" cy="12" r="10" stroke="currentColor" stroke-dasharray="16 46.8" stroke-linecap="round" stroke-width="2.5"/></svg>

@@ -1,0 +1,62 @@
+<!-- Orbit · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-orbit {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-orbit {
+  --ld-orbit-stroke: calc(var(--ld-size, 1.25em) * 0.0625);
+  position: relative;
+}
+
+.ld-orbit-track {
+  position: absolute;
+  inset: 8%;
+  border-radius: 9999px;
+  background: conic-gradient(from 180deg, transparent 0deg, currentColor 180deg, transparent 180deg);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - var(--ld-orbit-stroke)), #000 0);
+  mask: radial-gradient(farthest-side, transparent calc(100% - var(--ld-orbit-stroke)), #000 0);
+}
+
+.ld-orbit-dot {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 25%;
+  height: 25%;
+  background: currentColor;
+  border-radius: 9999px;
+  transform: translate(-50%, -50%);
+}
+
+.ld-orbit-spin {
+  transform-origin: center;
+  animation: ld-orbit-rotate var(--ld-duration, 750ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-orbit-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-orbit-spin-stacked {
+  animation-name: ld-orbit-rotate, ld-orbit-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-orbit-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-orbit,
+  .ld-orbit * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-orbit" aria-hidden="true"><div class="ld-orbit-dot"></div><div class="ld-orbit-track ld-orbit-spin"></div></div>

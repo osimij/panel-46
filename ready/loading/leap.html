@@ -1,0 +1,61 @@
+<!-- Leap · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-leap {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-leap {
+  --ld-leap-dot: round(calc(var(--ld-size, 1.25em) * 0.22), 1px);
+  --ld-leap-gap: round(down, calc((var(--ld-size, 1.25em) - var(--ld-leap-dot)) / 2), 1px);
+  position: relative;
+}
+
+.ld-leap-wrapper {
+  position: absolute;
+  top: round(calc((var(--ld-size, 1.25em) - var(--ld-leap-dot)) / 2), 1px);
+  left: calc(var(--ld-size, 1.25em) - var(--ld-leap-dot) - var(--ld-leap-gap) * 2);
+  width: calc(var(--ld-leap-gap) * 2 + var(--ld-leap-dot));
+  height: var(--ld-leap-dot);
+  animation: ld-leap-hop var(--ld-duration, 1800ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1800ms) * (var(--ld-step) - 3) / 3);
+}
+
+.ld-leap-dot {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--ld-leap-dot);
+  background: currentColor;
+  border-radius: 50%;
+}
+
+@keyframes ld-leap-hop {
+  0% {
+    transform: translateX(0) rotate(0);
+  }
+  33.33% {
+    transform: translateX(0) rotate(180deg);
+  }
+  66.66% {
+    transform: translateX(calc(var(--ld-leap-gap) * -1)) rotate(180deg);
+  }
+  100% {
+    transform: translateX(calc(var(--ld-leap-gap) * -2)) rotate(180deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-leap-wrapper {
+    transform: translateX(calc(var(--ld-step) * var(--ld-leap-gap)));
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-leap,
+  .ld-leap * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-leap" aria-hidden="true"><div class="ld-leap-wrapper" style="--ld-step:0"><div class="ld-leap-dot"></div></div><div class="ld-leap-wrapper" style="--ld-step:1"><div class="ld-leap-dot"></div></div><div class="ld-leap-wrapper" style="--ld-step:2"><div class="ld-leap-dot"></div></div></div>

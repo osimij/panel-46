@@ -19,6 +19,7 @@ import { LIBRARY_DIR, PORT } from "./config.ts";
 import { load } from "./library.ts";
 import { apply, findProject, getProject, summary, type BoardNode } from "./projects.ts";
 import { designRules } from "./rules.ts";
+import { outsideSkills } from "./skilluse.ts";
 import { claudeBinary, claudeToken } from "./read.ts";
 import { readSketch, renderOf, renderUrl, statesOf, versionsOf, type Device, type Render } from "./sketches.ts";
 
@@ -214,6 +215,12 @@ export function writeHandoff(projectId: string, sketchId: string, note = "") {
   }
   const rules = designRules();
   if (rules) lines.push("## The designer's rules (unugly.md)", "", "These hold for everything you build here and outrank the sketch and every reference. Check the result against them before you finish.", "", rules.trim(), "");
+  // The Build parts of the skills the designer uses for everything: second to the rules.
+  const skills = outsideSkills("build");
+  if (skills.length) {
+    lines.push("## The designer's skills", "", "Craft the designer chose for everything that is built: how to build it well. They come second to the rules above (where they disagree, the rules win), and before the sketch's references.", "");
+    for (const k of skills) lines.push(`### ${k.name}`, "", k.text.trim(), "");
+  }
   lines.push("## More from Panel", "", "Panel's MCP tools are connected (mcp__panel__…): get_project reads the whole project, get_reference shows a save with its pictures, get_sketch shows a sketch (with pictures on other devices or states).", "");
   const text = lines.join("\n");
   writeFileSync(join(dir, "HANDOFF.md"), text);

@@ -1,0 +1,63 @@
+<!-- Snake · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-snake {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-snake-spin {
+  transform-origin: center;
+  animation: ld-snake-rotate var(--ld-duration, 1400ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-snake-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-snake-spin-stacked {
+  animation-name: ld-snake-rotate, ld-snake-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-snake-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ld-snake-dash {
+  animation: ld-snake-stretch var(--ld-duration, 1400ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+@keyframes ld-snake-stretch {
+  0% {
+    stroke-dasharray: 1 100;
+    stroke-dashoffset: 0;
+  }
+  50% {
+    stroke-dasharray: 45 100;
+    stroke-dashoffset: -17;
+  }
+  100% {
+    stroke-dasharray: 45 100;
+    stroke-dashoffset: -62;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-snake-dash {
+    stroke-dasharray: 18 100;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-snake,
+  .ld-snake * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-snake" aria-hidden="true" fill="none" role="presentation" viewBox="0 0 24 24"><g class="ld-snake-spin"><circle class="ld-snake-dash" cx="12" cy="12" r="10" stroke="currentColor" stroke-linecap="round" stroke-width="2.5"/></g></svg>

@@ -1,0 +1,58 @@
+<!-- Blocks · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-blocks {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-blocks {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: calc(var(--ld-size, 1.25em) * 0.1);
+}
+
+.ld-blocks-cell {
+  background: currentColor;
+  border-radius: calc(var(--ld-size, 1.25em) * 0.0625);
+  animation: ld-blocks-sweep var(--ld-duration, 1300ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-blocks-cell-columns {
+  animation-delay: calc(var(--ld-duration, 1300ms) * (var(--ld-step) - 3) / 3);
+}
+
+.ld-blocks-cell-diagonal {
+  animation-delay: calc(var(--ld-duration, 1300ms) * (var(--ld-step) - 5) / 5);
+}
+
+.ld-blocks-cell-rows {
+  animation-delay: calc(var(--ld-duration, 1300ms) * (var(--ld-step) - 3) / 3);
+}
+
+@keyframes ld-blocks-sweep {
+  0%,
+  70%,
+  100% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-blocks-cell {
+    transform: scale(0.8);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-blocks,
+  .ld-blocks * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-blocks" aria-hidden="true"><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:0"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:1"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:2"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:1"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:2"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:3"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:2"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:3"></div><div class="ld-blocks-cell ld-blocks-cell-diagonal" style="--ld-step:4"></div></div>

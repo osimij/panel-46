@@ -1,11 +1,12 @@
-import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { RailHandle } from "./RailHandle.tsx";
 import { flushSync } from "react-dom";
 import {
-  api, fontApi, formatBytes, isFontFile, prefersReducedMotion, projectApi, STATUS_LABEL,
+  api, fontApi, formatBytes, isFontFile, isGithubProject, packStore, prefersReducedMotion, projectApi, skillStore, STATUS_LABEL,
   type CanvasSelection, type Collection, type ProjectSummary, type Filters, type Ref, type RefStatus, type Section, type Stats, type TagGroup, type TagInfo,
 } from "./api.ts";
 import { Detail } from "./Detail.tsx";
+import { chooseFromFolder, chooseFromLink, orderSkills, PackChooser, readDroppedFolder, readPickedFolder, SkillGroups, useSkillView } from "./Packs.tsx";
 import { Masonry } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { ReadingSettings } from "./Reading.tsx";
@@ -15,6 +16,7 @@ import { Assistant, type AssistantHandle } from "./Assistant.tsx";
 import { Mark } from "./Glow.tsx";
 import { Popover, TagRow } from "./TagRow.tsx";
 import { Fonts } from "./Fonts.tsx";
+import { Ready } from "./Ready.tsx";
 import { Brand, type BrandDrop } from "./Brand.tsx";
 
 // The canvas (and React Flow with it) loads only when a project is opened.
@@ -60,6 +62,8 @@ type Scope =
   | { kind: "project"; id: string }
   /** The designer's own fonts, for sketches. */
   | { kind: "fonts" }
+  /** Loading animations, colors and icons that come with Panel. */
+  | { kind: "ready" }
   /** Each project's logos and files; `focus` brings one asset or project into view. */
   | { kind: "brand"; focus?: string }
   /** Saves the assistant brought up, shown together in the grid. */
@@ -225,7 +229,8 @@ export function App() {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const anchor = useRef<string | null>(null);
 
-  const isUrl = looksLikeUrl(query);
+  // On Skills, a GitHub project's link counts even without https:// (it opens the skill chooser).
+  const isUrl = looksLikeUrl(query) || (scope.kind === "skills" && isGithubProject(query));
   useEffect(() => {
     const t = setTimeout(() => setDebounced(isUrl ? "" : query.trim()), 140);
     return () => clearTimeout(t);
@@ -371,6 +376,19 @@ export function App() {
   const saveLink = useCallback(
     async (url: string) => {
       setSaving("busy");
+      // On Skills, a GitHub project (or a folder in one) opens the chooser of the skills in it.
+      // Anywhere else, and for a link to one .md file, a link is saved as it always was.
+      if (scope.kind === "skills" && isGithubProject(url)) {
+        say("Looking for skills in it…");
+        try {
+          await chooseFromLink(url);
+          setToast(null);
+        } catch (e) {
+          say((e as Error).message, "error");
+        }
+        setSaving("idle");
+        return;
+      }
       try {
         const person = scope.kind === "people";
         const res = await api.capture(url, { person });
@@ -443,6 +461,22 @@ export function App() {
       }
     },
     [refresh, say, uploadFonts],
+  );
+
+  // A folder of skills, dropped on Skills or chosen with its + button: the chooser shows what's in it.
+  const addFolder = useCallback(
+    async (read: Promise<Parameters<typeof chooseFromFolder>[0] | null>) => {
+      try {
+        const folder = await read;
+        if (!folder) return;
+        say(`Reading “${folder.name}”…`);
+        await chooseFromFolder(folder);
+        setToast(null);
+      } catch (e) {
+        say((e as Error).message, "error");
+      }
+    },
+    [say],
   );
 
   const searchRef = useRef<HTMLInputElement>(null);
@@ -553,6 +587,17 @@ export function App() {
       e.preventDefault();
       dragDepth.current = 0;
       setDragging(false);
+      // On Skills, a folder is a pack of skills (or one skill): read it while the drop lets us.
+      if (scope.kind === "skills") {
+        const dirs = [...e.dataTransfer.items].map((i) => i.webkitGetAsEntry?.()).filter((x): x is FileSystemDirectoryEntry => !!x?.isDirectory);
+        if (dirs.length) {
+          if (dirs.length > 1) say("Drop one folder at a time: showing the first.");
+          void addFolder(readDroppedFolder(dirs[0]!));
+          const plain = [...e.dataTransfer.files].filter((f) => /\.(md|markdown)$/i.test(f.name));
+          if (plain.length) void uploadFiles(plain);
+          return;
+        }
+      }
       const files = [...e.dataTransfer.files];
       // On the brand assets page, files are brand assets: for the project they were dropped on.
       if (files.length && brandDrop.current) {
@@ -784,7 +829,17 @@ export function App() {
     [got, filters, refs],
   );
 
-  const openIndex = refs && open ? refs.findIndex((r) => r.id === open.id) : -1;
+  // On Skills, cards are grouped by subject or by pack, so going to the next one follows that order.
+  const packs = useSyncExternalStore(packStore.subscribe, packStore.get);
+  const skillPage = useSyncExternalStore(skillStore.subscribe, skillStore.get);
+  const skillView = useSkillView();
+  const ordered = useMemo(
+    () => (refs && scope.kind === "skills" ? orderSkills(refs, packs, skillView) : refs),
+    // skillPage: a skill read or a lead changed moves cards between subjects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [refs, scope.kind, packs, skillView, skillPage],
+  );
+  const openIndex = ordered && open ? ordered.findIndex((r) => r.id === open.id) : -1;
   // Stepping through saves one by one: bring in the next page before the last loaded one is reached.
   useEffect(() => {
     if (refs && openIndex >= 0 && openIndex >= refs.length - 3 && canLoadMore) loadMore();
@@ -867,6 +922,8 @@ export function App() {
       <main className="main">
         {scope.kind === "fonts" ? (
           <Fonts version={fontsVersion} onError={sayError} onSay={say} />
+        ) : scope.kind === "ready" ? (
+          <Ready onError={sayError} onSay={say} />
         ) : scope.kind === "brand" ? (
           <Brand projects={projects} version={0} dropRef={brandDrop} focus={scope.focus} onError={sayError} onSay={say} />
         ) : scope.kind === "project" ? (
@@ -895,6 +952,7 @@ export function App() {
           <div className="title-row">
             <h1 key={title}>{title}</h1>
             <span className="subtitle">{subtitle}</span>
+            {scope.kind === "skills" && <SkillsLine count={stats?.skills ?? 0} />}
             {tags.length > 0 ? (
               <>
                 <span className="filters-divider" />
@@ -933,14 +991,33 @@ export function App() {
           !debounced && <Empty scope={scope} filtered={media !== "all" || selectedTags.length > 0} />
         ) : (
           <>
-            <Masonry
-              items={refs}
-              onOpen={openRef}
-              onFavorite={toggleFavorite}
-              onHide={toggleHidden}
-              onDelete={removeOne}
-              selection={{ active: selecting, ids: picked, toggle: togglePick }}
-            />
+            {scope.kind === "skills" ? (
+              <SkillGroups
+                refs={refs}
+                onSay={say}
+                onError={sayError}
+                grid={(items, key) => (
+                  <Masonry
+                    key={key}
+                    items={items}
+                    onOpen={openRef}
+                    onFavorite={toggleFavorite}
+                    onHide={toggleHidden}
+                    onDelete={removeOne}
+                    selection={{ active: selecting, ids: picked, toggle: togglePick }}
+                  />
+                )}
+              />
+            ) : (
+              <Masonry
+                items={refs}
+                onOpen={openRef}
+                onFavorite={toggleFavorite}
+                onHide={toggleHidden}
+                onDelete={removeOne}
+                selection={{ active: selecting, ids: picked, toggle: togglePick }}
+              />
+            )}
             {/* The end of what's loaded: when it comes near, the next saves are brought in. */}
             <div ref={setGridEnd} aria-hidden style={{ height: 1 }} />
           </>
@@ -957,7 +1034,7 @@ export function App() {
             <div ref={setDockSlot} style={{ display: "contents" }} />
             {askButton}
           </>
-        ) : scope.kind === "fonts" || scope.kind === "brand" ? (
+        ) : scope.kind === "fonts" || scope.kind === "ready" || scope.kind === "brand" ? (
           askButton
         ) : selecting ? (
           <div className="select-bar" role="toolbar" aria-label="Selection" key="select">
@@ -990,7 +1067,7 @@ export function App() {
             <Command
               placeholder={
                 scope.kind === "people" ? "Search, or paste a profile or portfolio link"
-                : scope.kind === "skills" ? "Search skills, or paste a link to a .md file"
+                : scope.kind === "skills" ? "Search skills, or paste a GitHub project or a link to a .md file"
                 : "Search, or paste a link to save"
               }
               inputRef={searchRef}
@@ -1005,7 +1082,7 @@ export function App() {
                 setQuery("");
               }}
             />
-            <AddFiles onFiles={uploadFiles} skills={scope.kind === "skills"} inputRef={fileInputRef} />
+            <AddFiles onFiles={uploadFiles} onFolder={(files) => void addFolder(readPickedFolder(files))} skills={scope.kind === "skills"} inputRef={fileInputRef} />
             {askButton}
           </>
         )}
@@ -1016,8 +1093,8 @@ export function App() {
           initial={open}
           collections={collections}
           onClose={closeDetail}
-          onPrev={openIndex > 0 ? () => setOpen(refs![openIndex - 1]!) : undefined}
-          onNext={openIndex >= 0 && openIndex < refs!.length - 1 ? () => setOpen(refs![openIndex + 1]!) : undefined}
+          onPrev={openIndex > 0 ? () => setOpen(ordered![openIndex - 1]!) : undefined}
+          onNext={openIndex >= 0 && openIndex < ordered!.length - 1 ? () => setOpen(ordered![openIndex + 1]!) : undefined}
           onChanged={refresh}
           onDeleted={() => {
             setOpen(null);
@@ -1057,6 +1134,14 @@ export function App() {
         onLibraryChanged={() => void refresh()}
       />
 
+      <PackChooser
+        onDone={(text) => {
+          say(text);
+          void refresh();
+        }}
+        onError={sayError}
+      />
+
       {settingsOpen && stats && <Settings stats={stats} online={online} onClose={() => setSettingsOpen(false)} />}
 
       <div className={`dropzone ${dragging && scope.kind !== "brand" ? "show" : ""}`} aria-hidden={!dragging}>
@@ -1077,13 +1162,25 @@ export function App() {
   );
 }
 
+/** One quiet line at the top of Skills: how many FRIDAY uses, and what they add to every message. */
+function SkillsLine({ count }: { count: number }) {
+  const page = useSyncExternalStore(skillStore.subscribe, skillStore.get);
+  // Read again when a skill is added or removed.
+  useEffect(() => void skillStore.refresh().catch(() => {}), [count]);
+  if (!page || !page.skills.length) return null;
+  const text = page.on
+    ? `${page.on} used by FRIDAY${page.tokens ? `, adding about ${page.tokens.toLocaleString("en")} tokens to every message` : ""}`
+    : "None used by FRIDAY yet: open one to turn it on";
+  return <span className="subtitle skills-line">{text}</span>;
+}
+
 function headingFor(scope: Scope, collections: Collection[], stats: Stats | null) {
   switch (scope.kind) {
     case "all": return { title: "Panel", subtitle: stats ? `${stats.total} reference${stats.total === 1 ? "" : "s"}` : "" };
     case "favorites": return { title: "Favorites", subtitle: "The ones that matter most." };
     case "sites": return { title: "Sites", subtitle: "Whole websites, top to bottom, on desktop and phone." };
     case "people": return { title: "People & Accounts", subtitle: "Designers and studios to follow: their profiles and portfolios." };
-    case "skills": return { title: "Skills", subtitle: "SKILL.md files for your AI agents. Drop .md files here to add them." };
+    case "skills": return { title: "Skills", subtitle: "SKILL.md files for your AI agents. Drop files or a folder here, or paste a GitHub link." };
     case "hidden": return { title: "Hidden", subtitle: "Kept, but out of sight everywhere else." };
     case "status":
       return {
@@ -1106,6 +1203,7 @@ function headingFor(scope: Scope, collections: Collection[], stats: Stats | null
     }
     case "project": return { title: "Project", subtitle: "" };
     case "fonts": return { title: "Fonts", subtitle: "" };
+    case "ready": return { title: "Ready-made", subtitle: "" };
     case "brand": return { title: "Brand assets", subtitle: "" };
   }
 }
@@ -1174,19 +1272,38 @@ function Command(props: {
 }
 
 function AddFiles({
-  onFiles, skills, inputRef: ref,
-}: { onFiles: (f: File[]) => void; skills: boolean; inputRef: React.RefObject<HTMLInputElement | null> }) {
+  onFiles, onFolder, skills, inputRef: ref,
+}: { onFiles: (f: File[]) => void; onFolder: (f: File[]) => void; skills: boolean; inputRef: React.RefObject<HTMLInputElement | null> }) {
+  // On Skills, the + offers .md files or a whole folder of skills.
+  const folderRef = useRef<HTMLInputElement>(null);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <>
       <button
         className="round-btn"
-        onClick={() => ref.current?.click()}
-        title={skills ? "Add .md skill files from this Mac (⌘U)" : "Add images, videos or .md skill files from this Mac (⌘U)"}
+        onClick={(e) => {
+          if (!skills) return ref.current?.click();
+          const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+          setMenu({ x: r.left, y: r.top - 8 });
+        }}
+        title={skills ? "Add .md skill files or a folder of skills from this Mac (⌘U)" : "Add images, videos or .md skill files from this Mac (⌘U)"}
         aria-keyshortcuts="Meta+U"
         aria-label="Add files"
       >
         <Icon name="plus" size={18} />
       </button>
+      {menu && (
+        <Popover x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
+          <button className="menu-item" onClick={() => { setMenu(null); ref.current?.click(); }}>
+            <span className="menu-check"><Icon name="file" size={13} /></span>
+            .md skill files…
+          </button>
+          <button className="menu-item" onClick={() => { setMenu(null); folderRef.current?.click(); }}>
+            <span className="menu-check"><Icon name="folder" size={13} /></span>
+            A folder of skills…
+          </button>
+        </Popover>
+      )}
       <input
         ref={ref}
         type="file"
@@ -1198,6 +1315,19 @@ function AddFiles({
           e.target.value = "";
         }}
       />
+      {skills && (
+        <input
+          ref={folderRef}
+          type="file"
+          // A folder: the browser hands over every file in it, with its path inside.
+          {...({ webkitdirectory: "" } as Record<string, string>)}
+          hidden
+          onChange={(e) => {
+            onFolder([...(e.target.files ?? [])]);
+            e.target.value = "";
+          }}
+        />
+      )}
     </>
   );
 }
@@ -1261,6 +1391,31 @@ function MediaFilterButton({ media, setMedia, stats }: { media: MediaFilter; set
 
 // ---------- Sidebar ----------
 
+// A yes/no the browser remembers between visits (a folded sidebar group, say). If the browser
+// won't keep it, it simply starts from the default next time.
+function useRemembered(key: string, initial: boolean): [boolean, (v: boolean) => void] {
+  const [value, setValue] = useState(() => {
+    try {
+      const v = localStorage.getItem(key);
+      return v === null ? initial : v === "1";
+    } catch {
+      return initial;
+    }
+  });
+  const set = useCallback(
+    (v: boolean) => {
+      setValue(v);
+      try {
+        localStorage.setItem(key, v ? "1" : "0");
+      } catch {
+        /* not remembered, that's all */
+      }
+    },
+    [key],
+  );
+  return [value, set];
+}
+
 function Sidebar(props: {
   scope: Scope;
   setScope: (s: Scope) => void;
@@ -1323,6 +1478,21 @@ function Sidebar(props: {
       props.onError((e as Error).message);
     }
   };
+
+  // Projects and Collections fold away with a click on their heading, and stay that way between visits.
+  const [projectsOpen, setProjectsOpen] = useRemembered("panel.side.projects", true);
+  const [collectionsOpen, setCollectionsOpen] = useRemembered("panel.side.collections", true);
+  const foldHead = (label: string, open: boolean, setOpen: (v: boolean) => void) => (
+    <button
+      className={`side-fold-head ${open ? "" : "closed"}`}
+      onClick={() => setOpen(!open)}
+      aria-expanded={open}
+      title={open ? `Fold ${label} away` : `Show ${label}`}
+    >
+      {label}
+      <span className={`chev ${open ? "open" : ""}`}><Icon name="chevron-down" size={11} /></span>
+    </button>
+  );
 
   const link = (s: Scope, label: React.ReactNode, count?: number, extra?: React.ReactNode, key?: string) => (
     <button
@@ -1393,6 +1563,7 @@ function Sidebar(props: {
         {link({ kind: "people" }, "People & Accounts", stats?.people)}
         {link({ kind: "skills" }, "Skills", stats?.skills)}
         {link({ kind: "fonts" }, "Fonts")}
+        {link({ kind: "ready" }, "Ready-made")}
         {link({ kind: "brand" }, "Brand assets")}
         {link({ kind: "hidden" }, "Hidden", stats?.hidden, undefined, "H")}
       </div>
@@ -1408,16 +1579,20 @@ function Sidebar(props: {
 
       <div className="side-group">
         <div className="side-heading">
-          Projects
-          <button className="side-add" onClick={() => setCreatingProject(true)} aria-label="New project" title="New project">
+          {foldHead("Projects", projectsOpen, setProjectsOpen)}
+          <button className="side-add" onClick={() => { setProjectsOpen(true); setCreatingProject(true); }} aria-label="New project" title="New project">
             <Icon name="plus" size={13} />
           </button>
         </div>
-        {props.projects.map((p) => (
-          <div key={p.id}>
-            {link({ kind: "project", id: p.id }, p.name, undefined, <span className="side-project-dot" />)}
+        <div className={`side-fold ${projectsOpen ? "open" : ""}`} inert={!projectsOpen}>
+          <div>
+            {props.projects.map((p) => (
+              <div key={p.id}>
+                {link({ kind: "project", id: p.id }, p.name, undefined, <span className="side-project-dot" />)}
+              </div>
+            ))}
           </div>
-        ))}
+        </div>
         {creatingProject ? (
           <InlineName initial="" placeholder="Project name" onDone={createProject} onCancel={() => setCreatingProject(false)} />
         ) : (
@@ -1431,11 +1606,13 @@ function Sidebar(props: {
 
       <div className="side-group">
         <div className="side-heading">
-          Collections
-          <button className="side-add" onClick={() => setCreating(true)} aria-label="New collection" title="New collection">
+          {foldHead("Collections", collectionsOpen, setCollectionsOpen)}
+          <button className="side-add" onClick={() => { setCollectionsOpen(true); setCreating(true); }} aria-label="New collection" title="New collection">
             <Icon name="plus" size={13} />
           </button>
         </div>
+        <div className={`side-fold ${collectionsOpen ? "open" : ""}`} inert={!collectionsOpen}>
+          <div>
         {collections.map((c) =>
           renaming === c.id ? (
             <InlineName key={c.id} initial={c.name} onDone={(v) => rename(c.id, v)} onCancel={() => setRenaming(null)} />
@@ -1448,6 +1625,8 @@ function Sidebar(props: {
             </div>
           ),
         )}
+          </div>
+        </div>
         {colMenu && (() => {
           const c = collections.find((x) => x.id === colMenu.id);
           if (!c) return null;
@@ -1590,8 +1769,9 @@ function Empty({ scope, filtered }: { scope: Scope; filtered: boolean }) {
     return (
       <div className="empty">
         <p>
-          No skills yet. Drop SKILL.md (or any .md) files here, add them with the + button, or paste a link to one, like a file on
-          GitHub. Each is kept as text you can read, search and copy.
+          No skills yet. Drop SKILL.md (or any .md) files here, add them with the + button, or paste a link to one. To add
+          several at once, paste a GitHub project's link (like github.com/emilkowalski/skills) or drop a folder of skills,
+          then pick the ones you want. Each is kept as text you can read, search and copy.
         </p>
       </div>
     );

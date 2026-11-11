@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { HOST, LIBRARY_DIR, PORT } from "./config.ts";
 import { Cdp, chromePath, devtoolsUrl, evaluate, READY_SCRIPT, trackNetwork } from "./site.ts";
 import { checkRules, type RuleFinding } from "./rulecheck.ts";
+import { checkSkills, skillKeyNow, type SkillFinding } from "./skillcheck.ts";
 import { fontFaceCss } from "./fonts.ts";
 
 const ID = /^[0-9a-f]{16}$/;
@@ -343,6 +344,12 @@ export interface Render {
   errors: string[];
   /** Where the page breaks or brushes against the designer's rules, as measured in Chrome (rulecheck.ts). */
   rules?: RuleFinding[];
+  /** Where it falls short of the designer's skills that are on, as measured (skillcheck.ts). Absent with none on. */
+  skills?: SkillFinding[];
+  /** "When it applies" skills whose subject is in the page (it moves, it has a form…). */
+  apply?: { name: string; line: string }[];
+  /** Which skills' checks it was measured against: another key means it's out of date. */
+  skillKey?: string;
   /** Set when there's no picture at all (no Chrome, Panel not running). */
   failed?: string;
 }
@@ -356,21 +363,54 @@ export async function writeVersion(projectId: string, sketchId: string, html: st
   const version = (versionsOf(projectId, sketchId).at(-1) ?? 0) + 1;
   writeFileSync(join(dir, `v${version}.html`), html);
   const render = await renderSketch(projectId, sketchId, version, device);
-  writeFileSync(join(dir, `v${version}.json`), JSON.stringify({ height: render.height, errors: render.errors, rules: render.rules, screens: render.screens.length, failed: render.failed }));
+  writeFileSync(join(dir, `v${version}.json`), JSON.stringify({ height: render.height, errors: render.errors, rules: render.rules, ...skillsKept(render), screens: render.screens.length, failed: render.failed }));
   return { version, render };
 }
 
 /** What the last render of a version saw, from disk. */
 export function renderOf(projectId: string, sketchId: string, v: number): Render {
   const dir = sketchDir(projectId, sketchId);
-  let meta: { height?: number; errors?: string[]; rules?: RuleFinding[]; screens?: number; failed?: string } = {};
+  let meta: { height?: number; errors?: string[]; rules?: RuleFinding[]; skills?: SkillFinding[]; apply?: Render["apply"]; skill_key?: string; screens?: number; failed?: string } = {};
   try {
     meta = JSON.parse(readFileSync(join(dir, `v${v}.json`), "utf8"));
   } catch {
     /* rendered before it was written down, or never */
   }
   const screens = Array.from({ length: MAX_SCREENS }, (_, i) => join(dir, `v${v}${i ? `-${i + 1}` : ""}.jpg`)).filter((f) => existsSync(f));
-  return { screens, height: meta.height ?? 0, errors: meta.errors ?? [], rules: meta.rules, failed: meta.failed };
+  return { screens, height: meta.height ?? 0, errors: meta.errors ?? [], rules: meta.rules, ...skillsRead(meta), failed: meta.failed };
+}
+
+/** A render's skill checks as kept on disk beside it: nothing at all when no skill was measured. */
+function skillsKept(r: Render) {
+  return r.skillKey ? { skills: r.skills, apply: r.apply, skill_key: r.skillKey } : {};
+}
+function skillsRead(m: { skills?: SkillFinding[]; apply?: Render["apply"]; skill_key?: string }): Partial<Render> {
+  return m.skill_key ? { skills: m.skills ?? [], apply: m.apply ?? [], skillKey: m.skill_key } : {};
+}
+
+/** Skill checks measured again for a render kept from before (a page and a key each), so reading it twice costs one measure. */
+const remeasured = new Map<string, Pick<Render, "skills" | "apply" | "skillKey">>();
+
+/**
+ * A render with its skill checks as the skills that are on would measure them now. A kept
+ * render measured against other skills (or none) is measured again, without new pictures;
+ * with no skill asking for anything, it carries none, exactly as before skills existed.
+ */
+export async function withSkillChecks(render: Render, url: string, device: Device): Promise<Render> {
+  const key = skillKeyNow();
+  const { skills: _s, apply: _a, skillKey: _k, ...plain } = render;
+  if (!key) return plain;
+  if (render.skillKey === key || render.failed) return render;
+  const at = `${url}|${device}|${key}`;
+  let fresh = remeasured.get(at);
+  if (!fresh) {
+    const r = await queue(() => shoot(url, device, null));
+    if (r.failed || r.skillKey !== key) return plain;
+    fresh = { skills: r.skills, apply: r.apply, skillKey: r.skillKey };
+    if (remeasured.size > 200) remeasured.clear();
+    remeasured.set(at, fresh);
+  }
+  return { ...plain, ...fresh };
 }
 
 // ---------- Rendering, in a Chrome kept warm between sketches ----------
@@ -472,14 +512,14 @@ export async function renderView(projectId: string, sketchId: string, v: number,
     try {
       const m = JSON.parse(readFileSync(meta, "utf8"));
       const screens = Array.from({ length: m.screens ?? 0 }, (_, i) => join(dir, `${base}${i ? `-${i + 1}` : ""}.jpg`)).filter((f) => existsSync(f));
-      if (screens.length) return { screens, height: m.height ?? 0, errors: m.errors ?? [], rules: m.rules };
+      if (screens.length) return { screens, height: m.height ?? 0, errors: m.errors ?? [], rules: m.rules, ...skillsRead(m) };
     } catch {
       /* render it again */
     }
   }
   const url = fullUrl(sketchPath(projectId, sketchId, v)) + (slug ? `#${slug}` : "");
   const r = await queue(() => shoot(url, device, (i) => join(dir, `${base}${i ? `-${i + 1}` : ""}.jpg`)));
-  if (!r.failed) writeFileSync(meta, JSON.stringify({ height: r.height, errors: r.errors, rules: r.rules, screens: r.screens.length }));
+  if (!r.failed) writeFileSync(meta, JSON.stringify({ height: r.height, errors: r.errors, rules: r.rules, ...skillsKept(r), screens: r.screens.length }));
   return r;
 }
 
@@ -593,7 +633,8 @@ export const DEVICES: Record<Device, { width: number; height: number; scale: num
   phone: { width: 390, height: 844, scale: 2, mobile: true },
 };
 
-async function shoot(url: string, device: Device, fileOf: (i: number) => string, maxScreens = MAX_SCREENS): Promise<Render> {
+/** `fileOf` null: only measure the page (its rule and skill checks), with no pictures. */
+async function shoot(url: string, device: Device, fileOf: ((i: number) => string) | null, maxScreens = MAX_SCREENS): Promise<Render> {
   const screen = DEVICES[device];
   const { cdp } = await browser();
   const { targetId } = await cdp.send<{ targetId: string }>("Target.createTarget", { url: "about:blank" });
@@ -642,7 +683,11 @@ async function shoot(url: string, device: Device, fileOf: (i: number) => string,
     }
     // The designer's rules, where they can be measured: corners, the wordmark, fonts' letters…
     const rules = await checkRules(s);
+    // The designer's skills that are on: line length, contrast, motion turned down… (skillcheck.ts)
+    const skills = await checkSkills(s, device === "phone");
+    const kept = skills ? { skills: skills.found, apply: skills.apply, skillKey: skills.key } : {};
     const height = await evaluate<number>(s, "Math.max(document.documentElement.scrollHeight, document.body ? document.body.scrollHeight : 0)", 3000).catch(() => screen.height);
+    if (!fileOf) return { screens: [], height: Math.round(height), errors, rules, ...kept };
     const count = Math.min(maxScreens, Math.max(1, Math.ceil((height - 40) / screen.height)));
     const screens: string[] = [];
     for (let i = 0; i < count; i++) {
@@ -653,7 +698,7 @@ async function shoot(url: string, device: Device, fileOf: (i: number) => string,
       writeFileSync(file, Buffer.from(shot.data, "base64"));
       screens.push(file);
     }
-    return { screens, height: Math.round(height), errors, rules };
+    return { screens, height: Math.round(height), errors, rules, ...kept };
   } finally {
     offs.forEach((off) => off());
     await cdp.send("Target.closeTarget", { targetId }).catch(() => {});

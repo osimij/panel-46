@@ -1,0 +1,57 @@
+<!-- Gather · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-gather {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-gather-group {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24%;
+  width: 100%;
+  height: 100%;
+  animation: ld-gather-turn var(--ld-duration, 1600ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-gather-block {
+  background: currentColor;
+  border-radius: calc(var(--ld-size, 1.25em) * 0.14);
+  animation: ld-gather-pull var(--ld-duration, 1600ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+@keyframes ld-gather-pull {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  30%,
+  60% {
+    transform: translate(
+      calc(var(--ld-gather-x) * 21.1%),
+      calc(var(--ld-gather-y) * 21.1%)
+    );
+  }
+}
+
+@keyframes ld-gather-turn {
+  0%,
+  30% {
+    transform: rotate(0);
+  }
+  60%,
+  100% {
+    transform: rotate(90deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-gather,
+  .ld-gather * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-gather" aria-hidden="true"><div class="ld-gather-group"><div class="ld-gather-block" style="--ld-gather-x:1;--ld-gather-y:1"></div><div class="ld-gather-block" style="--ld-gather-x:-1;--ld-gather-y:1"></div><div class="ld-gather-block" style="--ld-gather-x:1;--ld-gather-y:-1"></div><div class="ld-gather-block" style="--ld-gather-x:-1;--ld-gather-y:-1"></div></div></div>

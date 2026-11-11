@@ -5,6 +5,7 @@ import {
 } from "./media.ts";
 import { shootSite, type Viewport } from "./site.ts";
 import { saveMeasured } from "./sitefacts.ts";
+import { readIfAuto } from "./skillreads.ts";
 import { expandShortLink, fetchPost, forgetPin, parsePinterestBoard, parseSocial, readBoard, SITE_NAME, type Post, type PostItem, type SocialKind } from "./social.ts";
 
 // ---------- URL parsing ----------
@@ -118,7 +119,7 @@ export function readSkill(markdown: string, fileName = "") {
   const fm = markdown.match(/^\uFEFF?---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   const field = (k: string) => {
     const m = fm?.[1]!.match(new RegExp(`^${k}:\\s*(.+(?:\\n[ \\t]+.+)*)`, "mi"));
-    return m ? m[1]!.replace(/\s*\n\s*/g, " ").replace(/^["'>|-]\s*|["']$/g, "").trim() || null : null;
+    return m ? m[1]!.replace(/\s*\n\s*/g, " ").replace(/^(?:[>|][+-]?|["'-])\s*|["']$/g, "").trim() || null : null;
   };
   const rest = fm ? markdown.slice(fm[0].length) : markdown;
   const heading = rest.match(/^#{1,3}\s+(.+)$/m)?.[1]?.trim() ?? null;
@@ -133,12 +134,16 @@ export function readSkill(markdown: string, fileName = "") {
   };
 }
 
-/** Store a skill file's text; the whole file is searchable. */
+/**
+ * Store a skill file's text; the whole file is searchable. With "read automatically" on, the
+ * skill is put in line to be read (skillreads.ts), whether it came as a file or a link.
+ */
 export function saveSkillText(refId: string, markdown: string, fileName: string) {
   const { title } = readSkill(markdown, fileName);
   db.run("UPDATE refs SET title = COALESCE(title, ?), text = ?, updated_at = ? WHERE id = ?", [title, markdown, now(), refId]);
   reindex(refId);
   refreshStatus(refId);
+  readIfAuto([refId]);
 }
 
 async function captureSkillUrl(refId: string, url: string) {
@@ -449,6 +454,9 @@ async function captureBoard(board: { username: string; slug: string }) {
 export function retry(refId: string) {
   const ref = db.query<RefRow, [string]>("SELECT * FROM refs WHERE id = ?").get(refId);
   if (!ref || ref.kind === "upload" || (ref.kind === "skill" && !ref.source_url)) return;
+  // A skill from a pack (skillpacks.ts) is a folder of files at one version, not one Markdown
+  // file at its link: it is brought up to date by checking its pack for a newer version.
+  if (ref.kind === "skill" && ref.source_id?.startsWith("pack:")) return;
   const media = db.query<MediaRow, [string]>("SELECT * FROM media WHERE ref_id = ? ORDER BY idx").all(refId);
   const failed = media.filter((m) => m.status === "failed" && m.remote_url);
   db.run("UPDATE refs SET status = 'pending', status_detail = NULL, updated_at = ? WHERE id = ?", [now(), refId]);

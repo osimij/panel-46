@@ -1,10 +1,12 @@
 import { Marked, type Tokens } from "marked";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   api, atHandle, describeLink, displayTitle, personFace, profileParts, type LinkCard, formatBytes, formatDuration, SECTION_UI, sectionOf, site, skillParts, sourceLabel, STATUS_LABEL, timeAgo,
-  type Collection, type Media, type Ref, type Section,
+  type Collection, type Media, packStore, type Ref, type Section, skillApi, skillStore, type SkillAbout, type SkillWhen,
 } from "./api.ts";
 import { Avatar, FadeImg, PersonAvatar } from "./Grid.tsx";
+import { CheckNewer, packOf, SkillOriginPanel } from "./Packs.tsx";
+import { SkillReadPanel } from "./SkillRead.tsx";
 import { Icon } from "./Icon.tsx";
 import { Mark } from "./Glow.tsx";
 import { VideoPlayer } from "./VideoPlayer.tsx";
@@ -29,6 +31,13 @@ export function Detail(props: {
   const id = initial.id;
 
   const load = useCallback(() => api.ref(id).then(setRef).catch((e) => setError(e.message)), [id]);
+
+  // A skill brought up to a newer version of its pack (Packs.tsx) is read again.
+  const packs = useSyncExternalStore(packStore.subscribe, packStore.get);
+  const packVersion = initial.kind === "skill" ? packs?.find((p) => p.skills.includes(id))?.version.sha : undefined;
+  useEffect(() => {
+    if (packVersion) void load();
+  }, [packVersion]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Posted, saved copy, on disk, size: rarely needed, so behind the ⓘ button (or I). Remembered between items.
   const [showInfo, setShowInfo] = useState(() => remembered("panel.showInfo"));
@@ -278,11 +287,14 @@ md.use({
 
 /** A skill file, read like a document: its frontmatter as facts, then the instructions. */
 function SkillStage({ r }: { r: Ref }) {
-  const text = r.text ?? "";
-  const { fields, body } = useMemo(() => skillParts(text), [text]);
+  // A skill from a pack may have more files: one of them can be shown in place of SKILL.md.
+  const [other, setOther] = useState<{ path: string; text: string } | null>(null);
+  useEffect(() => setOther(null), [r.id, r.text]);
+  const text = other?.text ?? r.text ?? "";
+  const { fields, body } = useMemo(() => (other ? { fields: [] as [string, string][], body: other.text } : skillParts(text)), [text, other]);
   const html = useMemo(() => md.parse(body, { async: false }) as string, [body]);
   const [copied, setCopied] = useState(false);
-  const fileName = r.source_url ? decodeURIComponent(r.source_url.split("/").pop() ?? "SKILL.md") : "SKILL.md";
+  const fileName = other ? other.path.split("/").pop()! : r.source_url && !packOf(r) ? decodeURIComponent(r.source_url.split("/").pop() ?? "SKILL.md") : "SKILL.md";
   const copy = async () => {
     await navigator.clipboard.writeText(text);
     setCopied(true);
@@ -308,6 +320,11 @@ function SkillStage({ r }: { r: Ref }) {
           </button>
         </div>
       </div>
+      {/* The panels and the file scroll together: a read can be longer than the screen. */}
+      <div className="doc-scroll">
+      <SkillUsePanel id={r.id} text={r.text ?? ""} />
+      <SkillReadPanel id={r.id} />
+      <SkillOriginPanel id={r.id} shown={other?.path ?? null} onShow={(path, t) => setOther(path && t !== undefined ? { path, text: t } : null)} />
       <article className="doc" style={{ viewTransitionName: "hero" }}>
         {fields.length > 0 && (
           <dl className="doc-fields">
@@ -321,7 +338,69 @@ function SkillStage({ r }: { r: Ref }) {
         )}
         <div className="markdown" dangerouslySetInnerHTML={{ __html: html }} />
       </article>
+      </div>
     </div>
+  );
+}
+
+const WHENS: [SkillWhen, string][] = [["always", "Always"], ["applies", "When it applies"], ["asked", "When asked"]];
+const ABOUTS: [SkillAbout, string][] = [["motion", "Motion"], ["phone", "Phone screens"], ["forms", "Forms"]];
+
+/**
+ * Whether FRIDAY uses this skill, and when: off until the designer turns it on. Under it, in
+ * plain words, what FRIDAY gets from the file and the checks Panel measures from it.
+ */
+function SkillUsePanel({ id, text }: { id: string; text: string }) {
+  const page = useSyncExternalStore(skillStore.subscribe, skillStore.get);
+  const [error, setError] = useState("");
+  // Read again when the file changes (it may have gained or lost its sections).
+  useEffect(() => void skillStore.refresh().catch((e: Error) => setError(e.message)), [id, text]);
+  const s = page?.skills.find((x) => x.id === id);
+  if (!s) return error ? <div className="inline-error">{error}</div> : null;
+  const set = (patch: Parameters<typeof skillApi.set>[1]) => skillApi.set(id, patch).then(() => setError(""), (e: Error) => setError(e.message));
+  const toggleAbout = (a: SkillAbout) => set({ about: s.about.includes(a) ? s.about.filter((x) => x !== a) : [...s.about, a] });
+  return (
+    <section className="skill-use" aria-label="Use in FRIDAY">
+      <div className="skill-use-row">
+        <span className="skill-use-title">Use in FRIDAY</span>
+        <button role="switch" aria-checked={s.on} aria-label="Use in FRIDAY" className={`switch ${s.on ? "on" : ""}`} onClick={() => set({ on: !s.on })} title={s.on ? "FRIDAY uses this skill. Click to stop." : "Let FRIDAY use this skill"}>
+          <span />
+        </button>
+      </div>
+      {s.on && (
+        <div className="skill-use-row wrap">
+          <div className="seg" role="radiogroup" aria-label="When FRIDAY uses it">
+            {WHENS.map(([w, label]) => (
+              <button key={w} role="radio" aria-checked={s.when === w} className={s.when === w ? "on" : ""} onClick={() => set({ when: w })}>{label}</button>
+            ))}
+          </div>
+          {s.when === "applies" && (
+            <div className="skill-about" role="group" aria-label="What it is about">
+              {ABOUTS.map(([a, label]) => (
+                <button key={a} className={`pill ${s.about.includes(a) ? "on" : ""}`} aria-pressed={s.about.includes(a)} onClick={() => toggleAbout(a)}>{label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+      {s.on && <p className="skill-use-note">{s.gets}</p>}
+      {s.whole && <p className="skill-use-note">This file has no Decide, Build or Check headings, so FRIDAY gets it whole, as written.</p>}
+      {/* A read skill's checks are listed with its read, below. */}
+      {s.forUse === null && (s.checks.length > 0 || s.unknown.length > 0) && (
+        <div className="skill-checks">
+          <span className="skill-use-label">Panel checks every sketch for</span>
+          <ul>
+            {s.checks.map((c) => (
+              <li key={c.name}>{c.plain}{c.level === "breaks" && <span className="skill-must"> · must be fixed</span>}</li>
+            ))}
+            {s.unknown.map((u) => (
+              <li key={u} className="skill-cant">{u} · Panel can’t measure this yet</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {error && <div className="inline-error">{error}</div>}
+    </section>
   );
 }
 
@@ -826,7 +905,19 @@ function Info({
   );
   const detailsBlock = (
     <>
-      {r.status === "archived" && r.kind === "skill" && (
+      {r.status === "archived" && r.kind === "skill" && packOf(r) && (
+        <p className="archived-note">
+          Its text files are kept in your library; its SKILL.md is searchable.
+          {r.source_url && (
+            <>
+              {" "}
+              {/* A pack's skill is a folder at one version, not one file at a link: ask its project for a newer version. */}
+              <CheckNewer packId={packOf(r)!} />
+            </>
+          )}
+        </p>
+      )}
+      {r.status === "archived" && r.kind === "skill" && !packOf(r) && (
         <p className="archived-note">
           The whole file is kept in your library and is searchable.
           {r.source_url && (
@@ -1116,9 +1207,14 @@ function Info({
         ) : (
           <>
             <button className="text-btn muted" onClick={() => setConfirmDelete(true)}>Remove</button>
-            <button className="text-btn muted" onClick={() => reload().then(onChanged)} title="Re-check files on disk">
-              <Icon name="refresh" size={13} /> Re-check
-            </button>
+            {packOf(r) && r.source_url ? (
+              // A skill from a GitHub pack: re-checking asks its project for a newer version.
+              <CheckNewer packId={packOf(r)!} label="Re-check" className="text-btn muted" />
+            ) : (
+              <button className="text-btn muted" onClick={() => reload().then(onChanged)} title="Re-check files on disk">
+                <Icon name="refresh" size={13} /> Re-check
+              </button>
+            )}
           </>
         )}
       </div>

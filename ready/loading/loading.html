@@ -1,0 +1,36 @@
+<!-- Loading · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-loading {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-loading-segment {
+  animation: ld-loading-fade var(--ld-duration, 1000ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1000ms) * (var(--ld-step) - 8) / 8);
+}
+
+@keyframes ld-loading-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-loading-segment {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-loading,
+  .ld-loading * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-loading" aria-hidden="true" fill="currentColor" role="presentation" viewBox="0 0 15 15"><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:0" transform="translate(12 6)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:1" transform="translate(10 10)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:2" transform="translate(6 12)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:3" transform="translate(2 10)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:4" transform="translate(0 6)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:5" transform="translate(2 2)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:6" transform="translate(6 0)"/><path class="ld-loading-segment" d="M0 0h1v1H0zM2 0h1v1H2zM0 2h1v1H0zM2 2h1v1H2z" style="--ld-step:7" transform="translate(10 2)"/></svg>

@@ -1,0 +1,37 @@
+<!-- Arc · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-arc {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-arc-spin {
+  transform-origin: center;
+  animation: ld-arc-rotate var(--ld-duration, 800ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-arc-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-arc-spin-stacked {
+  animation-name: ld-arc-rotate, ld-arc-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-arc-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-arc,
+  .ld-arc * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-arc" aria-hidden="true" fill="none" role="presentation" viewBox="0 0 24 24"><circle class="ld-arc-spin" cx="12" cy="12" r="10" stroke="currentColor" stroke-dasharray="18 44.8" stroke-linecap="round" stroke-width="2.5"/></svg>

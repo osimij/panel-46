@@ -16,6 +16,8 @@ import { materialsForSummary } from "./materials.ts";
 import { claimFiles, fileNote, filesForClaude, removeChatFiles } from "./chatfiles.ts";
 import type { ContentBlockParam } from "@anthropic-ai/sdk/resources";
 import { designRules } from "./rules.ts";
+import type { Reader } from "./skills.ts";
+import { designerSkills } from "./skilluse.ts";
 import { partialHtml } from "./partial.ts";
 import { claudeBinary, claudeToken, type Effort } from "./read.ts";
 import { builderBrief, builderCard, builderNews, whichConversation, type Job } from "./duo.ts";
@@ -314,7 +316,7 @@ On a project's canvas (the context says which project):
 - When they ask for references, always put them on the canvas with place_on_board, under the topic they're for (it makes the topic if needed; use after_topic to connect it to the one before, e.g. Color after a locked Typography). Place 4 to 8, the strongest first, each with a short why. Build on what's locked: a color search should suit the chosen type.
 - Then answer in a few lines: what you placed and the thinking behind the set, naming a save as [[id]] only where you say something particular about it. Don't repeat them all as a row of pictures; they're on the canvas.
 - Never choose, rule out or lock on your own. Use mark_saves and lock_topic only when the designer says so ("lock it with the second one"). When they give a reason, keep it with add_note.
-- The designer's reasons for choosing and ruling out are their taste. They're in get_project (designer_reason) and, across every project, in get_verdicts: read it before you suggest or sketch for a project, and don't bring back what they turned down for the same reason. When one reason has come up 3 times or more and their rules don't say it yet, tell them once and offer a line for unugly.md in their own words. They add it; you don't.
+- The designer's reasons for choosing and ruling out are their taste. They're in get_project (designer_reason) and, across every project, in get_verdicts: read it before you suggest or sketch for a project, and don't bring back what they turned down for the same reason. Suggestions they took off a canvas are there too (removed_by_designer, suggestions_removed): never bring them back. When one reason has come up 3 times or more and their rules don't say it yet, tell them once and offer a line for unugly.md in their own words. They add it; you don't.
 
 Sketches (on a project's canvas):
 - When the designer wants to see how something could look ("sketch the hero", "try it with the stamp", "show me three directions"), make it with make_sketch: one self-contained page that shows the idea, not a whole site. Make it from what's settled: the locked decisions, their chosen saves (look at them first), the brief and materials. Use real content in the project's language, never lorem ipsum.
@@ -326,6 +328,7 @@ Sketches (on a project's canvas):
 - When the designer has a sketch selected, "this" means it: read it with get_sketch if you haven't seen it in this conversation.
 - Give every sketch knobs: declare its colors, fonts, type sizes, corner radius and spacing as CSS variables on :root and use them everywhere in place of fixed values (--bg, --surface, --ink, --muted, --accent, --font-display, --font-text, --radius, --space, and whatever else the page needs). Group them with blank lines, and where a name doesn't say what it is in plain words, write a short note beside it (--c1: #e2372b; /* Cortex */, --stop: 11; /* Route stop size */): the studio shows that note as the knob's name. The designer changes them live in the studio (Knobs) and tries palettes from their saves on them, without asking you. They also edit words in place, right in the page. When they kept a change that way, the next version you read has their values and their words: build on them, don't put yours back. Keep words in the HTML itself (not built by a script) where you can, so they can edit them.
 - Pass uses: the ids of the saves it takes from (type from one, color from another), so lines on the canvas show where it came from.
+- Panel comes with ready-made parts (get_ready_made): loading animations, icons and colour scales. Before you write a sketch, get the ones it needs and paste them in as given. A loading or uploading state uses one of its loading animations; never draw your own spinner. Every icon comes from its icons: look for all the icons the page needs in one call (find_icons), then get them (icons); never draw one by hand and never use an emoji as an icon. Keep one weight on a page, with fill only to mark what's active, unless the designer or a skill says otherwise. A project's own brand icons (get_brand_assets) come first. When the project has no colours of its own (no locked color, no brand assets) and the designer hasn't named any, start from one of its colour scales instead of inventing a palette.
 - Make it something they can click through, not a picture: buttons, tabs, menus and forms that work. A flow of screens or its states (empty, loading, error, success) go in one sketch: list them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; buttons between screens set location.hash. The studio shows these as a map they can jump around. Check the other states with get_sketch state.
 - A mobile app screen is made for a phone: device "phone" (390×844). To check a desktop sketch on a phone, get_sketch with device.
 - "Alternates" or "other versions" of a sketch: new sketches from it (from: its id), not edits to it.
@@ -353,16 +356,33 @@ The designer's own fonts. Panel loads them into every sketch, so write font-fami
 ${lines.map((l) => `- ${l}`).join("\n")}`;
 }
 
-export function systemPrompt() {
+/**
+ * What a sketch's answer says about the designer's skills, beside rule_checks. Only in the
+ * instructions while a skill is on, so with none on they are exactly what they were.
+ */
+const SKILL_CHECKS_NOTE = `
+- With the designer's skills on, the answer also carries skill_checks: what Panel measured in the page against those skills (line length, contrast, text sizes…). Fix every one marked "breaks". For each marked "check", fix it, or keep it and say in your reply why. skills_checked names the skills the page was measured against: with no skill_checks, it passed them. When the answer lists skills_that_apply, read each with get_skill if you haven't in this conversation, then look at the page again against it.`;
+const RULE_CHECKS_LINE = /^- The answer also carries rule_checks:.*$/m;
+
+/**
+ * The instructions for a turn: Panel's, then the designer's rules, then their skills, all read
+ * fresh so edits apply to the next message. `reader` says who reads them: one model, or the
+ * planner or the builder of Plan, then build (each gets its own part of every skill). The
+ * builder's are the same on every builder run, so its cache holds.
+ */
+export function systemPrompt(reader: Reader = "solo") {
   const rules = designRules();
-  if (!rules) return SYSTEM + fontsNote();
-  return `${SYSTEM}${fontsNote()}
+  const skills = designerSkills(reader);
+  const system = skills ? SYSTEM.replace(RULE_CHECKS_LINE, (line) => line + SKILL_CHECKS_NOTE) : SYSTEM;
+  const withSkills = (text: string) => (skills ? `${text}\n\n${skills}` : text);
+  if (!rules) return withSkills(system + fontsNote());
+  return withSkills(`${system}${fontsNote()}
 
 The designer's rules (unugly.md) hold for everything you suggest, place, judge or write. They outrank any reference: take from a save only what passes them (a letter-spaced wordmark in a save they like is still out), and say so when a save you show breaks one.
 
 <designer-rules>
 ${rules}
-</designer-rules>`;
+</designer-rules>`);
 }
 
 function emit(chatId: string, run: Run, e: ChatEvent) {
@@ -739,7 +759,8 @@ ${o.asked}
 Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), ${o.part ? `the same page with only the ${o.part} done differently` : "a different direction for the whole page"}. Your angle is ${name}. ${how} The other copies are taking: ${others}. Commit to yours; don't hedge towards theirs. Read the sketch with get_sketch first if you haven't seen this version. Give yours a short title and a tries line that says how it differs. Look at the pictures that come back, fix what breaks the rules with edit_sketch, then answer in one line: its title, and what it tries. Don't make any other sketch and don't change the original.`;
     const prompt: Prompt = o.attached?.length ? [{ type: "text", text: words }, ...o.attached] : words;
     const r = reader(chatId, run, { side: true, model });
-    return viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle: r.handle, model, effort, fork: true }).then((res) => ({ ...res, ...r.state, name }));
+    // In Plan, then build these branch from the builder's conversation, so they get the builder's instructions.
+    return viaSdk(run, { bin, token, prompt, sessionId, mcpUrl, handle: r.handle, model, effort, fork: true, ...(duo ? { system: systemPrompt("builder") } : {}) }).then((res) => ({ ...res, ...r.state, name }));
   });
   const done = await Promise.all(jobs);
   if (run.stopped) return;
@@ -763,7 +784,7 @@ Your part: make exactly ONE new sketch with make_sketch (from: "${o.base.id}"), 
 
 /** What the planner may use: Panel's tools that only read. Making and changing things is the builder's. */
 const READ_TOOLS = new Set(
-  ["get_design_rules", "get_fonts", "get_brand_assets", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
+  ["get_design_rules", "get_skill", "get_fonts", "get_brand_assets", "get_ready_made", "get_verdicts", "library_overview", "search_library", "find_by_color", "similar_to", "gather_for_brief", "get_reference", "list_projects", "get_project", "get_project_material", "get_sketch", "get_handoff", "get_build", "see_build"]
     .map((n) => `mcp__panel__${n}`),
 );
 
@@ -836,7 +857,7 @@ async function duo(chatId: string, run: Run, sessionId: string | null, prompt: P
     bin, token, prompt, sessionId, mcpUrl, handle: p.handle, model: planner, effort: chatSettings.planEffort(),
     servers: { friday: handOver((x) => (plan = x)) },
     allow: (n) => (READ_TOOLS.has(n) || n === "mcp__friday__hand_to_builder" ? true : `You plan and ${builderName} builds: put this in the plan for hand_to_builder instead.`),
-    system: systemPrompt() + plannerNote(plannerName, builderName),
+    system: systemPrompt("planner") + plannerNote(plannerName, builderName),
   });
   if (run.stopped) return;
   if (sessionId && run.parts.length === 0 && (lost(first.stderr) || lost(p.state.resultError ?? ""))) {
@@ -883,7 +904,8 @@ async function build(chatId: string, run: Run, o: { effort: Effort; tag?: boolea
   run.builderCard = card;
   const before = run.parts.length;
   const b = reader(chatId, run, { model: builder, builder: true, ...(o.tag ? { tag: modelName(builder) } : {}) });
-  const res = await viaSdk(run, { bin, token, prompt, sessionId: given.session, mcpUrl, handle: b.handle, model: builder, effort: o.effort });
+  // The builder's own instructions, the same on every builder run (hand-over, pointed edit, Figma rebuild).
+  const res = await viaSdk(run, { bin, token, prompt, sessionId: given.session, mcpUrl, handle: b.handle, model: builder, effort: o.effort, system: systemPrompt("builder") });
   if (run.stopped) return;
   // Its conversation is gone (cleared by Claude Code): a new one starts quietly, with the card.
   if (given.session && run.parts.length === before && (lost(res.stderr) || lost(b.state.resultError ?? ""))) {

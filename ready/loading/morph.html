@@ -1,0 +1,40 @@
+<!-- Morph · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-morph {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-morph-shape {
+  width: 64%;
+  height: 64%;
+  margin: 18%;
+  background: currentColor;
+  border-radius: calc(var(--ld-size, 1.25em) * 0.08);
+  animation: ld-morph-round var(--ld-duration, 1200ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+@keyframes ld-morph-round {
+  0% {
+    border-radius: calc(var(--ld-size, 1.25em) * 0.08);
+    transform: rotate(0);
+  }
+  50% {
+    border-radius: 50%;
+    transform: rotate(45deg);
+  }
+  100% {
+    border-radius: calc(var(--ld-size, 1.25em) * 0.08);
+    transform: rotate(90deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-morph,
+  .ld-morph * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-morph" aria-hidden="true"><div class="ld-morph-shape"></div></div>

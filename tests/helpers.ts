@@ -13,6 +13,8 @@ export interface TestPanel {
   db: Database;
   get: (path: string) => Promise<any>;
   send: (method: string, path: string, body?: unknown, headers?: Record<string, string>) => Promise<Response>;
+  /** Stop Panel and start it again on the same library and port, as a restart would. */
+  restart: () => Promise<void>;
   stop: () => Promise<void>;
 }
 
@@ -38,23 +40,28 @@ export async function startPanel(env: Record<string, string> = {}, sql = ""): Pr
   seed.close();
 
   const port = sparePort();
-  const proc = Bun.spawn(["bun", "server/index.ts"], {
-    cwd: join(import.meta.dir, ".."),
-    env: { ...process.env, PANEL_PORT: String(port), PANEL_LIBRARY_DIR: dir, PANEL_DIST: join(dir, "no-ui"), ...env },
-    stdout: "ignore",
-    stderr: "inherit",
-  });
+  const spawn = () =>
+    Bun.spawn(["bun", "server/index.ts"], {
+      cwd: join(import.meta.dir, ".."),
+      env: { ...process.env, PANEL_PORT: String(port), PANEL_LIBRARY_DIR: dir, PANEL_DIST: join(dir, "no-ui"), ...env },
+      stdout: "ignore",
+      stderr: "inherit",
+    });
+  let proc = spawn();
   const host = `127.0.0.1:${port}`;
   const url = `http://${host}`;
-  for (let i = 0; ; i++) {
-    try {
-      if ((await fetch(`${url}/api/health`)).ok) break;
-    } catch {
-      /* not up yet */
+  const up = async () => {
+    for (let i = 0; ; i++) {
+      try {
+        if ((await fetch(`${url}/api/health`)).ok) break;
+      } catch {
+        /* not up yet */
+      }
+      if (i > 100) throw new Error("The test companion didn't start.");
+      await Bun.sleep(100);
     }
-    if (i > 100) throw new Error("The test companion didn't start.");
-    await Bun.sleep(100);
-  }
+  };
+  await up();
   const db = new Database(join(dir, "library.sqlite"));
   db.exec("PRAGMA busy_timeout = 4000");
   return {
@@ -66,6 +73,12 @@ export async function startPanel(env: Record<string, string> = {}, sql = ""): Pr
         headers: { ...(body !== undefined ? { "content-type": "application/json" } : {}), ...headers },
         body: body !== undefined ? JSON.stringify(body) : undefined,
       }),
+    restart: async () => {
+      proc.kill();
+      await proc.exited;
+      proc = spawn();
+      await up();
+    },
     stop: async () => {
       db.close();
       proc.kill();

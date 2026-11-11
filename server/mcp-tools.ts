@@ -7,14 +7,16 @@ import { readMaterial } from "./materials.ts";
 import { fontLines } from "./fonts.ts";
 import { BRAND_KINDS, brandLine, brandPaths, getBrandAsset, listBrand } from "./brand.ts";
 import { designRules } from "./rules.ts";
+import { getSkill, outsideSkills, skillsChecked } from "./skilluse.ts";
 import { chosenRefs, findProject, listProjects, projectsOf, summary, verdicts, REF_STATES, TOPIC_FACETS } from "./projects.ts";
 import { addNote, addTopic, connectTopics, editSketch, getSketch, lockTopic, makeSketch, markSaves, placeOnBoard, sketchMeta, type SketchResult } from "./board.ts";
 import { figmaReading, readFrame } from "./figma.ts";
 import { existsSync } from "node:fs";
-import { DEVICES, fullUrl, readSketch, renderOf, SCREEN, sketchPath, type Device, type Render } from "./sketches.ts";
+import { DEVICES, fullUrl, readSketch, renderOf, SCREEN, sketchPath, withSkillChecks, type Device, type Render } from "./sketches.ts";
 import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, search, similar } from "./library.ts";
+import { getReadyMade, ICON_WEIGHTS } from "./ready.ts";
 
 const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
 
@@ -35,10 +37,14 @@ Use it to find references for a brief and to combine them: color from one save, 
 - A sketch can be clickable: a flow of screens, or states (empty, loading, error). List them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.
 - A sketch can go to Figma and come back: the designer copies it into Figma from the studio, changes it there, and brings it back. get_figma_frame then gives the Figma frame beside the page it started from; rebuild the page with edit_sketch as its next version, keeping its knobs, states and scripts.
 - When the designer chooses a sketch, get_handoff writes down everything needed to build it, and start_build hands it to Claude Code to build in their code (get_build, message_build follow it).
+- The designer's skills are craft files they turned on (setting type, motion…): get_skill lists them and reads one. They come after the designer's rules and a project's locked decisions, and before any reference.
+- Panel comes with ready-made parts (get_ready_made): loading animations, colour scales and icons. Paste what it gives into the sketch as is; the sketch stays one self-contained file. A loading state uses one of its animations, never one you draw. Every icon comes from its icons, never drawn by hand and never an emoji: find all the icons a page needs in one call, and keep one weight on a page, with fill only to mark what is active, unless the designer or a skill says otherwise. A project's own brand icons (get_brand_assets) come first. A colour scale is a starting point only when the project has no colours of its own: locked decisions, brand assets and the designer's rules come first.
 For each save you recommend, give the designer its "open" link from get_reference's answer, so they can watch or look at the original.`;
 
 const RULES_NOTE = `
 - The designer keeps standing rules for every design (unugly.md): get_design_rules returns them, and get_project starts with them. Read them before you design, build or judge anything, follow them over any reference, and check the result against them before you show it.`;
+
+const skillsHeading = "## The designer's skills\n\nCraft they chose for every design: how to decide and how to build it well. They come after the rules above and a project's locked decisions, and before any reference.";
 
 const rulesHeading = "The designer's rules (unugly.md). They hold for everything designed or built here and outrank any reference; check the result against them before showing it.";
 
@@ -75,6 +81,11 @@ async function sketchContent(head: Record<string, unknown>, render: Render, pict
       page_errors: render.errors.length ? render.errors : undefined,
       // Measured in the page, not judged: "breaks" must be fixed, "check" needs a real reason to stay.
       rule_checks: describeFindings(render.rules),
+      // Measured against the designer's skills that are on; absent with none on.
+      skill_checks: describeFindings(render.skills),
+      // Which skills were measured, also when nothing was found; absent when nothing was measured.
+      skills_checked: render.skillKey ? nonEmpty(skillsChecked(render.apply)) : undefined,
+      skills_that_apply: render.apply?.length ? render.apply : undefined,
       not_rendered: render.failed,
     }),
   }];
@@ -88,6 +99,8 @@ async function sketchContent(head: Record<string, unknown>, render: Render, pict
   }
   return content;
 }
+
+const nonEmpty = <T,>(a: T[]) => (a.length ? a : undefined);
 
 const LOOK = "Look at the screens before you answer: check them against the brief, the locked decisions and the designer's rules, and fix what's off with edit_sketch first. page_errors come from the page itself (scripts, fonts, images that failed). rule_checks are what Panel measured in the page against the designer's rules: fix every one marked breaks before you reply; for each marked check, remove it or be ready to say why it earns its place. The checks can't see everything (whether something physical looks real, whether a font's Cyrillic is well drawn), so still look.";
 
@@ -106,7 +119,7 @@ const made = async (r: SketchResult, device: Device = "desktop") =>
     linked_saves: r.linked_saves,
     on_canvas: "as a suggestion; the designer keeps, chooses or rules it out",
     next: r.states && r.states.length > 1 ? `${LOOK} These pictures show the first state; look at the others with get_sketch state.` : LOOK,
-  }, r.render, true, device);
+  }, await withSkillChecks(r.render, fullUrl(sketchPath(r.project, r.id, r.version)), device), true, device);
 
 const text = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
 const failure = (e: unknown) => ({ content: [{ type: "text" as const, text: (e as Error).message }], isError: true });
@@ -131,9 +144,28 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       annotations: readOnly,
     }, async () => {
       const rules = designRules();
-      return { content: [{ type: "text" as const, text: rules ? `${rulesHeading}\n\n${rules}` : "The designer hasn't written any rules yet (unugly.md is missing)." }] };
+      // The Always skills' Decide and Build follow the rules, under their own heading.
+      const skills = outsideSkills("decide+build");
+      const skillText = skills.length ? `\n\n${skillsHeading}\n\n${skills.map((x) => `### ${x.name}\n\n${x.text}`).join("\n\n")}` : "";
+      return { content: [{ type: "text" as const, text: (rules ? `${rulesHeading}\n\n${rules}` : "The designer hasn't written any rules yet (unugly.md is missing).") + skillText }] };
     });
   }
+
+  server.registerTool("get_skill", {
+    title: "Read one of the designer's skills",
+    description: "The designer's skills are craft files they turned on (setting type, motion…). With a name, the skill as FRIDAY uses it: for one Panel has read, its short version (what to decide, how to build, what Panel checks) and its files; file \"SKILL.md\" gives the whole skill as its author wrote it. With none, the list of skills that are on and when each is used.",
+    inputSchema: {
+      name: z.string().optional().describe("The skill's name, as listed."),
+      file: z.string().optional().describe("One of the skill's files, as its answer lists them: \"SKILL.md\" for the whole skill as written."),
+    },
+    annotations: readOnly,
+  }, async ({ name, file }) => {
+    try {
+      return { content: [{ type: "text" as const, text: getSkill(name, file) }] };
+    } catch (e) {
+      return failure(e);
+    }
+  });
 
   server.registerTool("get_fonts", {
     title: "The designer's fonts",
@@ -180,6 +212,20 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     }
     return { content };
   });
+
+  // Ready-made parts that ship with Panel (ready.ts): loading animations, colour scales, icons.
+  server.registerTool("get_ready_made", {
+    title: "Ready-made parts",
+    description: "Loading animations, colour scales (OKLCH, light and dark) and icons (Phosphor) that come with Panel, to paste into a sketch as given. With nothing, the list.",
+    inputSchema: {
+      loading: z.string().optional().describe("A loading animation's name: its piece to paste."),
+      palette: z.string().optional().describe("A colour scale's name: its steps, light and dark, and what each is for."),
+      find_icons: z.string().optional().describe("What each icon is for, comma-separated (\"trash, settings, arrow right\"): the best names for each."),
+      icons: z.array(z.string()).optional().describe("Icon names, up to 12: each as an SVG to paste."),
+      weight: z.enum(ICON_WEIGHTS).optional().describe("The icons' weight (default regular)."),
+    },
+    annotations: readOnly,
+  }, async (a) => ({ content: [{ type: "text" as const, text: getReadyMade(a) }] }));
 
   server.registerTool("get_verdicts", {
     title: "The designer's verdicts",
@@ -363,7 +409,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("place_on_board", {
     title: "Place saves on a project's canvas",
-    description: "Put saves from the library on a project's canvas under a topic (Typography, Color, Layout…), as suggestions the designer then chooses, keeps or rules out. The topic is found by name or kind (\"type\" finds Typography) and made if it isn't there. Saves already under that topic are skipped. Give each save a short why: what to take from it for this topic, shown on its card. Place 4 to 8 at a time, the strongest first.",
+    description: "Put saves from the library on a project's canvas under a topic (Typography, Color, Layout…), as suggestions the designer then chooses, keeps or rules out. The topic is found by name or kind (\"type\" finds Typography) and made if it isn't there. Saves already under that topic, or that the designer took off it, are skipped. Give each save a short why: what to take from it for this topic, shown on its card. Place 4 to 8 at a time, the strongest first.",
     inputSchema: {
       project: projectArg,
       topic: z.string().describe("The topic to put them under, by name: \"Typography\", \"Color\", \"Hero layout\"…"),
@@ -466,7 +512,9 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
   }, async ({ html: withHtml = true, pictures = true, ...a }) => {
     try {
       const { render, html: page, ...head } = await getSketch(a);
-      const content = await sketchContent(head, render, pictures, head.seen_on);
+      // Measured against the skills that are on now, even if it was rendered before they were.
+      const slug = head.seen_state?.match(/\(#([^)]+)\)$/)?.[1];
+      const content = await sketchContent(head, await withSkillChecks(render, head.page + (slug ? `#${slug}` : ""), head.seen_on), pictures, head.seen_on);
       if (withHtml) content.push({ type: "text", text: page });
       return { content };
     } catch (e) {

@@ -56,7 +56,9 @@ export interface Doc {
 const COLUMNS = ["own", "general", ...FACETS] as const;
 type Column = (typeof COLUMNS)[number];
 
-let cache: { signature: string; docs: Map<string, Doc>; index: Database } | null = null;
+// Two word indexes: `index` without skills (what FRIDAY's searches use, so a word's rarity is
+// judged among design references only) and `everything`, for a search that asks for skills.
+let cache: { signature: string; docs: Map<string, Doc>; index: Database; everything: Database; references: number } | null = null;
 
 function signature() {
   return db
@@ -163,16 +165,21 @@ export function load() {
   }
 
   cache?.index.close();
-  const index = new Database(":memory:");
-  index.exec(`CREATE VIRTUAL TABLE idx USING fts5(ref_id UNINDEXED, ${COLUMNS.join(", ")}, tokenize = 'porter unicode61 remove_diacritics 2')`);
-  const insert = index.prepare(`INSERT INTO idx (ref_id, ${COLUMNS.join(", ")}) VALUES (?${", ?".repeat(COLUMNS.length)})`);
-  index.transaction(() => {
-    for (const d of docs.values()) {
-      const c = columnsOf(d);
-      insert.run(d.r.id, ...COLUMNS.map((k) => c[k]));
-    }
-  })();
-  cache = { signature: sig, docs, index };
+  cache?.everything.close();
+  const build = (which: Doc[]) => {
+    const db_ = new Database(":memory:");
+    db_.exec(`CREATE VIRTUAL TABLE idx USING fts5(ref_id UNINDEXED, ${COLUMNS.join(", ")}, tokenize = 'porter unicode61 remove_diacritics 2')`);
+    const insert = db_.prepare(`INSERT INTO idx (ref_id, ${COLUMNS.join(", ")}) VALUES (?${", ?".repeat(COLUMNS.length)})`);
+    db_.transaction(() => {
+      for (const d of which) {
+        const c = columnsOf(d);
+        insert.run(d.r.id, ...COLUMNS.map((k) => c[k]));
+      }
+    })();
+    return db_;
+  };
+  const references = [...docs.values()].filter((d) => d.type !== "skill");
+  cache = { signature: sig, docs, index: build(references), everything: build([...docs.values()]), references: references.length };
   return cache;
 }
 
@@ -212,10 +219,12 @@ export interface TextHit { hits: string[]; weight: number; bm25: number }
  * `distinctive` keeps only words that set saves apart: used by similar_to, whose "query"
  * is a whole facet of another save.
  */
-function textRank(q: string, cols: readonly Column[] | null, distinctive = false): Map<string, TextHit> {
-  const { index, docs } = load();
+/** `withSkills`: rank among everything, skills too (only when a call asks for skills). */
+function textRank(q: string, cols: readonly Column[] | null, distinctive = false, withSkills = false): Map<string, TextHit> {
+  const loaded = load();
+  const index = withSkills ? loaded.everything : loaded.index;
   const out = new Map<string, TextHit>();
-  const n = docs.size || 1;
+  const n = (withSkills ? loaded.docs.size : loaded.references) || 1;
   const df = (t: string) => index.query<{ n: number }, [string]>("SELECT COUNT(*) n FROM idx WHERE idx MATCH ?").get(scope(cols, `"${t}"*`))!.n;
   let ts = terms(q).filter((t) => !(cols && FACET_WORDS.has(t)));
   const freq = new Map(ts.map((t) => [t, df(t)]));
@@ -353,6 +362,8 @@ export interface Filters {
 
 function passes(d: Doc, f: Filters) {
   const p = d.profile;
+  // Skills are files for AI agents, not design references: only found when asked for by type.
+  if (d.type === "skill" && !f.types?.includes("skill")) return false;
   if (f.types?.length && !f.types.includes(d.type)) return false;
   if (f.favorites && !d.r.favorite) return false;
   if (f.tags?.length && !f.tags.every((t) => d.tags.some((x) => x.toLowerCase() === t.toLowerCase()))) return false;
@@ -521,12 +532,15 @@ export async function search(o: SearchInput) {
   const { docs } = load();
   const cols = o.facets?.length ? (o.facets as Column[]) : null;
   const q = o.query?.trim() ?? "";
-  const ranked = q ? textRank(q, cols) : null;
+  // Skills are only searched when asked for: then they're ranked among everything.
+  const withSkills = !!o.types?.includes("skill");
+  const noSkills = (m: Map<string, number> | null) => (m && !withSkills ? new Map([...m].filter(([id]) => docs.get(id)?.type !== "skill")) : m);
+  const ranked = q ? textRank(q, cols, false, withSkills) : null;
   const askedTerms = q ? terms(q).filter((t) => !(cols && FACET_WORDS.has(t))) : [];
   // By meaning: saves whose reads say the same thing in other words. By look: saves whose
   // pictures match a description. Each is a ranking of its own, joined with the words below.
-  const meaning = top(q ? await meaningRank(q, cols ?? [...COLUMNS]) : null, 40, 0.07);
-  const look = top(o.look?.trim() ? await lookRank(o.look) : null, 40, 0.06);
+  const meaning = top(noSkills(q ? await meaningRank(q, cols ?? [...COLUMNS]) : null), 40, 0.07);
+  const look = top(noSkills(o.look?.trim() ? await lookRank(o.look) : null), 40, 0.06);
 
   type Row = { d: Doc; hits: string[]; weight: number; bm25: number; color: ReturnType<typeof colorMatch> | null; found: boolean };
   const rows: Row[] = [];
@@ -646,9 +660,13 @@ export function findByColor(o: Filters & { colors: string[]; match?: "any" | "al
 /** Saves like this one, in the chosen facets. Each facet ranks on its own; the ranks are then fused. */
 export function similar(o: Filters & { id: string; facets?: (Facet | "overall" | "look")[]; limit?: number; detail?: Detail }) {
   const make = o.detail === "full" ? card : shortCard;
-  const { docs } = load();
+  const { docs, references } = load();
   const base = docs.get(o.id);
   if (!base) throw new Error(`No save with id ${o.id}.`);
+  // The closest by meaning or look, as if skills weren't there (unless asked for): they never take a place.
+  const withSkills = !!o.types?.includes("skill");
+  const near = (kind: string, n: number) =>
+    withSkills ? nearest(base.r.id, kind, n) : nearest(base.r.id, kind, n + (docs.size - references)).filter((x) => docs.get(x.id)?.type !== "skill").slice(0, n);
   const facets = o.facets?.length ? o.facets : ["overall" as const];
   const cols = columnsOf(base);
   const fused = new Map<string, { score: number; why: string[] }>();
@@ -664,7 +682,7 @@ export function similar(o: Filters & { id: string; facets?: (Facet | "overall" |
   for (const f of facets) {
     // How it looks: the pictures themselves compared, whatever was written about them.
     if (f === "look") {
-      nearest(base.r.id, "look", 60).filter((x) => allowed.has(x.id)).forEach((x, i) => add(x.id, i, "looks alike"));
+      near("look", 60).filter((x) => allowed.has(x.id)).forEach((x, i) => add(x.id, i, "looks alike"));
       continue;
     }
     if (f === "color") {
@@ -677,13 +695,13 @@ export function similar(o: Filters & { id: string; facets?: (Facet | "overall" |
     }
     const column: Column[] = f === "overall" ? ["general", "mood", "color", "typography", "layout", "imagery", "motion"] : [f];
     const text = column.map((c) => cols[c]).join(" ");
-    const ranked = [...textRank(text, column, true).entries()]
+    const ranked = [...textRank(text, column, true, !!o.types?.includes("skill")).entries()]
       .filter(([id]) => allowed.has(id))
       .sort((a, b) => b[1].weight - a[1].weight || a[1].bm25 - b[1].bm25);
     ranked.forEach(([id, x], i) => add(id, i, `${f}: shares ${x.hits.slice(0, 6).join(", ")}`));
     // And the saves whose reads say much the same about it in other words.
     for (const kind of f === "overall" ? ["general", "mood"] : [f]) {
-      nearest(base.r.id, `t:${kind}`, 30).filter((x) => allowed.has(x.id)).forEach((x, i) => add(x.id, i, `${f}: close in meaning`));
+      near(`t:${kind}`, 30).filter((x) => allowed.has(x.id)).forEach((x, i) => add(x.id, i, `${f}: close in meaning`));
     }
   }
   const rows = [...fused.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, Math.min(o.limit ?? 10, 40));
@@ -734,7 +752,8 @@ const count = (values: (string | undefined | null)[], top = 40) => {
 };
 
 export function overview() {
-  const docs = [...load().docs.values()];
+  // Skills are files for AI agents, not design references: they stay out of these counts.
+  const docs = [...load().docs.values()].filter((d) => d.type !== "skill");
   const ps = docs.map((d) => d.profile).filter((p): p is Profile => !!p);
   const colorFamilies = docs.flatMap((d) => d.palette.filter((s) => s.share >= 0.05).map((s) => s.name.split(" ").pop()));
   return {

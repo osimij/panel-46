@@ -1,0 +1,51 @@
+<!-- Wave · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-wave {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-wave {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ld-wave-bar {
+  width: calc(var(--ld-size, 1.25em) * 0.12);
+  height: 100%;
+  background: currentColor;
+  border-radius: 9999px;
+  animation: ld-wave-rise var(--ld-duration, 900ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 900ms) * (var(--ld-step) - 5) / 5);
+}
+
+.ld-wave-bar-bottom {
+  align-self: flex-end;
+}
+
+@keyframes ld-wave-rise {
+  0%,
+  100% {
+    height: 30%;
+  }
+  50% {
+    height: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-wave-bar {
+    height: calc((0.4 + var(--ld-step) * 0.15) * 100%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-wave,
+  .ld-wave * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-wave" aria-hidden="true"><div class="ld-wave-bar ld-wave-bar-center" style="--ld-step:0"></div><div class="ld-wave-bar ld-wave-bar-center" style="--ld-step:1"></div><div class="ld-wave-bar ld-wave-bar-center" style="--ld-step:2"></div><div class="ld-wave-bar ld-wave-bar-center" style="--ld-step:3"></div><div class="ld-wave-bar ld-wave-bar-center" style="--ld-step:4"></div></div>

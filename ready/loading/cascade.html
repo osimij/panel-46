@@ -1,0 +1,28 @@
+<!-- Cascade · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-cascade {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-cascade-arc {
+  transform-origin: center;
+  animation: ld-cascade-turn var(--ld-duration, 1500ms) cubic-bezier(0.68, -0.75, 0.265, 1.75) infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1500ms) * (var(--ld-step) - 24) / 24);
+}
+
+@keyframes ld-cascade-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-cascade,
+  .ld-cascade * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-cascade" aria-hidden="true" fill="none" role="presentation" stroke="currentColor" stroke-linecap="round" stroke-width="2" viewBox="0 0 24 24"><circle class="ld-cascade-arc" cx="12" cy="12" r="10.5" stroke-dasharray="16.493361431346415 49.480084294039244" style="--ld-step:0"/><circle class="ld-cascade-arc" cx="12" cy="12" r="7" stroke-dasharray="10.995574287564276 32.98672286269283" style="--ld-step:1"/><circle class="ld-cascade-arc" cx="12" cy="12" r="3.5" stroke-dasharray="5.497787143782138 16.493361431346415" style="--ld-step:2"/></svg>

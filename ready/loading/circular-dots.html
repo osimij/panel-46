@@ -1,0 +1,36 @@
+<!-- Circular dots · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-circular-dots {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-circular-dots-dot {
+  animation: ld-circular-dots-fade var(--ld-duration, 800ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 800ms) * (var(--ld-step) - 8) / 8);
+}
+
+@keyframes ld-circular-dots-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-circular-dots-dot {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-circular-dots,
+  .ld-circular-dots * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-circular-dots" aria-hidden="true" fill="currentColor" role="presentation" viewBox="0 0 16 16"><circle class="ld-circular-dots-dot" cx="8" cy="1.5" r="1.5" style="--ld-step:0"/><circle class="ld-circular-dots-dot" cx="12.5962" cy="3.4038" r="1.5" style="--ld-step:1"/><circle class="ld-circular-dots-dot" cx="14.5" cy="8" r="1.5" style="--ld-step:2"/><circle class="ld-circular-dots-dot" cx="12.5962" cy="12.5962" r="1.5" style="--ld-step:3"/><circle class="ld-circular-dots-dot" cx="8" cy="14.5" r="1.5" style="--ld-step:4"/><circle class="ld-circular-dots-dot" cx="3.4038" cy="12.5962" r="1.5" style="--ld-step:5"/><circle class="ld-circular-dots-dot" cx="1.5" cy="8" r="1.5" style="--ld-step:6"/><circle class="ld-circular-dots-dot" cx="3.4038" cy="3.4038" r="1.5" style="--ld-step:7"/></svg>

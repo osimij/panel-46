@@ -1,0 +1,42 @@
+<!-- Split · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-split {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-split-dot {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: ld-split-part var(--ld-duration, 1400ms) cubic-bezier(0.65, 0, 0.35, 1) infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+@keyframes ld-split-part {
+  0%,
+  100% {
+    translate: 0 0;
+    scale: 1;
+  }
+  40%,
+  60% {
+    translate: calc((var(--ld-step) * 2 - 1) * 5px) 0;
+    scale: 0.65;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-split-dot {
+    translate: calc((var(--ld-step) * 2 - 1) * 5px) 0;
+    scale: 0.65;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-split,
+  .ld-split * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-split" aria-hidden="true" fill="currentColor" role="presentation" viewBox="0 0 24 24"><circle class="ld-split-dot" cx="12" cy="12" r="4" style="--ld-step:0"/><circle class="ld-split-dot" cx="12" cy="12" r="4" style="--ld-step:1"/></svg>

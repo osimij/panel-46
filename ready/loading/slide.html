@@ -1,0 +1,60 @@
+<!-- Slide · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-slide {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-slide {
+  position: relative;
+}
+
+.ld-slide-dot {
+  position: absolute;
+  top: 6%;
+  left: 6%;
+  width: 34%;
+  height: 34%;
+  background: currentColor;
+  border-radius: 50%;
+  animation: ld-slide-walk var(--ld-duration, 2400ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 2400ms) * (var(--ld-step) - 3) / 3);
+}
+
+@keyframes ld-slide-walk {
+  0% {
+    transform: translate(158.8%, 0);
+  }
+  8.33%,
+  25% {
+    transform: translate(158.8%, 158.8%);
+  }
+  33.33%,
+  50% {
+    transform: translate(0, 158.8%);
+  }
+  58.33%,
+  75% {
+    transform: translate(0, 0);
+  }
+  83.33%,
+  100% {
+    transform: translate(158.8%, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-slide-dot {
+    transform: var(--ld-slide-rest);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-slide,
+  .ld-slide * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-slide" aria-hidden="true"><div class="ld-slide-dot" style="--ld-step:0;--ld-slide-rest:translate(158.8%, 0)"></div><div class="ld-slide-dot" style="--ld-step:1;--ld-slide-rest:translate(0, 0)"></div><div class="ld-slide-dot" style="--ld-step:2;--ld-slide-rest:translate(0, 158.8%)"></div></div>

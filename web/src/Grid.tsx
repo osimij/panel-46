@@ -1,6 +1,6 @@
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
-import { displayTitle, formatDuration, personFace, prefersReducedMotion, skillParts, STATUS_LABEL, type Ref } from "./api.ts";
+import { displayTitle, formatDuration, personFace, prefersReducedMotion, skillParts, skillStore, STATUS_LABEL, type Ref } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
 /**
@@ -518,11 +518,31 @@ export function PersonAvatar({ r, size }: { r: Ref; size: number }) {
 /** A skill file on the card: its name and what it's for, like a page of a manual. */
 function SkillFace({ r }: { r: Ref }) {
   const { description } = skillParts(r.text ?? "");
+  // A small mark when FRIDAY uses it.
+  const on = useSyncExternalStore(skillStore.subscribe, () => !!skillStore.get()?.skills.some((s) => s.id === r.id && s.on));
+  // A small mark once Panel has read it (skillread.ts).
+  const read = useSyncExternalStore(skillStore.subscribe, () => !!skillStore.get()?.skills.some((s) => s.id === r.id && !!s.read?.for));
+  // Its subjects from the read, the main one first, in small print (the page sorts by the main one).
+  const subjects = useSyncExternalStore(skillStore.subscribe, () => {
+    const s = skillStore.get()?.skills.find((x) => x.id === r.id);
+    return (s?.subjects.length ? s.subjects : s?.read?.subjects ?? []).join(" · ");
+  });
+  const [main, ...others] = subjects ? subjects.split(" · ") : [];
   return (
     <div className="face skill-face">
-      <span className="skill-label">SKILL.md</span>
+      <span className="skill-labels">
+        <span className="skill-label">SKILL.md</span>
+        {on && <span className="skill-label on" title="FRIDAY uses this skill">In FRIDAY</span>}
+        {read && <span className="skill-label" title="Panel has read this skill">Read</span>}
+      </span>
       <div className="skill-name">{displayTitle(r)}</div>
       {description && <p className="skill-desc">{description}</p>}
+      {main && (
+        <span className="skill-subjects">
+          <span className="skill-subject-main">{main}</span>
+          {others.length > 0 && ` · ${others.join(" · ")}`}
+        </span>
+      )}
     </div>
   );
 }

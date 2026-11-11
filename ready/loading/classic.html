@@ -1,0 +1,55 @@
+<!-- Classic · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-classic {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-classic-inner {
+  position: relative;
+  top: 50%;
+  left: 50%;
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-classic-bar {
+  position: absolute;
+  top: -3.9%;
+  left: -10%;
+  width: 24%;
+  height: 8%;
+  background: currentColor;
+  border-radius: 6px;
+  transform: rotate(calc(var(--ld-step) * 30deg)) translate(146%);
+}
+
+.ld-classic-bar {
+  animation: ld-classic-fade var(--ld-duration, 1200ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1200ms) * (var(--ld-step) - 12) / 12);
+}
+
+@keyframes ld-classic-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.15;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-classic-bar {
+    opacity: 0.5;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-classic,
+  .ld-classic * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-classic" aria-hidden="true"><div class="ld-classic-inner"><div class="ld-classic-bar" style="--ld-step:0"></div><div class="ld-classic-bar" style="--ld-step:1"></div><div class="ld-classic-bar" style="--ld-step:2"></div><div class="ld-classic-bar" style="--ld-step:3"></div><div class="ld-classic-bar" style="--ld-step:4"></div><div class="ld-classic-bar" style="--ld-step:5"></div><div class="ld-classic-bar" style="--ld-step:6"></div><div class="ld-classic-bar" style="--ld-step:7"></div><div class="ld-classic-bar" style="--ld-step:8"></div><div class="ld-classic-bar" style="--ld-step:9"></div><div class="ld-classic-bar" style="--ld-step:10"></div><div class="ld-classic-bar" style="--ld-step:11"></div></div></div>

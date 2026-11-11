@@ -1,0 +1,78 @@
+<!-- Atom · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-atom {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-atom {
+  position: relative;
+}
+
+.ld-atom-shell {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: calc(var(--ld-size, 1.25em) * 0.055) solid currentColor;
+  border-radius: 9999px;
+}
+
+.ld-atom-orbit {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  transform: rotate(var(--ld-atom-tilt)) rotateX(90deg);
+}
+
+.ld-atom-ring {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: calc(var(--ld-size, 1.25em) * 0.045) solid currentColor;
+  border-radius: 9999px;
+  transform: rotateX(90deg);
+}
+
+.ld-atom-spin {
+  transform-origin: center;
+  animation: ld-atom-rotate var(--ld-duration, 1000ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-atom-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-atom-spin-stacked {
+  animation-name: ld-atom-rotate, ld-atom-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-atom-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.ld-atom-spin {
+  position: absolute;
+  inset: 0;
+  transform-style: preserve-3d;
+  animation-delay: calc(var(--ld-duration, 1000ms) * (var(--ld-step) - 3) / 3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-atom-spin {
+    transform: rotate(60deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-atom,
+  .ld-atom * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-atom" aria-hidden="true"><div class="ld-atom-shell"></div><div class="ld-atom-orbit" style="--ld-atom-tilt:0deg"><div class="ld-atom-spin" style="--ld-step:0"><div class="ld-atom-ring"></div></div></div><div class="ld-atom-orbit" style="--ld-atom-tilt:60deg"><div class="ld-atom-spin" style="--ld-step:1"><div class="ld-atom-ring"></div></div></div><div class="ld-atom-orbit" style="--ld-atom-tilt:120deg"><div class="ld-atom-spin" style="--ld-step:2"><div class="ld-atom-ring"></div></div></div></div>

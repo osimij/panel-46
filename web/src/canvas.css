@@ -468,3 +468,201 @@ a.mat-name:hover { text-decoration: underline; text-decoration-color: var(--fain
   .react-flow__node.unfold .bn, .canvas-notice, .canvas-notice-dot, .about, .about-scroll > *, .mat, .canvas-title { animation: none !important; }
   .react-flow__node.folding .bn { transition: none !important; }
 }
+
+/* ---- Saying no, and folding what's ruled out ---- */
+
+/* On a topic still being explored, its "3 ruled out" sits on the light card. */
+.bn.topic:not(.locked) .topic-considered { background: var(--fill); color: var(--muted); opacity: 1; }
+.bn.topic:not(.locked) .topic-considered:hover { background: var(--fill-hover); color: var(--text); }
+/* How many suggestions are waiting, beside Review in the dock. */
+.canvas-bar-n { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--faint); }
+.canvas-bar-btn:hover .canvas-bar-n { color: var(--muted); }
+
+/* ---- Review: one suggestion at a time, large ---- */
+
+.rv-sheet {
+  position: absolute; inset: 0; z-index: 17; display: grid; place-items: center; padding: 20px 24px 92px;
+  background: color-mix(in oklch, var(--bg) 55%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  animation: sk-fade 0.22s var(--ease);
+}
+.rv-sheet.closing { opacity: 0; transition: opacity 0.16s var(--ease); }
+.rv-frame {
+  display: flex; width: min(1320px, 100%); height: 100%; min-height: 0; overflow: hidden; background: var(--raised);
+  border-radius: calc(14px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 0 0 1px var(--line), 0 30px 80px -30px oklch(0 0 0 / 0.5);
+  animation: sk-in 0.4s var(--out);
+}
+.rv-sheet.closing .rv-frame { transform: scale(0.98); transition: transform 0.16s var(--ease); }
+/* The picture: as large as fits, whole, never cropped. */
+.rv-stage {
+  position: relative; flex: 1; min-width: 0; min-height: 0; display: flex; align-items: center; justify-content: center;
+  padding: 28px; background: var(--card); animation: rv-fade 0.22s var(--ease);
+}
+.rv-stage img {
+  display: block; max-width: 100%; max-height: 100%; object-fit: contain;
+  border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 0 0 1px var(--line), 0 18px 50px -26px oklch(0 0 0 / 0.45);
+}
+.rv-blank { font-size: 13px; color: var(--muted); }
+.rv-play {
+  position: absolute; top: 40px; left: 40px; width: 30px; height: 30px; display: grid; place-items: center; border-radius: 50%;
+  background: var(--glass); color: #fff; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.rv-side { width: clamp(248px, 30%, 320px); flex: none; display: flex; flex-direction: column; gap: 18px; padding: 14px 18px 16px; overflow-y: auto; }
+.rv-top { display: flex; align-items: center; justify-content: space-between; }
+.rv-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.rv-x { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; color: var(--muted); }
+.rv-x:hover { background: var(--fill); color: var(--text); }
+.rv-info { display: flex; flex-direction: column; gap: 8px; animation: rv-fade 0.22s var(--ease); }
+.rv-under { margin: 0; font-size: 12px; color: var(--muted); }
+.rv-why { margin: 0; font-size: 15px; line-height: 1.45; color: var(--text); }
+.rv-title { margin: 0; font-size: 12.5px; line-height: 1.4; color: var(--muted); }
+.rv-palette { display: flex; }
+.rv-palette i { width: 14px; height: 14px; border-radius: 50%; margin-right: -3px; box-shadow: 0 0 0 1.5px var(--raised); }
+.rv-state { margin: 0; font-size: 12px; font-weight: 500; color: var(--text); }
+.rv-choices, .rv-ask { display: flex; flex-direction: column; gap: 6px; margin-top: auto; }
+.rv-row { display: flex; gap: 6px; }
+.rv-row .rv-btn { flex: 1; }
+.rv-btn {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; height: 36px; padding: 0 10px 0 13px;
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
+  background: var(--fill); font-size: 13px; color: var(--text); transition: background-color var(--fast) var(--ease);
+}
+.rv-btn:hover { background: var(--fill-hover); }
+.rv-btn.on { background: var(--text); color: var(--bg); }
+.rv-btn.on kbd { color: color-mix(in oklch, var(--bg) 60%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklch, var(--bg) 30%, transparent); }
+.rv-btn.quiet { background: transparent; color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+.rv-btn.quiet:hover { color: var(--text); background: var(--fill); }
+.rv-btn:disabled { opacity: 0.4; pointer-events: none; }
+.rv-btn.solid { background: var(--text); color: var(--bg); justify-content: center; padding: 0 22px; }
+.rv-btn kbd, .rv-reason kbd {
+  min-width: 20px; height: 20px; padding: 0 5px; display: inline-grid; place-items: center; border-radius: 5px;
+  font-size: 11px; font-weight: 500; line-height: 1; font-family: inherit; color: var(--faint); box-shadow: inset 0 0 0 1px var(--line);
+}
+.rv-ask { animation: rv-fade 0.22s var(--ease); }
+.rv-ask-what { margin: 0 0 2px; font-size: 13px; font-weight: 500; }
+.rv-reasons { display: flex; flex-direction: column; gap: 4px; }
+.rv-reason {
+  display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 10px; text-align: left;
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner); background: var(--fill); font-size: 13px;
+}
+.rv-reason:hover { background: var(--fill-hover); }
+.rv-input {
+  height: 34px; padding: 0 11px; border: 0; outline: 0; font: inherit; font-size: 13px; color: inherit; background: transparent;
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner); box-shadow: inset 0 0 0 1px var(--line);
+}
+.rv-input:focus { box-shadow: inset 0 0 0 1px var(--faint); }
+.rv-input::placeholder { color: var(--faint); }
+.rv-hint { margin: 0; font-size: 11.5px; color: var(--faint); }
+.rv-end { margin: auto; display: grid; justify-items: center; gap: 6px; text-align: center; animation: rv-fade 0.3s var(--ease); }
+.rv-end-title { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -0.015em; }
+.rv-end-text { margin: 0 0 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+@keyframes rv-fade { from { opacity: 0; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-sheet, .rv-frame, .rv-stage, .rv-info, .rv-ask, .rv-end { animation: none !important; }
+  .rv-sheet.closing, .rv-sheet.closing .rv-frame { transition: none !important; }
+}
+.rv-stage.tall { display: block; overflow-y: auto; overscroll-behavior: contain; }
+.rv-stage.tall img { width: min(100%, 980px); max-height: none; margin: 0 auto; }
+
+/* Lines pass behind every card; the one you've selected or are pointing at comes to the front. */
+.canvas .react-flow__edges svg:has(.fe.sel), .canvas .react-flow__edges svg:has(.react-flow__edge:hover) { z-index: 1001 !important; }
+
+/* ---- Read from far away ---- */
+/* Below a zoom of 0.4 the canvas wears .far. The live zoom is in --z (set as the view moves),
+   so sizes can follow it without redrawing anything. */
+
+/* A topic's name keeps a steady size on screen: scaled against the zoom with a transform, so
+   the card's own measured size never changes. It sits over the card and grows upward and to
+   the right, cut off at the width of the topic's three columns. */
+.topic-far {
+  position: absolute; left: 0; bottom: 0; z-index: 2; display: flex; flex-direction: column; gap: 2px;
+  width: max-content; max-width: calc(708px * var(--z, 1)); transform-origin: 0 100%;
+  transform: scale(calc(1 / var(--z, 1)));
+  /* As tight as the room allows: 13.5px when there's space, never under 11px. */
+  font-size: clamp(11px, calc(11px + (708px * var(--z, 1) - 70px) * 0.035), 13.5px);
+  color: var(--text); opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity 0.2s var(--ease), visibility 0.2s;
+}
+/* Plain words with a soft halo of the page behind them, so lines and pictures never make them hard to read. */
+.topic-far-name {
+  font-size: 1em; font-weight: 600; line-height: 1.2; letter-spacing: -0.01em; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  text-shadow: 0 0 6px var(--bg), 0 0 2px var(--bg), 0 0 1px var(--bg);
+}
+.topic-far-meta {
+  font-size: 11px; line-height: 1.25; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  text-shadow: 0 0 6px var(--bg), 0 0 2px var(--bg);
+}
+.canvas.far .topic-far { opacity: 1; visibility: visible; pointer-events: auto; cursor: zoom-in; }
+.react-flow__node.selected .topic-far-name { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 3px; }
+.bn.topic > :not(.topic-far):not(.react-flow__handle) { transition: opacity 0.2s var(--ease); }
+.canvas.far .bn.topic > :not(.topic-far):not(.react-flow__handle) { opacity: 0; }
+.canvas.far .bn.topic, .canvas.far .bn.topic.locked, .canvas.far .react-flow__node.selected .bn.topic { background: transparent; box-shadow: none; }
+
+/* Saves (and sketches) become plain pictures: their words and dots fade, keeping their room.
+   Their verdict still reads: a clear ring for chosen, dim for ruled out, dashed for suggested. */
+.ref-meta, .ref-why, .ref-badge, .sketch-meta, .sketch-version { transition: opacity 0.2s var(--ease); }
+.canvas.far .bn.ref :is(.ref-meta, .ref-why, .ref-badge), .canvas.far .bn.sketch :is(.sketch-meta, .ref-badge, .sketch-version) { opacity: 0; }
+.canvas.far .bn.ref.s-chosen, .canvas.far .bn.sketch.s-chosen { box-shadow: 0 0 0 calc(2.5px / var(--z, 1)) var(--text); }
+.canvas.far .bn.ref.s-ruled_out, .canvas.far .bn.sketch.s-ruled_out { opacity: 0.35; }
+.canvas.far .bn.ref.s-proposed, .canvas.far .bn.sketch.s-proposed { outline-width: calc(1.5px / var(--z, 1)); outline-offset: calc(3px / var(--z, 1)); }
+/* Notes become a quiet block without words. */
+.note-text { transition: opacity 0.2s var(--ease); }
+.canvas.far .bn.note { background: var(--fill); box-shadow: none; }
+.canvas.far .bn.note .note-text { opacity: 0; }
+/* Lines get fainter; lines to notes go. */
+.fe { transition: opacity 0.2s var(--ease); }
+.canvas.far .fe { opacity: 0.55; }
+.canvas.far .fe-note { opacity: 0; }
+
+/* ---- Never lost ---- */
+
+.canvas-lost {
+  position: absolute; inset: 0; z-index: 5; display: grid; place-content: center; justify-items: center; gap: 10px;
+  pointer-events: none; animation: rv-fade 0.3s var(--ease);
+}
+.canvas-lost-title { margin: 0; font-size: 13px; color: var(--muted); }
+.canvas-lost .canvas-chip { pointer-events: auto; }
+
+/* The small map, bottom right, above the dock's line: quiet, grayscale, the part in view outlined. */
+.canvas { --map-mask: color-mix(in oklch, var(--bg) 62%, transparent); --map-line: var(--muted); }
+.canvas .react-flow__panel.canvas-map {
+  right: 14px; bottom: 92px; margin: 0; overflow: hidden;
+  border-radius: calc(12px * var(--smooth)); corner-shape: var(--corner);
+  background: color-mix(in oklch, var(--raised) 88%, transparent);
+  -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6);
+  box-shadow: inset 0 0 0 1px var(--line), 0 14px 40px -18px oklch(0 0 0 / 0.45);
+  animation: rv-fade 0.25s var(--ease);
+}
+.canvas .canvas-map svg { display: block; width: 168px; height: 108px; cursor: grab; }
+.canvas .canvas-map svg:active { cursor: grabbing; }
+.canvas .react-flow__minimap-node { fill: var(--faint); stroke: none; }
+.canvas .react-flow__minimap-node.mm-topic { fill: var(--text); }
+.canvas .react-flow__minimap-node.mm-note { fill: var(--line); }
+.canvas .react-flow__minimap-node.mm-sketch, .canvas .react-flow__minimap-node.mm-build { fill: var(--muted); }
+
+/* The zoom, beside Show everything: click for 100%. */
+.canvas-bar-zoom {
+  height: 38px; min-width: 50px; padding: 0 10px 0 6px; border-radius: 999px;
+  font-size: 12.5px; font-variant-numeric: tabular-nums; color: var(--muted);
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.canvas-bar-zoom:hover { background: var(--fill); color: var(--text); }
+
+@media (prefers-reduced-motion: reduce) {
+  .topic-far, .bn.topic > *, .ref-meta, .ref-why, .ref-badge, .sketch-meta, .sketch-version, .note-text, .fe,
+  .canvas-lost, .canvas .react-flow__panel.canvas-map { transition: none !important; animation: none !important; }
+}
+
+/* ---- Lighter tools above a card: decisions in words, the rest as icons ---- */
+.bn-tool.icon { width: 28px; padding: 0; justify-content: center; }
+.bn-tools-sep { width: 1px; height: 16px; margin: 0 4px; align-self: center; background: var(--line); flex: none; }
+
+/* The "why?" strip wraps onto a second line when the canvas is narrow (FRIDAY's panel open),
+   so its reasons and field stay inside the canvas instead of running under the panel. */
+.canvas-notice.verdict {
+  flex-wrap: wrap; justify-content: center; row-gap: 4px; height: auto; min-height: 38px; padding: 5px 6px 5px 14px;
+  white-space: nowrap; border-radius: calc(19px * var(--smooth)); corner-shape: var(--corner);
+}

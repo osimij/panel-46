@@ -8,7 +8,7 @@
 import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Background, BackgroundVariant, ConnectionMode, Handle, NodeToolbar, Position, ReactFlow, ReactFlowProvider,
+  Background, BackgroundVariant, ConnectionMode, Handle, MiniMap, NodeToolbar, Position, ReactFlow, ReactFlowProvider,
   applyEdgeChanges, applyNodeChanges, getBezierPath, useInternalNode, useReactFlow, useStore,
   type Connection, type Edge, type EdgeChange, type EdgeProps, type InternalNode, type Node, type NodeChange, type NodeProps, type Viewport,
 } from "@xyflow/react";
@@ -22,6 +22,7 @@ import {
 import { Studio } from "./Studio.tsx";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
+import { Review, type ReviewItem } from "./Review.tsx";
 
 // ---------- What the canvas draws ----------
 
@@ -67,6 +68,43 @@ function toFlow(b: BoardNode, enter?: number): AnyNode {
 }
 const toEdge = (e: BoardEdge): Edge => ({ id: e.id, source: e.source, target: e.target, type: "float", label: e.label || undefined });
 
+/**
+ * A topic's family: what belongs to it on the canvas, so it can travel with it (dragging,
+ * Tidy, gliding in from far away). Everything reachable from the topic along lines, without
+ * passing through another topic and without following a "uses" line (a sketch's "took from
+ * this save", which can point anywhere). A card joined directly to a second topic belongs to
+ * both, so it stays put. That covers the topic's saves, the notes on it and on them, its
+ * sketches, the sketches branched from those, and their build cards.
+ */
+function familyOf(topicIds: string[], nodes: { id: string; type?: string }[], edges: { source: string; target: string; label?: unknown }[]) {
+  const kind = new Map(nodes.map((n) => [n.id, n.type]));
+  const near = new Map<string, string[]>();
+  for (const e of edges) {
+    if (e.label === "uses") continue;
+    (near.get(e.source) ?? near.set(e.source, []).get(e.source)!).push(e.target);
+    (near.get(e.target) ?? near.set(e.target, []).get(e.target)!).push(e.source);
+  }
+  const topicsOf = (id: string) => (near.get(id) ?? []).filter((x) => kind.get(x) === "topic");
+  const out = new Set<string>();
+  for (const t of topicIds) {
+    const seen = new Set([t]);
+    const queue = [t];
+    while (queue.length) {
+      const at = queue.shift()!;
+      for (const x of near.get(at) ?? []) {
+        if (seen.has(x) || !kind.has(x)) continue;
+        seen.add(x);
+        if (kind.get(x) === "topic") continue;
+        if (topicsOf(x).some((y) => y !== t)) continue;
+        out.add(x);
+        queue.push(x);
+      }
+    }
+  }
+  for (const t of topicIds) out.delete(t);
+  return out;
+}
+
 /** The part of a node's data the companion keeps. */
 function stored(n: AnyNode): Record<string, unknown> {
   if (n.type === "topic") return { title: n.data.title, facet: n.data.facet, status: n.data.status, summary: n.data.summary };
@@ -84,7 +122,7 @@ interface Actions {
   cards: Map<string, RefCard>;
   patch: (id: string, data: Record<string, unknown>) => void;
   /** Give saves or sketches a verdict (keep, choose, rule out), then ask why and move on to the next one waiting. */
-  judge: (ids: string[], state: RefState) => void;
+  judge: (ids: string[], state: RefState, opts?: { quiet?: boolean }) => void;
   remove: (ids: string[]) => void;
   note: (forId: string) => void;
   open: (refId: string) => void;
@@ -97,12 +135,25 @@ interface Actions {
   error: (text: string) => void;
   /** Ask FRIDAY to sketch a direction from these nodes (a save, several, a decision). */
   sketchFrom: (ids: string[]) => void;
-  /** Saves under a locked topic that weren't chosen: how many, and whether they're showing. */
-  considered: Map<string, { n: number; open: boolean }>;
+  /**
+   * Saves folded under a topic: under a locked one, all that weren't chosen; under one still
+   * being explored, the ones ruled out. How many, whether they're showing, and which kind.
+   */
+  considered: Map<string, { n: number; open: boolean; locked: boolean }>;
   toggleConsidered: (topicId: string) => void;
+  /** How many saves are under each topic, and how many chosen. */
+  counts: Map<string, { saves: number; chosen: number }>;
+  /** Lay a topic's saves out in three columns beneath it. */
+  tidy: (topicId: string) => void;
+  /** Glide in to a topic and its family (double-click in the far view). */
+  zoomTo: (topicId: string) => void;
 }
 const Ctx = createContext<Actions | null>(null);
 const useActions = () => useContext(Ctx)!;
+
+/** Below this zoom the canvas is read from far away: names stay readable, saves become plain pictures. */
+const FAR = 0.4;
+const isFar = (s: { transform: [number, number, number] }) => s.transform[2] < FAR;
 
 /** How long things take to leave, so they can be seen going. */
 const LEAVE_MS = 170;
@@ -130,14 +181,27 @@ const selectAlone = (s: { nodes: { selected?: boolean }[] }) => {
   return true;
 };
 
-function Tool(props: { icon: Parameters<typeof Icon>[0]["name"]; label: string; on?: boolean; danger?: boolean; onClick: () => void; keyHint?: string }) {
+/**
+ * A button in the tools above a card. Verdicts (Choose, Keep, Rule out) and Lock keep their
+ * words: they're the decisions. Everything else is its icon alone, with its name on hover and
+ * for screen readers, so the bar stays small and covers less of what's above the card.
+ */
+function Tool(props: { icon: Parameters<typeof Icon>[0]["name"]; label: string; on?: boolean; danger?: boolean; words?: boolean; onClick: () => void; keyHint?: string }) {
   return (
-    <button className={`bn-tool ${props.on ? "on" : ""} ${props.danger ? "danger" : ""}`} onClick={props.onClick} title={props.keyHint ? `${props.label} (${props.keyHint})` : props.label} aria-label={props.label} aria-pressed={props.on}>
+    <button
+      className={`bn-tool ${props.words ? "" : "icon"} ${props.on ? "on" : ""} ${props.danger ? "danger" : ""}`}
+      onClick={props.onClick}
+      title={props.keyHint ? `${props.label} (${props.keyHint})` : props.label}
+      aria-label={props.label}
+      aria-pressed={props.on}
+    >
       <Icon name={props.icon} size={14} />
-      <span>{props.label}</span>
+      {props.words && <span>{props.label}</span>}
     </button>
   );
 }
+/** The hairline between the decisions and the other tools. */
+const ToolSep = () => <span className="bn-tools-sep" aria-hidden />;
 
 /**
  * Focus a field in a node that was just made. React Flow keeps a new node hidden until
@@ -219,13 +283,27 @@ function Grow(props: { value: string; placeholder: string; className: string; au
 const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<TopicNode>) {
   const act = useActions();
   const alone = useStore(selectAlone);
+  const far = useStore(isFar);
   const locked = data.status === "locked";
+  const count = act.counts.get(id);
   const [renaming, setRenaming] = useState(!!data.focus);
   const nameRef = useRef<HTMLInputElement>(null);
   useLateFocus(nameRef, renaming);
   return (
-    <div className={`bn topic ${locked ? "locked" : ""} ${data.enter !== undefined ? "enter" : ""} ${data.leaving ? "leaving" : ""}`} style={stagger(data.enter)}>
+    <div
+      className={`bn topic ${locked ? "locked" : ""} ${data.enter !== undefined ? "enter" : ""} ${data.leaving ? "leaving" : ""}`}
+      style={stagger(data.enter)}
+      // From far away a double-click glides in to the topic and its family; up close it renames (on the name).
+      onDoubleClick={far ? () => act.zoomTo(id) : undefined}
+    >
       <Handles />
+      {/* Its name at a steady size on screen however far out the view is, so a canvas can be read from far away. */}
+      <div className="topic-far" aria-hidden>
+        <span className="topic-far-name">{data.title || facetLabel(data.facet)}</span>
+        <span className="topic-far-meta">
+          {[count?.saves ? `${count.saves} ${count.saves === 1 ? "save" : "saves"}` : "", count?.chosen ? `${count.chosen} chosen` : "", locked ? "Locked" : ""].filter(Boolean).join(" · ") || "No saves yet"}
+        </span>
+      </div>
       <div className="topic-top">
         <span className="topic-facet">{facetLabel(data.facet)}</span>
         <span className="topic-status">{locked ? <><Icon name="check" size={11} /> Locked</> : "Exploring"}</span>
@@ -248,13 +326,18 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
           }}
         />
       ) : (
-        <div className="topic-title" onDoubleClick={() => setRenaming(true)}>{data.title || facetLabel(data.facet)}</div>
+        <div className="topic-title" onDoubleClick={() => !far && setRenaming(true)}>{data.title || facetLabel(data.facet)}</div>
       )}
-      {locked && (act.considered.get(id)?.n ?? 0) > 0 && (
-        <button className="nodrag topic-considered" onClick={() => act.toggleConsidered(id)}>
-          {act.considered.get(id)!.open ? `Fold ${act.considered.get(id)!.n} considered` : `+${act.considered.get(id)!.n} considered`}
-        </button>
-      )}
+      {(() => {
+        const c = act.considered.get(id);
+        if (!c?.n) return null;
+        const what = c.locked ? "considered" : "ruled out";
+        return (
+          <button className="nodrag topic-considered" onClick={() => act.toggleConsidered(id)} aria-expanded={c.open}>
+            {c.open ? `Fold ${c.n} ${what}` : c.locked ? `+${c.n} considered` : `${c.n} ruled out`}
+          </button>
+        );
+      })()}
       {(locked || data.summary) && (
         <Grow
           className="topic-summary"
@@ -263,13 +346,16 @@ const TopicView = memo(function TopicView({ id, data, selected }: NodeProps<Topi
           onCommit={(v) => act.patch(id, { summary: v })}
         />
       )}
-      <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
+      {/* Not from far away: there a double-click glides in, and the tools would sit over the name. */}
+      <NodeToolbar isVisible={selected && alone && !data.leaving && !far} position={Position.Top} offset={10}>
         <div className="bn-tools">
-          <Tool icon={locked ? "refresh" : "check"} label={locked ? "Reopen" : "Lock"} on={locked} onClick={() => act.patch(id, { status: locked ? "exploring" : "locked" })} />
+          <Tool icon={locked ? "refresh" : "check"} label={locked ? "Reopen" : "Lock"} words on={locked} onClick={() => act.patch(id, { status: locked ? "exploring" : "locked" })} />
+          <ToolSep />
           <Tool icon="build" label="Sketch" onClick={() => act.sketchFrom([id])} />
           <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="compose" label="Rename" onClick={() => setRenaming(true)} />
+          {(act.counts.get(id)?.saves ?? 0) >= 2 && <Tool icon="grid" label="Tidy" onClick={() => act.tidy(id)} />}
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
         </div>
       </NodeToolbar>
@@ -304,9 +390,10 @@ const RefView = memo(function RefView({ id, data, selected }: NodeProps<RefNode>
       </div>
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
-          <Tool icon="check" label="Choose" keyHint="C" on={state === "chosen"} onClick={() => act.judge([id], state === "chosen" ? "kept" : "chosen")} />
-          {state === "proposed" && <Tool icon="plus" label="Keep" keyHint="K" onClick={() => act.judge([id], "kept")} />}
-          <Tool icon="x" label="Rule out" keyHint="X" on={state === "ruled_out"} onClick={() => act.judge([id], state === "ruled_out" ? "kept" : "ruled_out")} />
+          <Tool icon="check" label="Choose" words keyHint="C" on={state === "chosen"} onClick={() => act.judge([id], state === "chosen" ? "kept" : "chosen")} />
+          {state === "proposed" && <Tool icon="plus" label="Keep" words keyHint="K" onClick={() => act.judge([id], "kept")} />}
+          <Tool icon="x" label="Rule out" words keyHint="X" on={state === "ruled_out"} onClick={() => act.judge([id], state === "ruled_out" ? "kept" : "ruled_out")} />
+          <ToolSep />
           <Tool icon="build" label="Sketch" onClick={() => act.sketchFrom([id])} />
           <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
@@ -370,10 +457,11 @@ const SketchView = memo(function SketchView({ id, data, selected }: NodeProps<Sk
       </div>
       <NodeToolbar isVisible={selected && alone && !data.leaving} position={Position.Top} offset={10}>
         <div className="bn-tools">
+          <Tool icon="check" label="Choose" words keyHint="C" on={state === "chosen"} onClick={() => act.judge([id], state === "chosen" ? "kept" : "chosen")} />
+          {state === "proposed" && <Tool icon="plus" label="Keep" words keyHint="K" onClick={() => act.judge([id], "kept")} />}
+          <Tool icon="x" label="Rule out" words keyHint="X" on={state === "ruled_out"} onClick={() => act.judge([id], state === "ruled_out" ? "kept" : "ruled_out")} />
+          <ToolSep />
           <Tool icon="eye" label="Open" onClick={() => act.openSketch(id)} />
-          <Tool icon="check" label="Choose" keyHint="C" on={state === "chosen"} onClick={() => act.judge([id], state === "chosen" ? "kept" : "chosen")} />
-          {state === "proposed" && <Tool icon="plus" label="Keep" keyHint="K" onClick={() => act.judge([id], "kept")} />}
-          <Tool icon="x" label="Rule out" keyHint="X" on={state === "ruled_out"} onClick={() => act.judge([id], state === "ruled_out" ? "kept" : "ruled_out")} />
           <Tool icon="ask" label="Ask FRIDAY" onClick={act.ask} />
           <Tool icon="pencil" label="Note" onClick={() => act.note(id)} />
           <Tool icon="trash" label="Remove" danger onClick={() => act.remove([id])} />
@@ -495,7 +583,7 @@ const BuildView = memo(function BuildView({ id, data, selected }: NodeProps<Buil
           ) : null}
           {b?.resume && (
             <Tool
-              icon="terminal"
+              icon={copied ? "check" : "terminal"}
               label={copied ? "Copied" : "Continue in terminal"}
               onClick={() => {
                 void navigator.clipboard.writeText(b.resume!);
@@ -616,11 +704,20 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   const revealRef = useRef<(ids: string[], spots: { x: number; y: number }[]) => void>(() => {});
   /** The sketch open in the large view. */
   const [viewing, setViewing] = useState<string | null>(null);
+  /** Review: the suggestions it steps through, in the order fixed when it opened. */
+  const [reviewing, setReviewing] = useState<string[] | null>(null);
+  const reviewingRef = useRef<string[] | null>(null);
+  reviewingRef.current = reviewing;
   /** Locked topics whose considered saves are unfolded. */
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
   const wrap = useRef<HTMLDivElement>(null);
+  /** Read from far away: the canvas redraws only when the zoom crosses the line, not on every frame. */
+  const far = useStore(isFar);
+  /** No card in view at all ("Nothing here"), and whether any part of the canvas is out of view (the small map). */
+  const [lost, setLost] = useState(false);
+  const [partOut, setPartOut] = useState(false);
 
   const addCards = useCallback((list: RefCard[]) => {
     if (!list.length) return;
@@ -694,6 +791,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
       let i = 0;
       const fresh = new Set<string>();
       const missing: string[] = [];
+      const moves = new Map<string, { x: number; y: number }>();
       for (const o of ops) {
         if (o.op === "add_node") {
           const b = { ...o.node, id: o.node.id!, ref_id: o.node.ref_id ?? null, data: o.node.data ?? {} } as BoardNode;
@@ -702,11 +800,15 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           const n = toFlow(b, i++);
           setNodes((ns) => (ns.some((x) => x.id === b.id) ? ns : [...ns, n]));
         } else if (o.op === "update_node") {
+          // A move (another window, or ⌘Z putting a family back) glides there.
+          if (o.x !== undefined || o.y !== undefined) {
+            const n = nodesRef.current.find((m) => m.id === o.id);
+            if (n) moves.set(o.id, { x: o.x ?? moves.get(o.id)?.x ?? n.position.x, y: o.y ?? moves.get(o.id)?.y ?? n.position.y });
+          }
           setNodes((ns) =>
             ns.map((n) =>
               n.id !== o.id ? n : ({
                 ...n,
-                position: { x: o.x ?? n.position.x, y: o.y ?? n.position.y },
                 // A field sent as null was cleared.
                 data: { ...n.data, ...(o.data ? toFlow({ id: n.id, kind: n.type, ref_id: null, data: { ...stored(n), ...Object.fromEntries(Object.entries(o.data).map(([k, v]) => [k, v ?? undefined])) }, x: 0, y: 0 }).data : {}), refId: (n.data as RefData).refId },
               } as AnyNode),
@@ -720,6 +822,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           if (o.name) onRenamed();
         }
       }
+      if (moves.size) glideRef.current(moves);
       const need = missing.filter((x) => !cards.has(x));
       if (need.length) chatApi.cards(need).then(addCards).catch(() => {});
       if (fresh.size) settle(fresh);
@@ -793,7 +896,9 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   // Keep (K), choose (C) and rule out (X) work on whatever is selected. After one, a strip
   // offers the reasons used most ("Too generic") and a field for your own; none is needed.
   // Judging a suggestion moves on to the next one still waiting, so a row of them goes fast.
-  const [judged, setJudged] = useState<{ ids: string[]; verdict: "chosen" | "ruled_out"; key: number; reason?: string } | null>(null);
+  // `removed`: the cards were taken off the canvas (the strip says "Removed 3 suggestions"), so a
+  // reason goes to the record of them, not onto cards that are gone.
+  const [judged, setJudged] = useState<{ ids: string[]; verdict: "chosen" | "ruled_out"; key: number; reason?: string; removed?: string } | null>(null);
   const [reasons, setReasons] = useState<{ chosen: string[]; ruled_out: string[] }>({ chosen: [], ruled_out: [] });
   const loadReasons = useCallback(() => void projectApi.reasons().then(setReasons).catch(() => {}), []);
   useEffect(loadReasons, [loadReasons]);
@@ -801,14 +906,15 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   edgesRef.current = edges;
 
   const judge = useCallback(
-    (ids: string[], state: RefState) => {
+    (ids: string[], state: RefState, opts: { quiet?: boolean } = {}) => {
       if (!ids.length) return;
       const all = nodesRef.current;
       const me = ids.length === 1 ? all.find((n) => n.id === ids[0]) : undefined;
       const wasWaiting = (me?.type === "ref" || me?.type === "sketch") && me.data.state === "proposed";
       patchMany(ids, { state, reason: "" });
       setJudged(state === "chosen" || state === "ruled_out" ? { ids, verdict: state, key: Date.now() } : null);
-      if (!me || !wasWaiting) return;
+      // Review moves on by itself; the canvas behind it stays where it is.
+      if (!me || !wasWaiting || opts.quiet) return;
       // On to the nearest suggestion still waiting: under the same topic first, then anywhere.
       const waiting = all.filter((n) => (n.type === "ref" || n.type === "sketch") && n.id !== me.id && !n.data.leaving && n.data.state === "proposed");
       if (!waiting.length) return;
@@ -825,21 +931,33 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   const giveReason = useCallback(
     (text: string) => {
       const reason = text.trim().slice(0, 400);
-      setJudged((j) => {
-        if (!j || !reason) return j;
-        patchMany(j.ids, { reason });
-        return { ...j, reason };
-      });
+      const j = judgedRef.current;
+      if (!j || !reason || j.reason) return;
+      if (j.removed) {
+        // The cards are gone: the reason goes to the record of them, after the removal itself has landed.
+        const ids = j.ids;
+        queue.current = queue.current.then(() => projectApi.whyRemoved(id, ids, reason)).catch((e) => onError((e as Error).message));
+      } else {
+        // Only onto cards that still have this verdict: ⌘Z, or another window, may have changed one since.
+        const still = j.ids.filter((x) => {
+          const n = nodesRef.current.find((m) => m.id === x);
+          return !!n && !n.data.leaving && (n.type === "ref" || n.type === "sketch") && n.data.state === j.verdict;
+        });
+        if (!still.length) return setJudged(null);
+        patchMany(still, { reason });
+      }
+      setJudged({ ...j, reason });
       setTimeout(loadReasons, 600);
     },
-    [patchMany, loadReasons],
+    [id, patchMany, loadReasons, onError],
   );
   // The strip steps aside by itself: quickly once a reason is given, in a while if not.
+  // Not while Review is open: it asks why right beside the picture, and waits for an answer.
   useEffect(() => {
-    if (!judged) return;
+    if (!judged || reviewing) return;
     const t = setTimeout(() => setJudged((j) => (j?.key === judged.key ? null : j)), judged.reason ? 1600 : 12_000);
     return () => clearTimeout(t);
-  }, [judged]);
+  }, [judged, reviewing]);
   const judgedRef = useRef(judged);
   judgedRef.current = judged;
   // With a sketch open in the studio, the keys belong to it.
@@ -847,9 +965,14 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   viewingRef.current = viewing;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || viewingRef.current) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || viewingRef.current || reviewingRef.current) return;
       if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
       const k = e.key.toLowerCase();
+      // R: review FRIDAY's suggestions one at a time.
+      if (k === "r" && !e.shiftKey && !document.querySelector(".detail")) {
+        if (openReviewRef.current()) e.preventDefault();
+        return;
+      }
       // 1–5 pick one of the offered reasons for the verdict just given.
       const j = judgedRef.current;
       if (j && !j.reason && /^[1-5]$/.test(k)) {
@@ -875,10 +998,26 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   const reasonsRef = useRef(reasons);
   reasonsRef.current = reasons;
 
+  /**
+   * Take cards off the canvas. Taking off a suggestion (or a save ruled out without a reason)
+   * is remembered as a quiet "no" at the companion, and the strip asks why, the way it does
+   * after ruling something out. No reason is needed.
+   */
   const remove = useCallback(
     (ids: string[]) => {
+      const all = nodesRef.current;
+      const asked = all.filter((n): n is RefNode | SketchNode =>
+        ids.includes(n.id) && !n.data.leaving && (n.type === "ref" || n.type === "sketch") &&
+        (n.data.state === "proposed" || (n.data.state === "ruled_out" && !n.data.reason)),
+      );
       removeLocal(ids);
       commit(ids.map((x) => ({ op: "remove_node" as const, id: x })));
+      if (!asked.length) return;
+      const n = asked.length;
+      const noun = asked.every((x) => x.data.state === "proposed") ? ["a suggestion", "suggestions"]
+        : asked.every((x) => x.type === "ref") ? ["a save", "saves"]
+        : asked.every((x) => x.type === "sketch") ? ["a sketch", "sketches"] : ["a card", "cards"];
+      setJudged({ ids: asked.map((x) => x.id), verdict: "ruled_out", key: Date.now(), removed: `Removed ${n === 1 ? noun[0] : `${n} ${noun[1]}`}` });
     },
     [removeLocal, commit],
   );
@@ -934,7 +1073,10 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
     setNodes((ns) => ns.map((n) => (n.id === nid && n.data.focus ? ({ ...n, data: { ...n.data, focus: false } } as AnyNode) : n)));
   }, []);
 
-  // ---- Locked topics fold away what wasn't chosen ----
+  // ---- Topics fold away what's been set aside ----
+  // Under any topic, saves ruled out fold away behind a small "3 ruled out" on it, so ruling
+  // out is as tidy as removing. Under a locked topic, everything not chosen folds ("+5
+  // considered"). Folding is for saves only; sketches stay in view.
 
   const fold = useMemo(() => {
     const byId = new Map(nodes.map((n) => [n.id, n]));
@@ -943,19 +1085,22 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
       (near.get(e.source) ?? near.set(e.source, []).get(e.source)!).push(e.target);
       (near.get(e.target) ?? near.set(e.target, []).get(e.target)!).push(e.source);
     }
+    /** Whether this topic folds this save away. */
+    const folds = (t: TopicNode, k: RefNode) => (t.data.status === "locked" ? k.data.state !== "chosen" : k.data.state === "ruled_out");
     const hide = new Set<string>();
-    const considered = new Map<string, { n: number; open: boolean }>();
+    const considered = new Map<string, { n: number; open: boolean; locked: boolean }>();
     for (const t of nodes) {
-      if (t.type !== "topic" || t.data.status !== "locked") continue;
-      const kids = (near.get(t.id) ?? []).map((x) => byId.get(x)).filter((n): n is RefNode => n?.type === "ref" && n.data.state !== "chosen");
+      if (t.type !== "topic") continue;
+      const kids = (near.get(t.id) ?? []).map((x) => byId.get(x)).filter((n): n is RefNode => n?.type === "ref" && !n.data.leaving && folds(t, n));
       if (!kids.length) continue;
-      considered.set(t.id, { n: kids.length, open: opened.has(t.id) });
+      considered.set(t.id, { n: kids.length, open: opened.has(t.id), locked: t.data.status === "locked" });
       if (!opened.has(t.id)) kids.forEach((k) => hide.add(k.id));
     }
-    // A save that's also under an open topic stays in view.
+    // A save under several topics folds only when every one of them folds it.
     for (const x of [...hide]) {
+      const k = byId.get(x) as RefNode;
       const topics = (near.get(x) ?? []).map((y) => byId.get(y)).filter((n): n is TopicNode => n?.type === "topic");
-      if (topics.some((t) => t.data.status !== "locked" || opened.has(t.id))) hide.delete(x);
+      if (topics.some((t) => !folds(t, k) || opened.has(t.id))) hide.delete(x);
     }
     // Notes only about folded saves fold with them.
     for (const n of nodes) {
@@ -1008,10 +1153,49 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
       } as AnyNode;
     });
   }, [nodes, folded, folding, unfolding]);
+  // Every card has a name, for screen readers and for tools that read the page ("Save: Calendly, suggested").
+  const named = useRef(new Map<string, { from: AnyNode; title: string; out: AnyNode }>());
+  const labelledNodes = useMemo(() => {
+    const stateWord = (st?: RefState) => (st === "ruled_out" ? "ruled out" : st === "proposed" ? "suggested" : st ?? "kept");
+    // A long title is shortened, so the verdict at the end is never cut off.
+    const short = (t: string) => (t.length > 70 ? `${t.slice(0, 69).trimEnd()}…` : t);
+    const seen = new Set<string>();
+    const out = shownNodes.map((n) => {
+      seen.add(n.id);
+      const title = n.type === "ref" ? cards.get(n.data.refId)?.title ?? "" : "";
+      const had = named.current.get(n.id);
+      if (had && had.from === n && had.title === title) return had.out;
+      let label: string;
+      if (n.type === "topic") label = `Topic: ${short(n.data.title || facetLabel(n.data.facet))}, ${n.data.status === "locked" ? "locked" : "exploring"}`;
+      else if (n.type === "ref") label = `Save: ${short(title) || "not in the library"}, ${stateWord(n.data.state)}`;
+      else if (n.type === "sketch") label = `Sketch: ${short(n.data.title || "Untitled sketch")}, ${stateWord(n.data.state)}`;
+      else if (n.type === "build") label = `Build: ${short(n.data.title || "Untitled")}`;
+      else label = `Note: ${n.data.text.trim().split(/\s+/).slice(0, 8).join(" ") || "empty"}`;
+      const o = { ...n, ariaLabel: label } as AnyNode;
+      named.current.set(n.id, { from: n, title, out: o });
+      return o;
+    });
+    for (const k of named.current.keys()) if (!seen.has(k)) named.current.delete(k);
+    return out;
+  }, [shownNodes, cards]);
+
   const shownEdges = useMemo(
     () => (folded.size ? edges.map((e) => (folded.has(e.source) || folded.has(e.target) ? { ...e, hidden: true } : e)) : edges),
     [edges, folded],
   );
+
+  // Selection never stays on a card that has folded away (its keys would still act on it).
+  useEffect(() => {
+    if (!nodesRef.current.some((n) => n.selected && fold.hide.has(n.id))) return;
+    setNodes((ns) => ns.map((n) => (n.selected && fold.hide.has(n.id) ? ({ ...n, selected: false } as AnyNode) : n)));
+  }, [fold.hide]);
+  // A topic with nothing left to fold forgets it was opened, so the next one ruled out folds away again.
+  useEffect(() => {
+    setOpened((o) => {
+      const keep = [...o].filter((t) => fold.considered.has(t));
+      return keep.length === o.size ? o : new Set(keep);
+    });
+  }, [fold.considered]);
 
   const toggleConsidered = useCallback((topicId: string) => {
     setOpened((o) => {
@@ -1037,9 +1221,29 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
     latest.current.onAskWith(text, about);
   }, [id, cards]);
 
+  // The saves under each topic, for its Tidy and its label from far away.
+  const counts = useMemo(() => {
+    const kind = new Map(nodes.map((n) => [n.id, n]));
+    const out = new Map<string, { saves: number; chosen: number }>();
+    for (const e of edges) {
+      for (const [t, r] of [[e.source, e.target], [e.target, e.source]] as const) {
+        const tn = kind.get(t), rn = kind.get(r);
+        if (tn?.type !== "topic" || rn?.type !== "ref" || rn.data.leaving) continue;
+        const c = out.get(t) ?? out.set(t, { saves: 0, chosen: 0 }).get(t)!;
+        c.saves++;
+        if (rn.data.state === "chosen") c.chosen++;
+      }
+    }
+    return out;
+  }, [nodes, edges]);
+
+  const tidyRef = useRef<(topicId: string) => void>(() => {});
+  const zoomToRef = useRef<(ids: string[]) => void>(() => {});
+  const zoomTo = useCallback((topicId: string) => zoomToRef.current([topicId]), []);
+  const tidyStable = useCallback((t: string) => tidyRef.current(t), []);
   const actions = useMemo<Actions>(
-    () => ({ project: id, cards, patch, judge, remove, note, open: onOpenRef, openSketch: setViewing, clearFocus, ask: onAsk, error: onError, sketchFrom, considered: fold.considered, toggleConsidered }),
-    [id, cards, patch, judge, remove, note, onOpenRef, clearFocus, onAsk, onError, sketchFrom, fold.considered, toggleConsidered],
+    () => ({ project: id, cards, patch, judge, remove, note, open: onOpenRef, openSketch: setViewing, clearFocus, ask: onAsk, error: onError, sketchFrom, considered: fold.considered, toggleConsidered, counts, tidy: tidyStable, zoomTo }),
+    [id, cards, patch, judge, remove, note, onOpenRef, clearFocus, onAsk, onError, sketchFrom, fold.considered, toggleConsidered, counts, tidyStable, zoomTo],
   );
 
   // The measured palettes of the saves on this canvas (not the ruled-out ones), for a sketch to try on.
@@ -1054,6 +1258,66 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
     }).slice(0, 24);
   }, [nodes, cards]);
 
+  // ---- Review: the suggestions, one at a time ----
+
+  /** Suggested saves and sketches still waiting, in reading order: topic by topic, left to right; inside one, top to bottom. */
+  const waitingInOrder = () => {
+    const all = nodesRef.current;
+    const byId = new Map(all.map((n) => [n.id, n]));
+    const topicOf = new Map<string, AnyNode>();
+    for (const e of edgesRef.current) {
+      for (const [a, b] of [[e.source, e.target], [e.target, e.source]] as const) {
+        const t = byId.get(b);
+        if (t?.type !== "topic") continue;
+        const was = topicOf.get(a);
+        if (!was || t.position.x < was.position.x) topicOf.set(a, t);
+      }
+    }
+    const waiting = all.filter((n) => (n.type === "ref" || n.type === "sketch") && !n.data.leaving && n.data.state === "proposed");
+    const key = (n: AnyNode) => {
+      const t = topicOf.get(n.id);
+      return t ? [0, t.position.x, t.position.y, n.position.y, n.position.x] : [1, 0, 0, n.position.y, n.position.x];
+    };
+    return waiting
+      .map((n) => ({ n, k: key(n) }))
+      .sort((a, b) => a.k.reduce((d, v, i) => d || v - b.k[i]!, 0))
+      .map((x) => x.n.id);
+  };
+  const waitingCount = nodes.reduce((c, n) => c + ((n.type === "ref" || n.type === "sketch") && !n.data.leaving && n.data.state === "proposed" ? 1 : 0), 0);
+  const openReview = () => {
+    if (viewingRef.current || reviewingRef.current) return false;
+    const list = waitingInOrder();
+    if (!list.length) return false;
+    setNotice(null);
+    setJudged(null);
+    setReviewing(list);
+    return true;
+  };
+  const openReviewRef = useRef(openReview);
+  openReviewRef.current = openReview;
+
+  const reviewItems = useMemo<ReviewItem[]>(() => {
+    if (!reviewing) return [];
+    const byId = new Map(nodes.map((n) => [n.id, n]));
+    const topicName = (nid: string) => {
+      const ts = edges.flatMap((e) => (e.source === nid ? [e.target] : e.target === nid ? [e.source] : [])).map((x) => byId.get(x)).filter((n): n is TopicNode => n?.type === "topic");
+      const t = ts.sort((a, b) => a.position.x - b.position.x)[0];
+      return t ? t.data.title || facetLabel(t.data.facet) : undefined;
+    };
+    return reviewing.map((rid): ReviewItem => {
+      const n = byId.get(rid);
+      if (!n || n.data.leaving || (n.type !== "ref" && n.type !== "sketch")) return { id: rid, kind: "ref", state: "proposed", title: "", palette: [], gone: true };
+      if (n.type === "sketch") {
+        return { id: rid, kind: "sketch", state: n.data.state ?? "kept", title: n.data.title || "Untitled sketch", why: n.data.tries, topic: topicName(rid), picture: sketchPicture(id, rid, n.data.version), palette: [], gone: false };
+      }
+      const c = cards.get(n.data.refId);
+      return {
+        id: rid, kind: "ref", refId: n.data.refId, state: n.data.state ?? "kept", title: c?.title ?? "Not in the library", why: n.data.taking,
+        topic: topicName(rid), picture: c?.thumb ?? undefined, video: c?.type === "video", palette: c?.palette ?? [], gone: false,
+      };
+    });
+  }, [reviewing, nodes, edges, cards, id]);
+
   // ---- What's selected, for Ask ----
   const picked = shownNodes.filter((n) => n.selected && !n.hidden && !n.data.leaving);
   const pickedKey = picked.map((n) => n.id).join(",");
@@ -1066,6 +1330,8 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
 
   const undo = useCallback(
     (who: "me" | "assistant") => {
+      // The "why?" was about the change being taken back.
+      if (who === "me") setJudged(null);
       queue.current = queue.current
         .then(() => projectApi.undo(id, CLIENT, who))
         .then((res) => {
@@ -1081,6 +1347,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "z") return;
+      if (reviewingRef.current) return;
       if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
       e.preventDefault();
       undo("me");
@@ -1175,6 +1442,184 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
     reveal(made.map((n) => n.id).concat(topic ? [topic.id] : []), spots);
   };
 
+  // ---- Moving cards: they glide to where they're going ----
+
+  const gliding = useRef<{ frame: number; to: Map<string, { x: number; y: number }> } | null>(null);
+  /** Move cards to new places, gliding there (about 0.4 s; at once with reduced motion). The places are already sent. */
+  const glide = useCallback((to: Map<string, { x: number; y: number }>) => {
+    if (!to.size) return;
+    // A glide still going finishes where it was headed first.
+    const was = gliding.current;
+    if (was) cancelAnimationFrame(was.frame);
+    const finish = new Map([...(was?.to ?? []), ...to]);
+    if (prefersReducedMotion()) {
+      gliding.current = null;
+      setNodes((ns) => ns.map((n) => (finish.has(n.id) ? ({ ...n, position: finish.get(n.id)! } as AnyNode) : n)));
+      return;
+    }
+    if (was) setNodes((ns) => ns.map((n) => (was.to.has(n.id) && !to.has(n.id) ? ({ ...n, position: was.to.get(n.id)! } as AnyNode) : n)));
+    const from = new Map(nodesRef.current.filter((n) => to.has(n.id)).map((n) => [n.id, n.position]));
+    const start = performance.now();
+    const MS = 420;
+    const ease = (t: number) => 1 - Math.pow(1 - t, 3);
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / MS);
+      const k = ease(t);
+      setNodes((ns) => ns.map((n) => {
+        const a = from.get(n.id), b = to.get(n.id);
+        return a && b ? ({ ...n, position: { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k } } as AnyNode) : n;
+      }));
+      if (t < 1) gliding.current = { frame: requestAnimationFrame(step), to };
+      else gliding.current = null;
+    };
+    gliding.current = { frame: requestAnimationFrame(step), to };
+  }, []);
+  const glideRef = useRef(glide);
+  glideRef.current = glide;
+
+  // ---- A topic carries its family when dragged; Option drags it alone ----
+
+  const dragging = useRef<{ lead: string; from: { x: number; y: number }; family: Map<string, { x: number; y: number }> } | null>(null);
+  // Whether Option is held, from the keys themselves too: the drag's own event doesn't always say.
+  const optionHeld = useRef(false);
+  useEffect(() => {
+    const on = (e: KeyboardEvent) => (optionHeld.current = e.altKey);
+    const off = () => (optionHeld.current = false);
+    addEventListener("keydown", on);
+    addEventListener("keyup", on);
+    addEventListener("blur", off);
+    return () => {
+      removeEventListener("keydown", on);
+      removeEventListener("keyup", on);
+      removeEventListener("blur", off);
+    };
+  }, []);
+  const onNodeDragStart = useCallback((e: MouseEvent | TouchEvent, node: AnyNode, moving: AnyNode[]) => {
+    dragging.current = null;
+    const topics = moving.filter((n) => n.type === "topic").map((n) => n.id);
+    if (!topics.length || e.altKey || optionHeld.current) return;
+    const mine = new Set(moving.map((n) => n.id));
+    const fam = familyOf(topics, nodesRef.current, edgesRef.current);
+    // A card that is itself being dragged already moves; it isn't moved twice.
+    const family = new Map(nodesRef.current.filter((n) => fam.has(n.id) && !mine.has(n.id)).map((n) => [n.id, { ...n.position }]));
+    if (family.size) dragging.current = { lead: node.id, from: { ...node.position }, family };
+  }, []);
+  const onNodeDrag = useCallback((_: unknown, node: AnyNode) => {
+    const d = dragging.current;
+    if (!d || node.id !== d.lead) return;
+    const dx = node.position.x - d.from.x, dy = node.position.y - d.from.y;
+    setNodes((ns) => ns.map((n) => {
+      const p = d.family.get(n.id);
+      return p ? ({ ...n, position: { x: p.x + dx, y: p.y + dy } } as AnyNode) : n;
+    }));
+  }, []);
+
+  // ---- Tidy: a topic's saves in three columns beneath it ----
+
+  const tidy = useCallback((topicId: string) => {
+    const all = nodesRef.current;
+    const topic = all.find((n) => n.id === topicId);
+    if (!topic) return;
+    const fam = familyOf([topicId], all, edgesRef.current);
+    const linked = (nid: string) => edgesRef.current.flatMap((e) => (e.source === nid ? [e.target] : e.target === nid ? [e.source] : []));
+    const direct = new Set(linked(topicId));
+    const saves = all.filter((n): n is RefNode => n.type === "ref" && direct.has(n.id) && fam.has(n.id) && !n.data.leaving);
+    if (saves.length < 2) return;
+    // Chosen first, then kept, suggested, ruled out; inside each, as they read now.
+    const rank: Record<string, number> = { chosen: 0, kept: 1, proposed: 2, ruled_out: 3 };
+    saves.sort((a, b) => rank[a.data.state ?? "kept"]! - rank[b.data.state ?? "kept"]! || a.position.y - b.position.y || a.position.x - b.position.x);
+    // A note only about one save goes right beneath it.
+    const notesOf = new Map<string, AnyNode[]>();
+    for (const n of all) {
+      if (n.type !== "note" || !fam.has(n.id)) continue;
+      const l = linked(n.id);
+      if (l.length === 1 && saves.some((x) => x.id === l[0])) (notesOf.get(l[0]!) ?? notesOf.set(l[0]!, []).get(l[0]!)!).push(n);
+    }
+    // Folded cards may never have been measured: a typical save's height stands in.
+    const h = (n: AnyNode) => n.measured?.height ?? (n.type === "ref" ? 330 : 90);
+    const to = new Map<string, { x: number; y: number }>();
+    let y = topic.position.y + (topic.measured?.height ?? 140) + 64;
+    // Something staying where it is right under the topic (a note on the topic, a sketch) keeps
+    // its place: the saves start below it rather than on top of it.
+    const moving = new Set([...saves.map((n) => n.id), ...[...notesOf.values()].flat().map((n) => n.id)]);
+    const left = topic.position.x - 4, right = left + 2 * 236 + 220;
+    for (let pass = 0; pass < 6; pass++) {
+      const under = all.filter((n) => {
+        if (n.id === topicId || moving.has(n.id) || n.data.leaving) return false;
+        const w = n.measured?.width ?? sizeOf(n).w, hh = n.measured?.height ?? sizeOf(n).h;
+        return n.position.x < right && n.position.x + w > left && n.position.y < y + 160 && n.position.y + hh > topic.position.y + 10;
+      });
+      const bottom = Math.max(...under.map((n) => n.position.y + (n.measured?.height ?? sizeOf(n).h) + 44), -Infinity);
+      if (bottom <= y) break;
+      y = bottom;
+    }
+    for (let i = 0; i < saves.length; i += 3) {
+      let tallest = 0;
+      saves.slice(i, i + 3).forEach((sv, c) => {
+        const x = topic.position.x - 4 + c * 236;
+        to.set(sv.id, { x, y });
+        let bottom = y + h(sv);
+        for (const nt of notesOf.get(sv.id) ?? []) {
+          to.set(nt.id, { x: x + 4, y: bottom + 16 });
+          bottom += 16 + h(nt);
+        }
+        tallest = Math.max(tallest, bottom - y);
+      });
+      y += tallest + 44;
+    }
+    const moves = [...to].filter(([nid, p]) => {
+      const n = all.find((m) => m.id === nid)!;
+      return Math.abs(n.position.x - p.x) > 0.5 || Math.abs(n.position.y - p.y) > 0.5;
+    });
+    if (!moves.length) return;
+    commit(moves.map(([nid, p]) => ({ op: "update_node" as const, id: nid, x: p.x, y: p.y })));
+    glide(new Map(moves));
+    // If part of the family is out of sight, glide the view over to it.
+    const r = wrap.current?.getBoundingClientRect();
+    if (r) {
+      const tl = flow.screenToFlowPosition({ x: r.left + 40, y: r.top + 70 });
+      const br = flow.screenToFlowPosition({ x: r.right - 40, y: r.bottom - 100 });
+      const out = [topic.position, ...to.values()].some((p) => p.x < tl.x || p.y < tl.y || p.x + 220 > br.x || p.y + 200 > br.y);
+      if (out) {
+        const ids = [topicId, ...to.keys()];
+        setTimeout(() => void flow.fitView({ nodes: ids.map((x) => ({ id: x })), duration: prefersReducedMotion() ? 0 : 600, padding: 0.2, maxZoom: 1 }), 460);
+      }
+    }
+  }, [commit, glide, flow]);
+
+  tidyRef.current = tidy;
+
+  // ---- Seeing the whole canvas, a part of it, or 100% ----
+
+  const ms = () => (prefersReducedMotion() ? 0 : 500);
+  const showEverything = useCallback(() => void flow.fitView({ padding: 0.25, duration: ms(), maxZoom: 1 }), [flow]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** Glide in to these cards; a topic among them brings its whole family. */
+  const zoomToNodes = useCallback((ids: string[]) => {
+    if (!ids.length) return;
+    const topics = ids.filter((x) => nodesRef.current.find((n) => n.id === x)?.type === "topic");
+    const fam = topics.length ? familyOf(topics, nodesRef.current, edgesRef.current) : new Set<string>();
+    const shown = new Set(nodesRef.current.filter((n) => !folded.has(n.id)).map((n) => n.id));
+    const all = [...new Set([...ids, ...fam])].filter((x) => shown.has(x));
+    void flow.fitView({ nodes: all.map((x) => ({ id: x })), padding: 0.2, duration: prefersReducedMotion() ? 0 : 650, maxZoom: 1 });
+  }, [flow, folded]);
+  zoomToRef.current = zoomToNodes;
+  const actualSize = useCallback(() => void flow.zoomTo(1, { duration: prefersReducedMotion() ? 0 : 400 }), [flow]);
+  // Shift+1 shows everything, Shift+2 the selection, Shift+0 is 100%: the keys Figma uses.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.shiftKey || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (viewingRef.current || reviewingRef.current || document.querySelector(".detail")) return;
+      if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
+      if (e.code === "Digit1") showEverything();
+      else if (e.code === "Digit2") zoomToRef.current(nodesRef.current.filter((n) => n.selected && !n.data.leaving).map((n) => n.id));
+      else if (e.code === "Digit0") actualSize();
+      else return;
+      e.preventDefault();
+    };
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [showEverything, actualSize]);
+
   // ---- React Flow wiring ----
 
   const onNodesChange = useCallback((changes: NodeChange<AnyNode>[]) => {
@@ -1210,8 +1655,18 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
     [remove, commit],
   );
 
+  // Everything that moved goes in one change, so one ⌘Z puts the whole family back.
   const onNodeDragStop = useCallback(
-    (_: unknown, __: AnyNode, moved: AnyNode[]) => commit(moved.map((n) => ({ op: "update_node" as const, id: n.id, x: n.position.x, y: n.position.y }))),
+    (_: unknown, node: AnyNode, moved: AnyNode[]) => {
+      const d = dragging.current;
+      dragging.current = null;
+      const ops: BoardOp[] = moved.map((n) => ({ op: "update_node" as const, id: n.id, x: n.position.x, y: n.position.y }));
+      if (d && node.id === d.lead) {
+        const dx = node.position.x - d.from.x, dy = node.position.y - d.from.y;
+        if (dx || dy) for (const [nid, p] of d.family) ops.push({ op: "update_node", id: nid, x: p.x + dx, y: p.y + dy });
+      }
+      commit(ops);
+    },
     [commit],
   );
 
@@ -1224,7 +1679,43 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
       return null;
     }
   }, [viewKey]);
+  // As the view moves: the live zoom goes straight onto the wrapper (no redraw), so sizes can follow it;
+  // and whether anything is in view at all, and whether everything is.
+  const looked = useRef(0);
+  const lookAround = useCallback((v: Viewport) => {
+    const el = wrap.current;
+    if (!el) return;
+    el.style.setProperty("--z", String(v.zoom));
+    const now = performance.now();
+    if (now - looked.current < 90) return;
+    looked.current = now;
+    const r = el.getBoundingClientRect();
+    const x0 = -v.x / v.zoom, y0 = -v.y / v.zoom, x1 = (r.width - v.x) / v.zoom, y1 = (r.height - v.y) / v.zoom;
+    let any = false, all = true;
+    for (const n of nodesRef.current) {
+      if (n.data.leaving) continue;
+      const w = n.measured?.width ?? 240, h = n.measured?.height ?? 200;
+      const inside = n.position.x < x1 && n.position.x + w > x0 && n.position.y < y1 && n.position.y + h > y0;
+      const whole = n.position.x >= x0 && n.position.x + w <= x1 && n.position.y >= y0 && n.position.y + h <= y1;
+      if (inside) any = true;
+      if (!whole) all = false;
+    }
+    setLost(nodesRef.current.length > 0 && !any);
+    setPartOut(!all);
+  }, []);
+  const onMove = useCallback((_: unknown, v: Viewport) => lookAround(v), [lookAround]);
+  useEffect(() => {
+    if (!loaded) return;
+    const t = setTimeout(() => {
+      looked.current = 0;
+      lookAround(flow.getViewport());
+    }, 120);
+    return () => clearTimeout(t);
+  }, [loaded, nodes.length, lookAround]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const onMoveEnd = useCallback((_: unknown, v: Viewport) => {
+    looked.current = 0;
+    lookAround(v);
     try {
       localStorage.setItem(viewKey, JSON.stringify(v));
     } catch {
@@ -1260,10 +1751,10 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
 
   return (
     <Ctx.Provider value={actions}>
-      <div className={`canvas ${tray ? "with-tray" : ""}`} ref={wrap} onDragOver={onDragOver} onDrop={onDrop}>
+      <div className={`canvas ${tray ? "with-tray" : ""} ${far ? "far" : ""}`} ref={wrap} onDragOver={onDragOver} onDrop={onDrop}>
         {meta && <Head id={id} name={meta.name} brief={meta.brief} commit={commit} setMeta={setMeta} onRenamed={onRenamed} onDeleted={onDeleted} onError={onError} />}
         <ReactFlow<AnyNode, Edge>
-          nodes={shownNodes}
+          nodes={labelledNodes}
           edges={shownEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
@@ -1271,7 +1762,10 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onBeforeDelete={onBeforeDelete}
+          onNodeDragStart={onNodeDragStart}
+          onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
+          onMove={onMove}
           onMoveEnd={onMoveEnd}
           onDoubleClick={(e) => {
             if (!(e.target as Element).classList.contains("react-flow__pane")) return;
@@ -1280,7 +1774,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           connectionMode={ConnectionMode.Loose}
           connectionRadius={36}
           defaultViewport={savedView ?? undefined}
-          minZoom={0.15}
+          minZoom={0.05}
           maxZoom={2.5}
           zoomOnDoubleClick={false}
           panOnScroll
@@ -1294,7 +1788,28 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
         >
           <Background variant={BackgroundVariant.Dots} gap={22} size={1.2} color="var(--dot)" />
           <SelectionTools nodes={shownNodes} judge={judge} remove={remove} onAsk={onAsk} onSketch={sketchFrom} />
+          {/* Where you are, while part of the canvas is out of view: drag in it to move. */}
+          {partOut && !lost && !empty && (
+            <MiniMap
+              className="canvas-map"
+              pannable
+              ariaLabel="Map of the canvas"
+              nodeClassName={(n) => `mm-${n.type}`}
+              nodeBorderRadius={4}
+              maskColor="var(--map-mask)"
+              maskStrokeColor="var(--map-line)"
+              maskStrokeWidth={1.5}
+              offsetScale={6}
+            />
+          )}
         </ReactFlow>
+
+        {lost && !empty && !reviewing && (
+          <div className="canvas-lost">
+            <p className="canvas-lost-title">Nothing here</p>
+            <button className="canvas-chip" onClick={showEverything}><Icon name="maximize" size={13} /> Show everything</button>
+          </div>
+        )}
 
         {empty && (
           <div className="canvas-empty">
@@ -1309,9 +1824,10 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           </div>
         )}
 
-        {judged && !viewing && (
+        {judged && !viewing && !reviewing && (
           <VerdictNote
             key={judged.key}
+            label={judged.removed}
             verdict={judged.verdict}
             count={judged.ids.length}
             reason={judged.reason}
@@ -1325,9 +1841,26 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           <div className={`canvas-notice ${judged && !viewing ? "raised" : ""}`} key={notice.key} role="status">
             <span className="canvas-notice-dot" />
             <span>{notice.label}{notice.more > 0 && <span className="canvas-notice-more"> and {notice.more} more {notice.more === 1 ? "change" : "changes"}</span>}</span>
+            {!notice.info && waitingCount > 0 && <button className="canvas-notice-undo" onClick={openReview} title="One at a time (R)">Review</button>}
             {!notice.info && <button className="canvas-notice-undo" onClick={() => undo("assistant")}>Undo</button>}
             <button className="canvas-notice-x" onClick={() => setNotice(null)} aria-label="Dismiss"><Icon name="x" size={12} /></button>
           </div>
+        )}
+
+        {reviewing && (
+          <Review
+            items={reviewItems}
+            reasons={reasons}
+            judge={(nid, state) => judge([nid], state, { quiet: true })}
+            giveReason={giveReason}
+            undo={() => undo("me")}
+            open={(it) => (it.kind === "sketch" ? setViewing(it.id) : it.refId && onOpenRef(it.refId))}
+            paused={!!viewing}
+            onClose={() => {
+              setReviewing(null);
+              setJudged(null);
+            }}
+          />
         )}
 
         {(() => {
@@ -1373,7 +1906,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
         {tray && <Tray onClose={() => setTray(false)} onAdd={(c) => addSaves([c])} target={selectedTopic()?.data} />}
 
         {dock && createPortal(
-          <Toolbar onTopic={addTopic} onNote={() => addNote()} tray={tray} onTray={() => setTray((v) => !v)} onFit={() => void flow.fitView({ padding: 0.25, duration: 500, maxZoom: 1 })} />,
+          <Toolbar onTopic={addTopic} onNote={() => addNote()} tray={tray} onTray={() => setTray((v) => !v)} onFit={showEverything} onActualSize={actualSize} waiting={waitingCount} onReview={openReview} />,
           dock,
         )}
       </div>
@@ -1414,9 +1947,10 @@ function describePicked(project: string, picked: AnyNode[], cards: Map<string, R
 }
 
 /** After a verdict: why? The reasons used most, by number or by click, or a few words of your own. None is needed. */
-function VerdictNote(props: { verdict: "chosen" | "ruled_out"; count: number; reason?: string; offered: string[]; onReason: (text: string) => void; onClose: () => void }) {
+function VerdictNote(props: { verdict: "chosen" | "ruled_out"; label?: string; count: number; reason?: string; offered: string[]; onReason: (text: string) => void; onClose: () => void }) {
   const [text, setText] = useState("");
-  const what = props.verdict === "chosen" ? "Chosen" : "Ruled out";
+  // After removing, the strip says what was removed ("Removed 3 suggestions") and offers the ruled-out reasons.
+  const what = props.label ?? (props.verdict === "chosen" ? "Chosen" : "Ruled out");
   if (props.reason) {
     return (
       <div className="canvas-notice verdict" role="status">
@@ -1427,7 +1961,7 @@ function VerdictNote(props: { verdict: "chosen" | "ruled_out"; count: number; re
   }
   return (
     <div className="canvas-notice verdict" role="group" aria-label={`${what}. Why?`}>
-      <span className="verdict-what">{what}{props.count > 1 ? ` ${props.count}` : ""} <span className="canvas-notice-more">· why?</span></span>
+      <span className="verdict-what">{what}{props.count > 1 && !props.label ? ` ${props.count}` : ""} <span className="canvas-notice-more">· why?</span></span>
       {props.offered.map((r, i) => (
         <button key={r} className="verdict-chip" onClick={() => props.onReason(r)} title={`Press ${i + 1}`}>
           <span className="verdict-n">{i + 1}</span>
@@ -1464,15 +1998,16 @@ function SelectionTools(props: { nodes: AnyNode[]; judge: (ids: string[], state:
     <NodeToolbar nodeId={picked.map((n) => n.id)} isVisible position={Position.Top} offset={14}>
       <div className="bn-tools many" key={picked.length}>
         <span className="bn-tools-count">{picked.length} selected</span>
-        <Tool icon="build" label="Sketch from these" onClick={() => props.onSketch(picked.map((n) => n.id))} />
-        <Tool icon="ask" label="Ask FRIDAY" onClick={props.onAsk} />
         {refs.length > 0 && (
           <>
-            <Tool icon="check" label="Choose" keyHint="C" on={every("chosen")} onClick={() => props.judge(ids, every("chosen") ? "kept" : "chosen")} />
-            {someProposed && <Tool icon="plus" label="Keep" keyHint="K" onClick={() => props.judge(refs.filter((n) => n.data.state === "proposed").map((n) => n.id), "kept")} />}
-            <Tool icon="x" label="Rule out" keyHint="X" on={every("ruled_out")} onClick={() => props.judge(ids, every("ruled_out") ? "kept" : "ruled_out")} />
+            <Tool icon="check" label="Choose" words keyHint="C" on={every("chosen")} onClick={() => props.judge(ids, every("chosen") ? "kept" : "chosen")} />
+            {someProposed && <Tool icon="plus" label="Keep" words keyHint="K" onClick={() => props.judge(refs.filter((n) => n.data.state === "proposed").map((n) => n.id), "kept")} />}
+            <Tool icon="x" label="Rule out" words keyHint="X" on={every("ruled_out")} onClick={() => props.judge(ids, every("ruled_out") ? "kept" : "ruled_out")} />
+            <ToolSep />
           </>
         )}
+        <Tool icon="build" label="Sketch from these" onClick={() => props.onSketch(picked.map((n) => n.id))} />
+        <Tool icon="ask" label="Ask FRIDAY" onClick={props.onAsk} />
         <Tool icon="trash" label="Remove" danger onClick={() => props.remove(picked.map((n) => n.id))} />
       </div>
     </NodeToolbar>
@@ -1867,7 +2402,17 @@ function MatNote(props: { value: string; onCommit: (v: string) => void }) {
 
 // ---------- The tools, in the dock ----------
 
-function Toolbar(props: { onTopic: (f: TopicFacet) => void; onNote: () => void; tray: boolean; onTray: () => void; onFit: () => void }) {
+/** The zoom, as a percentage; clicking it goes to 100%. Redraws only when the number changes. */
+function ZoomReadout(props: { onClick: () => void }) {
+  const pct = useStore((s) => Math.round(s.transform[2] * 100));
+  return (
+    <button className="canvas-bar-zoom" onClick={props.onClick} title="Go to 100% (Shift+0)" aria-label={`Zoom ${pct}%. Go to 100%`}>
+      {pct}%
+    </button>
+  );
+}
+
+function Toolbar(props: { onTopic: (f: TopicFacet) => void; onNote: () => void; tray: boolean; onTray: () => void; onFit: () => void; onActualSize: () => void; waiting: number; onReview: () => void }) {
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   return (
     <div className="canvas-bar" role="toolbar" aria-label="Canvas">
@@ -1887,10 +2432,16 @@ function Toolbar(props: { onTopic: (f: TopicFacet) => void; onNote: () => void; 
       <button className={`canvas-bar-btn ${props.tray ? "on" : ""}`} onClick={props.onTray} aria-pressed={props.tray} title="Saves from your library">
         <Icon name="image" size={14} /> <span className="canvas-bar-label">Saves</span>
       </button>
+      {props.waiting > 0 && (
+        <button className="canvas-bar-btn" onClick={props.onReview} title="FRIDAY's suggestions, one at a time (R)">
+          <Icon name="eye" size={14} /> <span className="canvas-bar-label">Review</span> <span className="canvas-bar-n">{props.waiting}</span>
+        </button>
+      )}
       <span className="canvas-bar-sep" />
-      <button className="canvas-bar-btn icon" onClick={props.onFit} title="Show everything" aria-label="Show everything">
+      <button className="canvas-bar-btn icon" onClick={props.onFit} title="Show everything (Shift+1)" aria-label="Show everything">
         <Icon name="maximize" size={14} />
       </button>
+      <ZoomReadout onClick={props.onActualSize} />
       {menu && (
         <Popover x={menu.x} y={menu.y} onClose={() => setMenu(null)}>
           <div className="menu-label">New topic</div>

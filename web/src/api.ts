@@ -502,7 +502,7 @@ export function skillParts(markdown: string) {
     let last: [string, string] | null = null;
     for (const line of fm[1]!.split(/\r?\n/)) {
       const m = line.match(/^([\w-]+):\s*(.*)$/);
-      if (m) fields.push((last = [m[1]!, m[2]!.replace(/^["'>|-]\s*|["']$/g, "")]));
+      if (m) fields.push((last = [m[1]!, m[2]!.replace(/^(?:[>|][+-]?|["'-])\s*|["']$/g, "")]));
       else if (last && line.trim()) last[1] = `${last[1]} ${line.trim()}`.trim();
     }
   }
@@ -898,6 +898,9 @@ export const projectApi = {
   /** Undo this window's last change (who: "me", ⌘Z) or the assistant's last change. */
   undo: (id: string, client: string, who: "me" | "assistant") =>
     call<{ seq: number | null; ops: BoardOp[]; cards: RefCard[]; undid: string | null }>(`/api/projects/${id}/undo`, { method: "POST", body: body({ client, who }) }),
+  /** Why the designer took these cards off the canvas, said after they're gone. */
+  whyRemoved: (id: string, nodes: string[], reason: string) =>
+    call<{ ok: boolean; n: number }>(`/api/projects/${id}/turned-down`, { method: "POST", body: body({ nodes, reason }) }),
   /** Files and links that say what the project is, for Claude to read. */
   materials: (id: string) => call<Material[]>(`/api/projects/${id}/materials`),
   /** Write a material's summary (again) now. */
@@ -965,6 +968,24 @@ export const fontApi = {
   remove: (id: string) => call<{ removed: number }>(`/api/fonts/${id}`, { method: "DELETE" }),
 };
 
+// ---------- Ready-made parts: loading animations, colour palettes and icons that come with Panel ----------
+
+export const ICON_WEIGHTS = ["thin", "light", "regular", "bold", "fill", "duotone"] as const;
+export type IconWeight = (typeof ICON_WEIGHTS)[number];
+export interface ReadyLoading { name: string; title: string; line: string; duration_ms: number; html: string }
+export interface ReadyPalette { name: string; title: string; kind: "scale" | "set"; source_url: string; light: string[]; dark: string[] }
+export interface ReadyIcon { name: string; alias?: string; tags: string[]; categories: string[] }
+export interface ReadyMade {
+  loading: ReadyLoading[];
+  palettes: { source: string; rights: string; steps: { step: number; for: string }[]; palettes: ReadyPalette[] };
+  icons: { source: string; count: number; icons: ReadyIcon[] };
+}
+export const readyApi = {
+  list: () => call<ReadyMade>("/api/ready"),
+  /** One weight's drawings: each icon's name and the inside of its SVG. */
+  icons: (weight: IconWeight) => call<Record<string, string>>(`/api/ready/icons/${weight}`),
+};
+
 /** A font file, by its name: what Panel can take as one of the designer's fonts. */
 export const isFontFile = (f: File) => /\.(woff2?|ttf|otf)$/i.test(f.name);
 
@@ -1011,4 +1032,272 @@ export const brandApi = {
   update: (id: string, patch: { name?: string; kind?: BrandKind; project_id?: string | null }) =>
     call<BrandAsset>(`/api/brand/${id}`, { method: "PATCH", body: JSON.stringify(patch) }),
   remove: (id: string) => call<{ removed: number }>(`/api/brand/${id}`, { method: "DELETE" }),
+};
+
+// ---------- Skills: which of the designer's skill files FRIDAY uses, and when ----------
+
+export type SkillWhen = "always" | "applies" | "asked";
+export type SkillAbout = "motion" | "phone" | "forms";
+/** A skill as Panel read it, with what the designer set for it and what FRIDAY gets. */
+export interface SkillUse {
+  id: string;
+  name: string;
+  line: string;
+  on: boolean;
+  when: SkillWhen;
+  about: SkillAbout[];
+  /** Characters in each section Panel reads (0: not there). */
+  parts: { decide: number; build: number; check: number };
+  /** No Decide or Build heading: FRIDAY gets the whole file. */
+  whole: boolean;
+  checks: { name: string; min?: number; max?: number; level: "breaks" | "check"; plain: string }[];
+  /** Check lines Panel can't measure yet. */
+  unknown: string[];
+  tokens: number;
+  /** off · every (in every message) · listed (read when needed) · dropped (too long for every message) · led (other skills lead all it says) */
+  given: "off" | "every" | "listed" | "dropped" | "led";
+  /** In plain words, what FRIDAY gets from it. */
+  gets: string;
+  /** Who it is for, from its read (null: not read, or its own headings come first). */
+  forUse: SkillFor | null;
+  /** The pack it came from. */
+  pack: string | null;
+  /** Where its read stands. older: read with Panel's older instructions, so it counts as not read yet. */
+  read: { state: SkillReadState; changed: boolean; older: boolean; cost: number; for: SkillFor | null; subjects: string[] } | null;
+  /** From its read: its subjects, the main one first ([] with no read in use). */
+  subjects: string[];
+  /** Lines another skill's lead leaves out. */
+  cut: { subject: string; lead: string; leadName: string; lines: number }[];
+  /** Other skills lead everything it says. */
+  emptied: boolean;
+}
+/** Who leads a subject two or more skills that are on speak to (server/skillleads.ts). */
+export interface SkillLead {
+  subject: string;
+  id: string;
+  name: string;
+  by: "designer" | "panel";
+  /** Panel's own pick. */
+  panel: string;
+  speakers: { id: string; name: string; lines: number }[];
+}
+export interface SkillsPage {
+  skills: SkillUse[]; on: number; tokens: number; budget: number;
+  leads: SkillLead[];
+  /** Skills are read by themselves ("read automatically" is on). */
+  auto: boolean;
+  /** How many skills aren't read yet. */
+  not_read: number;
+}
+
+// The skills page's state, shared by the grid's cards, the detail view and the page's top line.
+let skillsNow: SkillsPage | null = null;
+const skillListeners = new Set<() => void>();
+export const skillStore = {
+  get: () => skillsNow,
+  subscribe: (fn: () => void) => {
+    skillListeners.add(fn);
+    return () => void skillListeners.delete(fn);
+  },
+  refresh: async () => {
+    skillsNow = await call<SkillsPage>("/api/skills");
+    skillListeners.forEach((f) => f());
+    return skillsNow;
+  },
+};
+
+export const skillApi = {
+  set: async (id: string, patch: { on?: boolean; when?: SkillWhen; about?: SkillAbout[] }) => {
+    const one = await call<SkillUse>(`/api/skills/${id}`, { method: "PATCH", body: JSON.stringify(patch) });
+    await skillStore.refresh().catch(() => {});
+    return one;
+  },
+  /** Pick who leads a subject; null gives it back to Panel's pick. */
+  setLead: async (subject: string, id: string | null) => {
+    skillsNow = await call<SkillsPage>("/api/skills/leads", { method: "PUT", body: JSON.stringify({ subject, id }) });
+    skillListeners.forEach((f) => f());
+    return skillsNow;
+  },
+};
+
+// ---------- Skill packs: skills from a GitHub project or a folder (server/skillpacks.ts) ----------
+
+export type LeftOutWhy = "script" | "settings" | "picture" | "other" | "big" | "many";
+/** One skill found in a project, as the chooser shows it. */
+export interface FoundSkill {
+  folder: string;
+  name: string;
+  line: string;
+  kept: { path: string; bytes: number }[];
+  bytes: number;
+  leftOut: { path: string; bytes: number; why: LeftOutWhy }[];
+  /** "3 files, 28 KB" */
+  size: string;
+  /** "2 scripts not kept", or "". */
+  leftOutLine: string;
+  digest: string;
+  /** Why it can't be added. */
+  problem?: string;
+  /** Already in the library from this pack, and whether it is the same. */
+  have?: { id: string; same: boolean; gone: boolean };
+}
+/** What the chooser shows: a pack and the skills found in it. Nothing is saved yet. */
+export interface PackLook {
+  source: "github" | "folder";
+  key: string;
+  name: string;
+  url: string | null;
+  author: string | null;
+  license: string | null;
+  version: { sha: string | null; date: string | null };
+  link: { owner: string; repo: string; branch: string; path: string } | null;
+  skills: FoundSkill[];
+  pack: { id: string; sha: string | null; date: string | null } | null;
+  gone: { id: string; name: string; folder: string }[];
+  partial?: boolean;
+}
+/** A dropped folder as the browser read it: text files with their text, the rest by name and size. */
+export interface DroppedFolder {
+  name: string;
+  files: { path: string; bytes: number; text?: string; modified?: number }[];
+}
+/** A pack in the library, for the Skills page. */
+export interface SkillPack {
+  id: string;
+  source: "github" | "folder";
+  name: string;
+  url: string | null;
+  author: string | null;
+  license: string | null;
+  version: { sha: string | null; date: string | null };
+  checked: string | null;
+  skills: string[];
+  gone: string[];
+}
+/** Where a skill came from, its other files, and what was left out. */
+export interface SkillOrigin {
+  pack: { id: string; source: "github" | "folder"; name: string; url: string | null; author: string | null; license: string | null; hasLicenseText: boolean } | null;
+  folder?: string;
+  version?: { sha: string | null; date: string | null };
+  link?: string | null;
+  gone?: boolean;
+  files: { path: string; bytes: number }[];
+  leftOut: { path: string; bytes: number; why: LeftOutWhy }[];
+  leftOutLine: string;
+}
+export interface PackAdded { pack: string; added: number; updated: number; same: number; ids: string[]; /** Put in line to be read ("read automatically" on). */ reading: string[] }
+
+// The packs in the library, shared by the Skills page's headings and a skill's detail view.
+let packsNow: SkillPack[] | null = null;
+const packListeners = new Set<() => void>();
+export const packStore = {
+  get: () => packsNow,
+  subscribe: (fn: () => void) => {
+    packListeners.add(fn);
+    return () => void packListeners.delete(fn);
+  },
+  refresh: async () => {
+    packsNow = await call<SkillPack[]>("/api/skills/packs");
+    packListeners.forEach((f) => f());
+    return packsNow;
+  },
+};
+
+export const packApi = {
+  /** Look at a GitHub project, or a folder in it: what could be added. Nothing is saved. */
+  look: (url: string) => call<PackLook>("/api/skills/packs/look", { method: "POST", body: body({ url }) }),
+  lookFolder: (folder: DroppedFolder) => call<PackLook>("/api/skills/packs/look", { method: "POST", body: body({ folder }) }),
+  /** Add the chosen skills at the exact version looked at. */
+  add: (look: PackLook, folders: string[], folder?: DroppedFolder) =>
+    call<PackAdded>("/api/skills/packs/add", {
+      method: "POST",
+      body: body(folder ? { folder, folders } : { ...look.link, sha: look.version.sha, folders }),
+    }),
+  /** Ask GitHub whether the pack has a newer version. */
+  check: (id: string) => call<{ same: true; date: string | null } | ({ same: false } & PackLook)>(`/api/skills/packs/${id}/check`, { method: "POST", body: "{}" }),
+  origin: (id: string) => call<SkillOrigin>(`/api/skills/${id}/origin`),
+  file: (id: string, path: string) => call<{ text: string }>(`/api/skills/${id}/file?path=${encodeURIComponent(path)}`),
+};
+
+/** A link to a GitHub project or a folder in one (not to one file): those open the skill chooser. */
+export function isGithubProject(s: string) {
+  const t = s.trim();
+  return /^(https?:\/\/)?(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\.git)?(\/tree\/\S+)?\/?$/i.test(t);
+}
+
+// ---------- Skill reads: Claude reads a skill once (server/skillread.ts) ----------
+
+export type SkillFor = "sketches" | "builds" | "both" | "neither";
+export type SkillReadState = "none" | "waiting" | "reading" | "done" | "failed";
+export interface SkillReadLine { subject: string; text: string }
+export interface SkillReadAnswer {
+  one_line: string;
+  subjects: string[];
+  for: SkillFor;
+  about: SkillAbout[];
+  when: SkillWhen;
+  decide: SkillReadLine[];
+  build: SkillReadLine[];
+  checks: { name: string; min?: number; max?: number; must: boolean }[];
+  could_measure: { what: string; value: string }[];
+  look_for: string[];
+  conflicts: { skill_says: string; rule_says: string; rule: string }[];
+  points_to: string[];
+}
+/** One skill's read as its detail view shows it. */
+export interface SkillReadView {
+  state: SkillReadState;
+  error: string | null;
+  model: string | null;
+  read_at: string | null;
+  changed: boolean;
+  /** Read with Panel's older instructions. */
+  older: boolean;
+  /** Rough tokens a read of it uses. */
+  cost: number;
+  answer: SkillReadAnswer | null;
+  edits: { decide?: string; build?: string } | null;
+  own_parts: boolean;
+  /** What FRIDAY carries (with the designer's changes) and Panel's own version. */
+  carries: { decide: string; build: string } | null;
+  panel: { decide: string; build: string } | null;
+  edited: boolean;
+  /** Line by line, each with its subject; led_by names the skill whose lead leaves it out. */
+  lines: { decide: SkillLine[]; build: SkillLine[] } | null;
+  /** Rough tokens of what really reaches FRIDAY. */
+  tokens: number;
+  points_to: { name: string; id: string | null; on: boolean }[];
+}
+export interface SkillLine { subject: string; text: string; led_by: string | null }
+export const skillReadApi = {
+  get: (id: string) => call<SkillReadView>(`/api/skills/${id}/read`),
+  /** Put one skill in line to be read. */
+  read: async (id: string) => {
+    const v = await call<SkillReadView>(`/api/skills/${id}/read`, { method: "POST", body: "{}" });
+    await skillStore.refresh().catch(() => {});
+    return v;
+  },
+  /** Put several in line: they are read a few at a time. */
+  readMany: async (ids: string[]) => {
+    const r = await call<{ queued: string[]; reading: string[]; waiting: string[] }>("/api/skills/reads", { method: "POST", body: JSON.stringify({ ids }) });
+    await skillStore.refresh().catch(() => {});
+    return r;
+  },
+  /** "Read them": every skill not read yet. */
+  readUnread: async () => {
+    const r = await call<{ queued: string[]; reading: string[]; waiting: string[] }>("/api/skills/reads/unread", { method: "POST", body: "{}" });
+    await skillStore.refresh().catch(() => {});
+    return r;
+  },
+  stop: async () => {
+    const r = await call<{ reading: string[]; waiting: string[] }>("/api/skills/reads/stop", { method: "POST", body: "{}" });
+    await skillStore.refresh().catch(() => {});
+    return r;
+  },
+  /** The designer's own Decide or Build (null puts Panel's back), or `reset` for all of it. */
+  edit: async (id: string, patch: { decide?: string | null; build?: string | null; reset?: boolean }) => {
+    const v = await call<SkillReadView>(`/api/skills/${id}/read`, { method: "PATCH", body: JSON.stringify(patch) });
+    await skillStore.refresh().catch(() => {});
+    return v;
+  },
 };

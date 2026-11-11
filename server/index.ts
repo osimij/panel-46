@@ -11,7 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
 import { startSummaries, summarize } from "./digest.ts";
-import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, undoLast, verdictReasons, type Op } from "./projects.ts";
+import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, setTurnedDownReason, undoLast, verdictReasons, type Op } from "./projects.ts";
 import { captureForFigma, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
 import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
@@ -26,6 +26,10 @@ import { backupStatus, mirror, setBackupDir, snapshot, startBackups } from "./ba
 import { addChatFile, chatFile, removeChatFile } from "./chatfiles.ts";
 import { cards, chatSettings, createChat, deleteChat, follow, getChat, listChats, send, setChatSettings, stop as stopChat, type SendContext } from "./chat.ts";
 import { listening, VOICE_LANGUAGES, type Listening, type VoiceLanguage } from "./voice.ts";
+import { ICON_WEIGHTS, iconDrawings, loadingPiece, readyMade, type IconWeight } from "./ready.ts";
+import { describeOne, readView, setLead, setSkillUse, skillsPageNow } from "./skilluse.ts";
+import { notReadYet, queueReads, readIfAuto, readQueue, setReadEdits, startSkillReads, stopReads } from "./skillreads.ts";
+import { addFromFolder, addFromGithub, checkPack, listPacks, lookAtFolder, lookAtGithub, packLicense, PackError, skillFileText, skillOrigin } from "./skillpacks.ts";
 
 const DIST = resolve(process.env.PANEL_DIST ?? join(import.meta.dir, "..", "dist"));
 
@@ -435,6 +439,101 @@ async function handle(req: Request): Promise<Response> {
     return transport.handleRequest(req);
   }
 
+  // ---- Skills: which of the designer's skill files FRIDAY uses, and when (skills.ts) ----
+  // Turning one on changes FRIDAY's instructions, so only Panel's own page may.
+  if (path.startsWith("/api/skills") && !fromPanel(req)) return bad("Not allowed from here.", 403);
+  if (path === "/api/skills" && m === "GET") return json(skillsPageNow());
+  // Reads: Claude reads a skill once (skillread.ts, skillreads.ts). By themselves with "read
+  // automatically" on; otherwise when the designer presses Read. Three at a time; can be stopped.
+  if (path === "/api/skills/reads" && m === "GET") return json(readQueue());
+  // "Read them": every skill not read yet (never read, or read with older instructions).
+  if (path === "/api/skills/reads/unread" && m === "POST") return json({ queued: queueReads(notReadYet()), ...readQueue() });
+  // Who leads a subject when two skills that are on speak to it (skillleads.ts). id null: Panel's pick.
+  if (path === "/api/skills/leads" && m === "PUT") {
+    const body = (await req.json().catch(() => ({}))) as { subject?: unknown; id?: unknown };
+    try {
+      setLead(body.subject, body.id === undefined ? null : body.id);
+      return json(skillsPageNow());
+    } catch (e) {
+      return bad((e as Error).message);
+    }
+  }
+  if (path === "/api/skills/reads" && m === "POST") {
+    const body = (await req.json().catch(() => ({}))) as { ids?: unknown };
+    const ids = Array.isArray(body.ids) ? body.ids.filter((x): x is string => typeof x === "string" && /^[0-9a-f]{16}$/.test(x)) : [];
+    if (!ids.length) return bad("Choose a skill to read.");
+    return json({ queued: queueReads(ids), ...readQueue() });
+  }
+  if (path === "/api/skills/reads/stop" && m === "POST") return json(stopReads());
+  const readRoute = path.match(/^\/api\/skills\/([0-9a-f]{16})\/read$/);
+  if (readRoute) {
+    try {
+      if (m === "GET") return json(readView(readRoute[1]!));
+      if (m === "POST") {
+        queueReads([readRoute[1]!]);
+        return json(readView(readRoute[1]!));
+      }
+      if (m === "PATCH") {
+        setReadEdits(readRoute[1]!, (await req.json().catch(() => ({}))) as Record<string, unknown>);
+        return json(readView(readRoute[1]!));
+      }
+    } catch (e) {
+      return bad((e as Error).message, 404);
+    }
+  }
+
+  // Packs: skills from a GitHub project or a dropped folder (skillpacks.ts). Looking and
+  // checking reach GitHub, and only when the designer asks; nothing is saved until they add.
+  if (path.startsWith("/api/skills/packs") || /^\/api\/skills\/[0-9a-f]{16}\/(origin|file)$/.test(path)) {
+    try {
+      const body = m === "POST" ? ((await req.json().catch(() => ({}))) as Record<string, unknown>) : {};
+      if (path === "/api/skills/packs" && m === "GET") return json(listPacks());
+      if (path === "/api/skills/packs/look" && m === "POST")
+        return json(typeof body.url === "string" ? await lookAtGithub(body.url) : lookAtFolder(body.folder));
+      if (path === "/api/skills/packs/add" && m === "POST") {
+        const added = body.folder ? addFromFolder(body) : await addFromGithub(body);
+        // With "read automatically" on, new skills and updated ones are put in line to be read.
+        return json({ ...added, reading: readIfAuto(added.ids) });
+      }
+      const pack = path.match(/^\/api\/skills\/packs\/([0-9a-f]{16})\/(check|license)$/);
+      if (pack && pack[2] === "check" && m === "POST") return json(await checkPack(pack[1]!));
+      if (pack && pack[2] === "license" && m === "GET") {
+        const text = packLicense(pack[1]!);
+        return text === null ? bad("This pack has no licence file.", 404) : new Response(text, { headers: { "content-type": "text/plain; charset=utf-8" } });
+      }
+      const one = path.match(/^\/api\/skills\/([0-9a-f]{16})\/(origin|file)$/);
+      if (one && one[2] === "origin" && m === "GET") return json(skillOrigin(one[1]!));
+      if (one && one[2] === "file" && m === "GET") {
+        const text = skillFileText(one[1]!, url.searchParams.get("path") ?? "");
+        return text === null ? bad("That file isn't kept with this skill.", 404) : json({ text });
+      }
+    } catch (e) {
+      return bad((e as Error).message, e instanceof PackError ? e.status : 500);
+    }
+  }
+  const skillRoute = path.match(/^\/api\/skills\/([0-9a-f]{16})$/);
+  if (skillRoute && (m === "GET" || m === "PATCH")) {
+    try {
+      if (m === "GET") return json(describeOne(skillRoute[1]!));
+      return json(setSkillUse(skillRoute[1]!, (await req.json().catch(() => ({}))) as Record<string, unknown>));
+    } catch (e) {
+      return bad((e as Error).message, 404);
+    }
+  }
+
+  // ---- Ready-made parts (ready.ts): files that ship with Panel, only ever read ----
+  // A loading piece goes out as plain text, never as a page of Panel's own.
+  if (path === "/api/ready" && m === "GET") return json(readyMade());
+  const readyPart = path.match(/^\/api\/ready\/(icons|loading)\/([a-z0-9-]+)$/);
+  if (readyPart && m === "GET") {
+    if (readyPart[1] === "icons") {
+      const weight = readyPart[2] as IconWeight;
+      return ICON_WEIGHTS.includes(weight) ? json(iconDrawings(weight)) : bad("Not found", 404);
+    }
+    const piece = loadingPiece(readyPart[2]!);
+    return piece === null ? bad("Not found", 404) : new Response(piece, { headers: { "content-type": "text/plain; charset=utf-8", "x-content-type-options": "nosniff" } });
+  }
+
   // ---- Fonts: the designer's own, uploaded here and used by every sketch ----
   if (path.startsWith("/api/fonts") && !fromPanel(req)) return bad("Not allowed from here.", 403);
   if (path === "/api/fonts" && m === "GET") return json(listFonts());
@@ -740,7 +839,7 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream|\/undo)?$/);
+  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream|\/undo|\/turned-down)?$/);
   if (projectRoute) {
     const [, id, sub] = projectRoute as unknown as [string, string, string | undefined];
     if (!sub && m === "GET") {
@@ -776,6 +875,12 @@ async function handle(req: Request): Promise<Response> {
       } catch (e) {
         return bad((e as Error).message, 409);
       }
+    }
+    if (sub === "/turned-down" && m === "POST") {
+      // { nodes, reason }: why the designer took these cards off, said after they're gone.
+      const b = (await req.json().catch(() => ({}))) as { nodes?: unknown; reason?: unknown };
+      if (!Array.isArray(b.nodes)) return bad("Which cards?");
+      return json({ ok: true, n: setTurnedDownReason(id, b.nodes as string[], String(b.reason ?? "")) });
     }
     if (sub === "/stream" && m === "GET") {
       const after = Number(url.searchParams.get("after") ?? 0) || 0;
@@ -843,7 +948,11 @@ async function handle(req: Request): Promise<Response> {
       if (!(body.model in MODELS)) return bad("Unknown model");
       setSetting("ai_model", body.model);
     }
-    if (body.auto !== undefined) setSetting("ai_auto", body.auto ? "1" : "0");
+    if (body.auto !== undefined) {
+      setSetting("ai_auto", body.auto ? "1" : "0");
+      // Skills follow the same setting: turned on, the ones not read yet are read (skillreads.ts).
+      if (body.auto) readIfAuto();
+    }
     if (body.cap !== undefined) {
       if (!(Number(body.cap) >= 0)) return bad("The budget has to be a number of dollars.");
       setSetting("ai_cap", String(Number(body.cap)));
@@ -1184,6 +1293,8 @@ void backfillAvatars();
 void upgradeSocialLinks();
 startReading();
 startRemeasuring();
+// Skill reads that were under way when Panel stopped don't start again by themselves.
+startSkillReads();
 startBackups();
 startMeasuring();
 // Project documents: the ones cut at the old length are read again whole, then each long one gets its summary.

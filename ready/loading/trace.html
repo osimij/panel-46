@@ -1,0 +1,37 @@
+<!-- Trace · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-trace {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-trace-spin {
+  transform-origin: center;
+  animation: ld-trace-rotate var(--ld-duration, 1200ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-trace-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-trace-spin-stacked {
+  animation-name: ld-trace-rotate, ld-trace-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-trace-rotate {
+  to {
+    stroke-dashoffset: -63.132741228718345;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-trace,
+  .ld-trace * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-trace" aria-hidden="true" fill="none" role="presentation" stroke="currentColor" stroke-width="2.5" viewBox="0 0 20 20"><rect height="17.5" rx="4" width="17.5" x="1.25" y="1.25" opacity="0.2"/><rect height="17.5" rx="4" width="17.5" x="1.25" y="1.25" class="ld-trace-spin" stroke-dasharray="16 47.132741228718345" stroke-linecap="round"/></svg>

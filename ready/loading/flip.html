@@ -1,0 +1,41 @@
+<!-- Flip · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-flip {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-flip {
+  perspective: calc(var(--ld-size, 1.25em) * 3);
+}
+
+.ld-flip-face {
+  width: 64%;
+  height: 64%;
+  margin: 18%;
+  background: currentColor;
+  border-radius: calc(var(--ld-size, 1.25em) * 0.06);
+  animation: ld-flip-turn var(--ld-duration, 1200ms) ease-in-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+@keyframes ld-flip-turn {
+  0% {
+    transform: rotateX(0) rotateY(0);
+  }
+  50% {
+    transform: rotateX(-180deg) rotateY(0);
+  }
+  100% {
+    transform: rotateX(-180deg) rotateY(-180deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-flip,
+  .ld-flip * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-flip" aria-hidden="true"><div class="ld-flip-face"></div></div>

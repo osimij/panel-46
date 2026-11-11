@@ -1,0 +1,37 @@
+<!-- Loop · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-loop {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-loop-spin {
+  transform-origin: center;
+  animation: ld-loop-rotate var(--ld-duration, 1600ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+.ld-loop-spin-ease-in-out {
+  animation-timing-function: ease-in-out;
+}
+
+.ld-loop-spin-stacked {
+  animation-name: ld-loop-rotate, ld-loop-rotate;
+  animation-timing-function: linear, ease-in-out;
+  animation-composition: add;
+}
+
+@keyframes ld-loop-rotate {
+  to {
+    stroke-dashoffset: -100;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-loop,
+  .ld-loop * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-loop" aria-hidden="true" fill="none" role="presentation" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24"><path d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" opacity="0.2"/><path class="ld-loop-spin" d="M12 12c-2-2.7-3.6-4-5.5-4a4 4 0 0 0 0 8c1.9 0 3.5-1.3 5.5-4s3.6-4 5.5-4a4 4 0 0 1 0 8c-1.9 0-3.5-1.3-5.5-4z" pathLength="100" stroke-dasharray="30 70" stroke-linecap="round"/></svg>

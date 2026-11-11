@@ -6,7 +6,7 @@
 
 import { newId } from "./db.ts";
 import { load } from "./library.ts";
-import { apply, findProject, getProject, TOPIC_FACETS, type BoardNode, type Op, type RefState, type TopicFacet } from "./projects.ts";
+import { apply, findProject, getProject, removedUnder, TOPIC_FACETS, type BoardNode, type Op, type RefState, type TopicFacet } from "./projects.ts";
 import { PORT } from "./config.ts";
 import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versionsOf, writeVersion, type Device, type Render } from "./sketches.ts";
 import { withVars } from "./pagevars.ts";
@@ -129,9 +129,11 @@ export function placeOnBoard(o: { project: string; topic: string; saves: { id: s
   }
   const { docs } = load();
   const already = new Set(b.full.nodes.filter((n) => n.kind === "ref" && b.linked(topic!.id).has(n.id)).map((n) => n.ref_id));
+  // Saves the designer took off this topic before stay off it: they can drag one back in themselves.
+  const removed = created ? new Map<string, string>() : removedUnder(b.p.id, topic!.id);
   const seen = new Set<string>();
   const fresh = o.saves.filter((s) => {
-    const ok = docs.has(s.id) && !already.has(s.id) && !seen.has(s.id);
+    const ok = docs.has(s.id) && !already.has(s.id) && !seen.has(s.id) && !removed.has(s.id);
     seen.add(s.id);
     return ok;
   });
@@ -150,7 +152,11 @@ export function placeOnBoard(o: { project: string; topic: string; saves: { id: s
     placed: fresh.map((s) => ({ id: s.id, title: titleOf(s.id) })),
     already_there: o.saves.filter((s) => already.has(s.id)).map((s) => s.id),
     not_in_library: o.saves.filter((s) => !docs.has(s.id)).map((s) => s.id),
-    note: "They're on the canvas as suggestions; the designer chooses, keeps or rules them out.",
+    removed_before: o.saves.some((s) => removed.has(s.id))
+      ? [...new Set(o.saves.filter((s) => removed.has(s.id)).map((s) => s.id))].map((id) => ({ id, reason: removed.get(id) || undefined }))
+      : undefined,
+    note: "They're on the canvas as suggestions; the designer chooses, keeps or rules them out." +
+      (o.saves.some((s) => removed.has(s.id)) ? " The designer took the ones in removed_before off this topic before. They can drag one back in from Saves." : ""),
   };
 }
 

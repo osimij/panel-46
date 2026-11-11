@@ -3,7 +3,7 @@
 // which also catches what you saved on your phone.
 
 const PANEL = "http://127.0.0.1:4646";
-const SYNC_MINUTES = 20;
+const SYNC_MINUTES = 5;
 const SITES = ["x", "instagram", "pinterest"];
 const NAME = { x: "X", instagram: "Instagram", pinterest: "Pinterest" };
 

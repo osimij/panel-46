@@ -1,0 +1,38 @@
+<!-- Pulse · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-pulse {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-pulse-ring {
+  transform-origin: center;
+  animation: ld-pulse-ripple var(--ld-duration, 1200ms) ease-out infinite;
+  animation-play-state: var(--ld-play-state, running);
+}
+
+@keyframes ld-pulse-ripple {
+  from {
+    opacity: 0.4;
+    transform: scale(0.25);
+  }
+  to {
+    opacity: 0;
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-pulse-ring {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-pulse,
+  .ld-pulse * {
+    animation: none;
+  }
+}
+</style>
+<svg class="ld-pulse" aria-hidden="true" fill="none" role="presentation" viewBox="0 0 16 16"><circle class="ld-pulse-ring" cx="8" cy="8" fill="currentColor" r="8"/><circle cx="8" cy="8" fill="currentColor" r="2"/></svg>

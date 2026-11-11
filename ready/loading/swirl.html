@@ -1,0 +1,50 @@
+<!-- Swirl · from loading.dev by Jakub Krehel and Paul Faivret · MIT licence, see ready/NOTICE.md -->
+<style>
+.ld-swirl {
+  width: var(--ld-size, 1.25em);
+  height: var(--ld-size, 1.25em);
+}
+
+.ld-swirl {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: calc(var(--ld-size, 1.25em) * 0.15625);
+  box-sizing: border-box;
+  padding: calc(var(--ld-size, 1.25em) * 0.0625);
+}
+
+.ld-swirl-cell {
+  background: currentColor;
+  border-radius: calc(var(--ld-size, 1.25em) * 0.0625);
+}
+
+.ld-swirl-cell {
+  animation: ld-swirl-fade var(--ld-duration, 1200ms) linear infinite;
+  animation-play-state: var(--ld-play-state, running);
+  animation-delay: calc(var(--ld-duration, 1200ms) * (var(--ld-step) - 8) / 8);
+}
+
+@keyframes ld-swirl-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0.2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-swirl-cell {
+    opacity: 0.6;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ld-swirl,
+  .ld-swirl * {
+    animation: none;
+  }
+}
+</style>
+<div class="ld-swirl" aria-hidden="true"><div class="ld-swirl-cell" style="--ld-step:0"></div><div class="ld-swirl-cell" style="--ld-step:1"></div><div class="ld-swirl-cell" style="--ld-step:2"></div><div class="ld-swirl-cell" style="--ld-step:7"></div><div></div><div class="ld-swirl-cell" style="--ld-step:3"></div><div class="ld-swirl-cell" style="--ld-step:6"></div><div class="ld-swirl-cell" style="--ld-step:5"></div><div class="ld-swirl-cell" style="--ld-step:4"></div></div>
