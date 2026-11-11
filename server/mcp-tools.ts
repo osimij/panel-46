@@ -17,6 +17,7 @@ import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
 import { FACETS, TYPES, findByColor, gather, overview, reference, search, similar } from "./library.ts";
 import { getReadyMade, ICON_WEIGHTS } from "./ready.ts";
+import { shortParts } from "./parts.ts";
 
 const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
 
@@ -38,7 +39,8 @@ Use it to find references for a brief and to combine them: color from one save, 
 - A sketch can go to Figma and come back: the designer copies it into Figma from the studio, changes it there, and brings it back. get_figma_frame then gives the Figma frame beside the page it started from; rebuild the page with edit_sketch as its next version, keeping its knobs, states and scripts.
 - When the designer chooses a sketch, get_handoff writes down everything needed to build it, and start_build hands it to Claude Code to build in their code (get_build, message_build follow it).
 - The designer's skills are craft files they turned on (setting type, motion…): get_skill lists them and reads one. They come after the designer's rules and a project's locked decisions, and before any reference.
-- Panel comes with ready-made parts (get_ready_made): loading animations, colour scales and icons. Paste what it gives into the sketch as is; the sketch stays one self-contained file. A loading state uses one of its animations, never one you draw. Every icon comes from its icons, never drawn by hand and never an emoji: find all the icons a page needs in one call, and keep one weight on a page, with fill only to mark what is active, unless the designer or a skill says otherwise. A project's own brand icons (get_brand_assets) come first. A colour scale is a starting point only when the project has no colours of its own: locked decisions, brand assets and the designer's rules come first.
+- Panel comes with ready-made parts (get_ready_made): loading animations, icons and colour palettes. In a sketch, a part is a short tag and Panel puts the real drawing in when it saves the page: never paste or type a drawing. Find every icon a page needs in one call (find_icons), then write each as <panel-icon name="trash"></panel-icon> (weight="bold" for another weight; class, style, id, title and aria-label are kept; it is 1em in the text's colour). The tag itself is replaced: style a part through a class on it, never by the tag's name. Tags are filled in the HTML only, never inside a script: an icon a script needs goes in a <template> for the script to copy. A loading state is <panel-loading name="ring"></panel-loading>, with a name from the list; never draw your own. Keep one weight on a page, with fill only to mark what is active, unless the designer or a skill says otherwise. A project's own brand icons (get_brand_assets) come first; never an emoji as an icon. get_sketch shows the parts as these tags, and edits use them the same way.
+- Never use or imitate one of Panel's palettes unless the designer asks for one. Colours are settled when the project has a locked colour decision or brand assets with its colours, or the designer has said what colours to use ("pick calm colours" means your own; "use Slate" means that palette): then don't ask. When they aren't, ask before you sketch, in one short question, and stop: your own colours, or one of Panel's palettes (name two or three that would suit, by name only). The answer holds for the rest of the conversation. A chosen palette is used exactly as it is: a 12-step scale by what each step is for, a set as its colours; add a colour of your own only for what it doesn't have, and say which.
 For each save you recommend, give the designer its "open" link from get_reference's answer, so they can watch or look at the original.`;
 
 const RULES_NOTE = `
@@ -216,12 +218,12 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
   // Ready-made parts that ship with Panel (ready.ts): loading animations, colour scales, icons.
   server.registerTool("get_ready_made", {
     title: "Ready-made parts",
-    description: "Loading animations, colour scales (OKLCH, light and dark) and icons (Phosphor) that come with Panel, to paste into a sketch as given. With nothing, the list.",
+    description: "Loading animations, colour palettes (OKLCH, light and dark) and icons (Phosphor) that come with Panel. In a sketch, write <panel-icon name> and <panel-loading name> tags: Panel puts the drawing in. With nothing, the list.",
     inputSchema: {
-      loading: z.string().optional().describe("A loading animation's name: its piece to paste."),
-      palette: z.string().optional().describe("A colour scale's name: its steps, light and dark, and what each is for."),
+      loading: z.string().optional().describe("A loading animation's name: its code, only for building for real."),
+      palette: z.string().optional().describe("A palette's name, only once the designer asked for one: its steps, light and dark, and what each is for."),
       find_icons: z.string().optional().describe("What each icon is for, comma-separated (\"trash, settings, arrow right\"): the best names for each."),
-      icons: z.array(z.string()).optional().describe("Icon names, up to 12: each as an SVG to paste."),
+      icons: z.array(z.string()).optional().describe("Icon names, up to 12: each as an SVG, only for building for real."),
       weight: z.enum(ICON_WEIGHTS).optional().describe("The icons' weight (default regular)."),
     },
     annotations: readOnly,
@@ -445,7 +447,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     annotations: write,
   }, safe((a) => addNote(a)));
 
-  const html = z.string().min(1).describe("The whole page: one self-contained HTML file with its CSS and scripts inline. The designer's own fonts (get_fonts) are loaded already: just write font-family with their name. Other fonts and libraries from CDNs are fine (Google Fonts, cdnjs, jsdelivr, unpkg); so are three.js and shaders. It runs sandboxed: no localStorage, cookies or calls to Panel. Real content in the project's language, never lorem ipsum.");
+  const html = z.string().min(1).describe("The whole page: one self-contained HTML file with its CSS and scripts inline. The designer's own fonts (get_fonts) are loaded already: just write font-family with their name. Other fonts and libraries from CDNs are fine (Google Fonts, cdnjs, jsdelivr, unpkg); so are three.js and shaders. It runs sandboxed: no localStorage, cookies or calls to Panel. Real content in the project's language, never lorem ipsum. Ready-made parts go in as tags, <panel-icon name=\"trash\"></panel-icon> and <panel-loading name=\"ring\"></panel-loading>: Panel puts the drawings in; never type one.");
 
   server.registerTool("make_sketch", {
     title: "Sketch a direction",
@@ -515,7 +517,8 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       // Measured against the skills that are on now, even if it was rendered before they were.
       const slug = head.seen_state?.match(/\(#([^)]+)\)$/)?.[1];
       const content = await sketchContent(head, await withSkillChecks(render, head.page + (slug ? `#${slug}` : ""), head.seen_on), pictures, head.seen_on);
-      if (withHtml) content.push({ type: "text", text: page });
+      // Ready-made parts as their short tags (parts.ts): no drawing to read or retype.
+      if (withHtml) content.push({ type: "text", text: shortParts(page) });
       return { content };
     } catch (e) {
       return failure(e);
@@ -537,7 +540,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       const sk = sketchMeta(a.project, a.sketch);
       const id = a.read?.trim() || (await readFrame(sk.project, sk.id, sk.version, a.frame?.trim() || undefined)).read;
       const r = figmaReading(sk.project, sk.id, id);
-      const page = readSketch(sk.project, sk.id, r.base_version);
+      const page = shortParts(readSketch(sk.project, sk.id, r.base_version));
       const content: Content = [{
         type: "text",
         text: JSON.stringify({

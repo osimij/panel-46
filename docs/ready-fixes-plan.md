@@ -10,11 +10,15 @@ Ready-made parts work: FRIDAY now takes its icons and loading animations from Pa
 2. **FRIDAY uses or imitates a palette without being asked.** The designer's decision: Panel's palettes are good to have, but FRIDAY must never pick one by itself. When a project has no colours, it asks first: a palette, or colours of its own.
 3. **A test copy has no fonts.** `scripts/copy.sh` doesn't copy the designer's fonts or the projects' brand files, so on a copy FRIDAY reports a missing font and a sketch can't show a logo.
 
+## Where things stand
+
+Everything up to this plan is committed (`b71d6f3`) and **the real Panel on 4646 now runs it**. The designer is using it. A change reaches the real Panel only at a restart, and only the designer asks for one.
+
 ## Rules for this job
 
-- Follow `CLAUDE.md`: never touch `~/DesignLibrary` (reading it is fine) or port 4646; never `bun run build` or `bun run start`; do not restart the real app; do not commit. Never `git stash`, `git checkout` or `git reset`.
+- Follow `CLAUDE.md`: never touch `~/DesignLibrary` (reading it is fine) or port 4646; never `bun run build` or `bun run start`; **do not restart the real app; do not commit or push.** Never `git stash`, `git checkout` or `git reset`.
 - **Use the ready-made copy**: `.copy/lib-ready`, UI in `.copy/dist-ready`, the `panel-copy-ready` server on port **4787**. Build the UI with `bunx vite build --outDir "$PWD/.copy/dist-ready" --emptyOutDir` from this folder. **Never run `scripts/copy.sh`** (you will change it, not run it): it deletes `.copy/lib` and rebuilds `.copy/dist`, which another session may be using.
-- **Another session may still be working on skills in this folder.** Stay out of `server/skills.ts`, `server/skilluse.ts`, `server/skillread.ts`, `server/skillreads.ts`, `server/skillleads.ts`, `server/skillpacks.ts`, `server/skillcheck.ts`, `web/src/SkillRead.tsx`, `web/src/Packs.tsx`, `web/src/Detail.tsx`, `web/src/Grid.tsx` and the skills tests. In files you share (`server/mcp-tools.ts`, `server/chat.ts`, `server/sketches.ts`, `server/board.ts`), change only what this plan needs, read the file again right before each edit, and never rewrite or reformat it. If the type check or a test fails in a file you didn't touch, wait a few minutes and try again; if it still fails, say so in the report and don't fix it.
+- **Another session may be working on skills in this folder at the same time** ([skill-fixes-plan.md](skill-fixes-plan.md)). Stay out of `server/skills.ts`, `server/skilluse.ts`, `server/skillread.ts`, `server/skillreads.ts`, `server/skillleads.ts`, `server/skillpacks.ts`, `server/skillcheck.ts`, `web/src/SkillRead.tsx`, `web/src/Packs.tsx`, `web/src/Detail.tsx`, `web/src/Grid.tsx` and the skills tests. In files you share (`server/mcp-tools.ts`, `server/chat.ts`, `server/sketches.ts`, `server/board.ts`), change only what this plan needs, read the file again right before each edit, and never rewrite or reformat it. If the type check or a test fails in a file you didn't touch, wait a few minutes and try again; if it still fails, say so in the report and don't fix it.
 - The database doesn't change. No new dependency. Plain words everywhere.
 - This step spends the designer's Claude plan only on the **four FRIDAY messages** under "Live check".
 

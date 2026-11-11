@@ -83,39 +83,77 @@ function score(icon: IconInfo, words: string): number {
   return 0;
 }
 
+/**
+ * Panel's own words for the icons asked for most, best first. The package files some everyday
+ * words under others ("close" is x, tagged "closed"; a "menu" is list), so these come before
+ * what its search words find.
+ */
+export const OWN_WORDS: Record<string, string[]> = {
+  close: ["x", "x-circle"],
+  menu: ["list", "dots-three"],
+  settings: ["gear", "gear-six", "sliders-horizontal"],
+  search: ["magnifying-glass"],
+  delete: ["trash", "trash-simple"],
+  edit: ["pencil-simple", "pencil"],
+  add: ["plus", "plus-circle"],
+  back: ["arrow-left", "caret-left"],
+  more: ["dots-three", "dots-three-vertical"],
+  home: ["house", "house-simple"],
+  user: ["user", "user-circle"],
+  download: ["download-simple", "download"],
+  upload: ["upload-simple", "upload"],
+  share: ["share-network", "export"],
+  copy: ["copy", "copy-simple"],
+  link: ["link", "link-simple"],
+  info: ["info"],
+  warning: ["warning", "warning-circle"],
+  success: ["check-circle", "check"],
+  error: ["x-circle", "warning-circle"],
+};
+
 /** The best icon names for some words, best first. */
 export function bestIcons(words: string, count = 5): string[] {
-  return iconIndex()
+  const own = OWN_WORDS[words.trim().toLowerCase()] ?? [];
+  const found = iconIndex()
     .icons.map((icon) => ({ name: icon.name, s: score(icon, words) }))
-    .filter((x) => x.s > 0)
+    .filter((x) => x.s > 0 && !own.includes(x.name))
     .sort((a, b) => b.s - a.s || a.name.length - b.name.length || a.name.localeCompare(b.name))
+    .map((x) => x.name);
+  return [...own, ...found].slice(0, count);
+}
+
+/** How many letters to change, add, take away or swap with the next one to turn one word into another. */
+function distance(a: string, b: string) {
+  const d = Array.from({ length: a.length + 1 }, (_, i) => Array.from({ length: b.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)));
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const row = d[i]!;
+      row[j] = Math.min(d[i - 1]![j]! + 1, row[j - 1]! + 1, d[i - 1]![j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) row[j] = Math.min(row[j]!, d[i - 2]![j - 2]! + 1);
+    }
+  }
+  return d[a.length]![b.length]!;
+}
+
+/** Closest first; between equally close, the one as long as what was written, then by name. */
+const nearest = (s: string, names: string[], count: number) =>
+  names
+    .map((name) => ({ name, d: distance(s, name), l: Math.abs(name.length - s.length) }))
+    .sort((a, b) => a.d - b.d || a.l - b.l || a.name.localeCompare(b.name))
     .slice(0, count)
     .map((x) => x.name);
+
+/** The loading animations whose names are nearest to a mistyped one. */
+export function nearLoading(name: string, count = 3): string[] {
+  return nearest(slug(name), loadingParts().loading.map((l) => l.name), count);
 }
 
 /** Names that look like a mistyped one, when no words match: by how few letters differ. */
-function nearNames(name: string, count = 5): string[] {
+export function nearNames(name: string, count = 5): string[] {
   const s = slug(name);
   const found = bestIcons(name, count);
   if (found.length) return found;
-  const distance = (a: string, b: string) => {
-    const row = Array.from({ length: b.length + 1 }, (_, i) => i);
-    for (let i = 1; i <= a.length; i++) {
-      let prev = row[0]!;
-      row[0] = i;
-      for (let j = 1; j <= b.length; j++) {
-        const keep = row[j]!;
-        row[j] = Math.min(row[j]! + 1, row[j - 1]! + 1, prev + (a[i - 1] === b[j - 1] ? 0 : 1));
-        prev = keep;
-      }
-    }
-    return row[b.length]!;
-  };
-  return iconIndex()
-    .icons.map((i) => ({ name: i.name, d: distance(s, i.name) }))
-    .sort((a, b) => a.d - b.d || a.name.localeCompare(b.name))
-    .slice(0, count)
-    .map((x) => x.name);
+  return nearest(s, iconIndex().icons.map((i) => i.name), count);
 }
 
 // ---------- The answers get_ready_made gives ----------
@@ -123,15 +161,16 @@ function nearNames(name: string, count = 5): string[] {
 function overview() {
   const scales = palettes().palettes;
   return [
-    "Panel's ready-made parts. Paste what they give into the sketch as is: it stays one self-contained file.",
+    "Panel's ready-made parts. In a sketch, write each as a tag and Panel puts the drawing in when it saves the page: <panel-icon name=\"trash\"></panel-icon>, <panel-loading name=\"ring\"></panel-loading>. Never paste or type a drawing.",
     "",
     `Loading animations (${loadingParts().loading.length}; loading: name for one):`,
     ...loadingParts().loading.map((l) => `- ${l.name}: ${l.line}`),
     "",
+    "Palettes only when the designer asks for one, then used exactly as they are.",
     `Colour scales, 12 steps in light and dark (palette: name for one): ${scales.filter((p) => p.kind === "scale").map((p) => p.name).join(", ")}.`,
     `Colour sets of 5 to 10 colours: ${scales.filter((p) => p.kind === "set").map((p) => p.name).join(", ")}.`,
     "",
-    `Icons: ${iconIndex().count} (Phosphor), each in ${ICON_WEIGHTS.join(", ")}. find_icons: "trash, settings, arrow right" finds names for every icon a page needs; icons: [names] gives them.`,
+    `Icons: ${iconIndex().count} (Phosphor), each in ${ICON_WEIGHTS.join(", ")}. find_icons: "trash, settings, arrow right" finds names for every icon a page needs. icons: [names] gives the drawings themselves, only for building for real.`,
   ].join("\n");
 }
 
@@ -141,7 +180,8 @@ function loadingAnswer(name: string) {
   const part = loadingParts().loading.find((l) => l.name === name.trim().toLowerCase())!;
   return [
     `${part.title}: ${part.line}`,
-    "Paste this piece as it is. Its colour is the text colour around it (color: …), its size --ld-size (1.25em when not set; e.g. --ld-size: 24px), its speed --ld-duration. It is hidden from screen readers, so put the words (Loading…) beside it. Its own @media rule keeps it still for people who ask for less motion.",
+    `In a sketch, write <panel-loading name="${part.name}"></panel-loading> and Panel puts this in; the code below is for building for real.`,
+    "Its colour is the text colour around it (color: …), its size --ld-size (1.25em when not set; e.g. --ld-size: 24px), its speed --ld-duration. It is hidden from screen readers, so put the words (Loading…) beside it. Its own @media rule keeps it still for people who ask for less motion.",
     "",
     piece.trim(),
   ].join("\n");
@@ -152,7 +192,7 @@ function paletteAnswer(name: string) {
   const p = all.palettes.find((x) => x.name === slug(name) || x.title.toLowerCase() === name.trim().toLowerCase());
   if (!p) return `There's no colour palette called "${name}". These are: ${all.palettes.map((x) => x.name).join(", ")}.`;
   const same = p.light.every((c, i) => c === p.dark[i]);
-  const head = `${p.title} (${p.source_url}). A starting point only when the project has no colours of its own.`;
+  const head = `${p.title} (${p.source_url}). Only because the designer asked for a palette: use these values exactly as they are, and add a colour of your own only for something it doesn't have (say which).`;
   if (p.kind === "scale") {
     return [
       head,
@@ -171,7 +211,7 @@ function findAnswer(words: string) {
   const asked = words.split(",").map((w) => w.trim()).filter(Boolean);
   if (!asked.length) return "Give the words for the icons, separated by commas: \"trash, settings, arrow right\".";
   return [
-    "Icon names for each, best first (icons: [names] gives them):",
+    "Icon names for each, best first. In a sketch, write each as <panel-icon name=\"…\"></panel-icon> (weight=\"bold\" for another weight):",
     ...asked.map((w) => {
       const found = bestIcons(w);
       return `- ${w}: ${found.length ? found.join(", ") : "nothing close; try another word"}`;
@@ -184,7 +224,7 @@ function iconsAnswer(names: string[], weight: IconWeight) {
   const now = wanted.slice(0, MAX_ICONS);
   const later = wanted.slice(MAX_ICONS);
   const lines = [
-    `Icons in ${weight}, ready to paste. Each is 1em, so it takes its size from font-size, and its colour from the text (currentColor). They are hidden from screen readers: one that stands alone (a button with no words) needs aria-label on its button, or role="img" aria-label="…" in place of aria-hidden.`,
+    `Icons in ${weight}, for building for real (in a sketch, write <panel-icon name="…"></panel-icon> instead). Each is 1em, so it takes its size from font-size, and its colour from the text (currentColor). They are hidden from screen readers: one that stands alone (a button with no words) needs aria-label on its button, or role="img" aria-label="…" in place of aria-hidden.`,
   ];
   for (const name of now) {
     const svg = iconSvg(name, weight);

@@ -11,7 +11,7 @@ bun run start        # builds the UI, then serves everything at http://127.0.0.1
 
 For development, run `bun run dev`. It starts the companion with reload on change, plus Vite at http://localhost:5173.
 
-To try a change without touching your real library, run `scripts/copy.sh`: it makes a copy of the library in `.copy/` (cloned, so it takes almost no disk) and tells you how to run it on port 4747, beside the real Panel. `bun test tests` checks the main things against a throwaway library. [CLAUDE.md](CLAUDE.md) has the rules for working on Panel's own code.
+To try a change without touching your real library, run `scripts/copy.sh`: it makes a copy of the library in `.copy/` (its saves, projects, your fonts and the brand files, cloned, so it takes almost no disk) and tells you how to run it on port 4747, beside the real Panel. `bun test tests` checks the main things against a throwaway library. [CLAUDE.md](CLAUDE.md) has the rules for working on Panel's own code.
 
 To keep Panel running in the background, so it starts at login and comes back if it stops, run `scripts/autostart.sh install`. After changing the code, `scripts/autostart.sh restart` rebuilds and restarts it. Logs go to `~/Library/Logs/Panel/server.log`, and `scripts/autostart.sh uninstall` turns it off.
 

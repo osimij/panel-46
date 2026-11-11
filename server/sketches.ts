@@ -18,6 +18,7 @@ import { Cdp, chromePath, devtoolsUrl, evaluate, READY_SCRIPT, trackNetwork } fr
 import { checkRules, type RuleFinding } from "./rulecheck.ts";
 import { checkSkills, skillKeyNow, type SkillFinding } from "./skillcheck.ts";
 import { fontFaceCss } from "./fonts.ts";
+import { fillParts } from "./parts.ts";
 
 const ID = /^[0-9a-f]{16}$/;
 /** The screen a sketch is looked at on: a laptop, at 1×. Claude sees screens of this size. */
@@ -354,9 +355,14 @@ export interface Render {
   failed?: string;
 }
 
-/** Save a new version of a sketch and render it. The number is one past the newest on disk. */
-export async function writeVersion(projectId: string, sketchId: string, html: string, device: Device = "desktop") {
-  if (!html.trim()) throw new Error("The sketch is empty.");
+/**
+ * Save a new version of a sketch and render it. The number is one past the newest on disk.
+ * Every way of saving comes through here, so this is where ready-made parts named by a tag
+ * (<panel-icon>, <panel-loading>) get their real drawings (parts.ts); a wrong name saves nothing.
+ */
+export async function writeVersion(projectId: string, sketchId: string, given: string, device: Device = "desktop") {
+  if (!given.trim()) throw new Error("The sketch is empty.");
+  const html = fillParts(given);
   if (html.length > MAX_HTML) throw new Error("That page is too big for a sketch (1.5 MB at most).");
   const dir = sketchDir(projectId, sketchId);
   mkdirSync(dir, { recursive: true });

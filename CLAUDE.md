@@ -5,7 +5,7 @@ A designer's private, local-first library of design references, with project can
 ## Never touch the real library
 
 - The real library is `~/DesignLibrary` and the real app runs on port **4646** (kept running by launchd, `scripts/autostart.sh`).
-- **Try every change on a copy**: `scripts/copy.sh` makes `.copy/lib` (cloned, nearly free on disk) and builds the UI into `.copy/dist`. Run it on port **4747** with the `panel-copy` server in `.claude/launch.json`, or:
+- **Try every change on a copy**: `scripts/copy.sh` makes `.copy/lib` (the database, media, projects, fonts and brand files; cloned, nearly free on disk) and builds the UI into `.copy/dist`. Run it on port **4747** with the `panel-copy` server in `.claude/launch.json`, or:
   `PANEL_PORT=4747 PANEL_LIBRARY_DIR=.copy/lib PANEL_DIST=.copy/dist bun server/index.ts`
 - After changing `web/`, rebuild only the copy's UI: `scripts/copy.sh --build`. **Never run `bun run build` or `bun run start` to test**: they overwrite `dist/`, which the real app serves, so the real app would get new UI against old server code.
 - Reading the real database is fine with `sqlite3 -readonly`. Never write to it.

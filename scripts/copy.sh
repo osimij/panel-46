@@ -11,6 +11,10 @@
 #
 # (In Claude Code: the "panel-copy" server in .claude/launch.json does the same.)
 #
+# The copy holds the database, the saves' pictures and videos, the projects (with their
+# sketches), your own fonts, the projects' brand files and the two search models, so a
+# sketch on the copy has your fonts and logos as on the real Panel.
+#
 # The copy takes almost no disk: on this Mac's disk (APFS) the files are cloned, not
 # duplicated. In it, reading new saves by AI is off and nothing waits to be read or
 # downloaded, so it spends none of your Claude plan by itself.
@@ -52,8 +56,10 @@ rm -rf "$COPY/lib"
 mkdir -p "$COPY/lib"
 # .backup reads the database safely while Panel is using it.
 sqlite3 -readonly "$SRC/library.sqlite" ".backup '$COPY/lib/library.sqlite'"
-# (models: the two small models for search by meaning, so the copy doesn't fetch them again.)
-for d in media projects models; do
+# (models: the two small models for search by meaning, so the copy doesn't fetch them again.
+# fonts: the designer's own fonts, which every sketch loads. brand: each project's logos,
+# pictures and brand books.)
+for d in media projects models fonts brand; do
   [[ -d "$SRC/$d" ]] || continue
   # Cloned where the disk can (no extra space), copied otherwise.
   cp -c -R "$SRC/$d" "$COPY/lib/$d" 2>/dev/null || { rm -rf "$COPY/lib/$d"; cp -R "$SRC/$d" "$COPY/lib/$d"; }

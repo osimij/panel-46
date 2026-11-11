@@ -1030,6 +1030,13 @@ function stepText(p: ChatPart, ctx: Ctx): { doing: React.ReactNode; done: React.
     }
     case "get_sketch":
       return { doing: "Looking at the sketch", done: "Looked at the sketch" };
+    // Panel's ready-made parts: icons found by name, a palette, a loading animation, or the list.
+    case "get_ready_made":
+      if (typeof i.find_icons === "string" && i.find_icons) return { doing: "Finding icons", done: "Found icons" };
+      if (typeof i.palette === "string" && i.palette) return { doing: <>Reading the palette {q(i.palette)}</>, done: <>Read the palette {q(i.palette)}</> };
+      if (typeof i.loading === "string" && i.loading) return { doing: <>Looking at the loading animation {q(i.loading)}</>, done: <>Looked at the loading animation {q(i.loading)}</> };
+      if (Array.isArray(i.icons) && i.icons.length) return { doing: "Getting icons", done: "Got icons" };
+      return { doing: "Looking at the ready-made parts", done: "Looked at the ready-made parts" };
     case "hand_to_builder":
       return { doing: "Writing the plan", done: <>Handed the plan to {typeof i.to === "string" ? i.to : "the builder"}</> };
     default:

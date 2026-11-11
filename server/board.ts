@@ -12,6 +12,7 @@ import { fullUrl, readSketch, renderOf, renderView, sketchPath, statesOf, versio
 import { withVars } from "./pagevars.ts";
 import { withText, type TextEdit } from "./pagetext.ts";
 import { rememberedFrame } from "./figma.ts";
+import { shortParts } from "./parts.ts";
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components", other: "Other" };
 const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 }, sketch: { w: 360, h: 300 }, build: { w: 380, h: 330 } };
@@ -326,7 +327,9 @@ export async function editSketch(o: { project: string; sketch: string; html?: st
   let html: string | undefined;
   if (o.html) html = o.html;
   else if (o.edits?.length) {
-    html = readSketch(b.p.id, node.id, base);
+    // Edits are made on the page as get_sketch shows it: ready-made parts as their short tags.
+    // Saving fills them in again, so the parts an edit doesn't touch come back byte for byte.
+    html = shortParts(readSketch(b.p.id, node.id, base));
     for (const e of o.edits) {
       const n = e.find ? html.split(e.find).length - 1 : 0;
       if (!n) throw new Error(`Couldn't find this in version ${base} of the sketch, so nothing was changed: “${e.find.slice(0, 120)}”. get_sketch shows its page as it is.`);

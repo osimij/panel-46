@@ -3,10 +3,15 @@
 // sketch. No Claude and no internet: everything here is files in this folder.
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { getReadyMade, ICON_WEIGHTS, iconDrawings, iconIndex, loadingParts, palettes } from "../server/ready.ts";
+import { getReadyMade, ICON_WEIGHTS, iconDrawings, iconIndex, iconSvg, loadingParts, OWN_WORDS, palettes } from "../server/ready.ts";
+import { fillParts, filledIcon, shortParts } from "../server/parts.ts";
 import { startPanel, type TestPanel } from "./helpers.ts";
+
+// Sketches are rendered in the Chrome on this Mac, so the tests that make one run only where Chrome is installed.
+const chrome = ["/Applications/Google Chrome.app", "/Applications/Chromium.app", "/Applications/Brave Browser.app", "/Applications/Microsoft Edge.app"].some((x) => existsSync(x));
+const withChrome = chrome ? test : test.skip;
 
 const READY = join(import.meta.dir, "..", "ready");
 
@@ -155,3 +160,122 @@ test("ready/NOTICE.md keeps both MIT notices", () => {
   expect(notice.match(/Permission is hereby granted, free of charge/g)).toHaveLength(2);
   expect(notice).toContain("Paul Faivret");
 });
+
+// ---------- Parts by name in a sketch (server/parts.ts, through make_sketch, edit_sketch, get_sketch) ----------
+
+/** Any of Panel's tools, called the way FRIDAY calls it: the whole answer. */
+async function tool(name: string, args: Record<string, unknown>) {
+  const res = await p.send("POST", "/mcp", { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name, arguments: args } }, { accept: "application/json, text/event-stream" });
+  return ((await res.json()) as { result: { content: { type: string; text?: string }[]; isError?: boolean } }).result;
+}
+const texts = (r: { content: { type: string; text?: string }[] }) => r.content.filter((c) => c.type === "text").map((c) => c.text!);
+
+let project = "";
+async function aProject() {
+  if (!project) project = ((await (await p.send("POST", "/api/projects", { name: "Parts test", brief: "A test." })).json()) as { id: string }).id;
+  return project;
+}
+const sketchFile = (sketch: string, v: number) => join(p.dir, "projects", project, "sketches", sketch, `v${v}.html`);
+const sketchesOn = async () => ((await p.get(`/api/projects/${project}`)) as { nodes: { kind: string }[] }).nodes.filter((n) => n.kind === "sketch").length;
+
+const UPLOAD = `<!doctype html><html><head><meta charset="utf-8"><title>Upload</title><style>:root{--ink:#222}body{font-family:system-ui;color:var(--ink)}</style></head><body>
+<main><h1>Files</h1><ul>
+<li><panel-icon name="file-pdf"></panel-icon> Report.pdf <button aria-label="Remove"><panel-icon name="trash"></panel-icon></button></li>
+<li><panel-icon name="file-image"></panel-icon> Photo.jpg <panel-loading name="ring" style="--ld-size:13px"></panel-loading> Uploading 62%</li>
+<li><panel-icon name="check-circle" weight="fill"/> Notes.txt <panel-loading name="ring"></panel-loading><panel-loading name="ring" class="late"></panel-loading></li>
+</ul></main></body></html>`;
+
+test("find_icons: Panel's own words for everyday icons come first", async () => {
+  const words = Object.keys(OWN_WORDS);
+  expect(words).toEqual(["close", "menu", "settings", "search", "delete", "edit", "add", "back", "more", "home", "user", "download", "upload", "share", "copy", "link", "info", "warning", "success", "error"]);
+  const names = new Set(iconIndex().icons.map((i) => i.name));
+  for (const own of Object.values(OWN_WORDS)) for (const n of own) expect(names.has(n), n).toBe(true);
+  const text = await ask({ find_icons: words.join(", ") });
+  for (const w of words) {
+    const found = text.split("\n").find((l) => l.startsWith(`- ${w}:`))!.slice(w.length + 4).split(", ");
+    expect(found.slice(0, OWN_WORDS[w]!.length), w).toEqual(OWN_WORDS[w]!);
+  }
+});
+
+test("a wrong part's name saves nothing, and the answer says the closest names", async () => {
+  await aProject();
+  const before = await sketchesOn();
+  const r = await tool("make_sketch", { project, title: "Wrong", html: UPLOAD.replace(`name="trash"`, `name="close"`).replace(`name="ring"`, `name="rnig"`) });
+  expect(r.isError).toBe(true);
+  expect(texts(r).join("")).toContain("There is no icon called “close”. Closest: x, x-circle");
+  expect(texts(r).join("")).toContain("There is no loading animation called “rnig”. Closest: ring");
+  expect(await sketchesOn()).toBe(before);
+});
+
+test("the size limit counts the page with its drawings in", async () => {
+  await aProject();
+  const before = await sketchesOn();
+  const tag = `<panel-icon name="house" weight="duotone"></panel-icon>`;
+  const grows = filledIcon("house", "duotone")!.length - tag.length;
+  const n = 1000;
+  const shell = (pad: string) => `<!doctype html><html><body><!--${pad}-->${tag.repeat(n)}</body></html>`;
+  const html = shell("x".repeat(1_500_000 - shell("").length - 10));
+  expect(html.length).toBeLessThan(1_500_000);
+  expect(html.length + n * grows).toBeGreaterThan(1_500_000);
+  const r = await tool("make_sketch", { project, title: "Too big", html });
+  expect(r.isError).toBe(true);
+  expect(texts(r).join("")).toContain("too big");
+  expect(await sketchesOn()).toBe(before);
+});
+
+withChrome("a sketch's parts: the file has the drawings, get_sketch gives the tags, a real build's hand-off the whole page", async () => {
+  await aProject();
+  const made = await tool("make_sketch", { project, title: "Upload", html: UPLOAD });
+  expect(made.isError).toBeFalsy();
+  const sketch = JSON.parse(texts(made)[0]!).sketch as string;
+
+  const file = readFileSync(sketchFile(sketch, 1), "utf8");
+  expect(file).toBe(fillParts(UPLOAD));
+  expect(file).not.toContain("<panel-");
+  expect(file).toContain(iconSvg("trash")!.slice(4));
+  expect(file).toContain(iconDrawings("fill")["check-circle"]);
+  expect(file.split(`<style data-panel-loading="ring">`)).toHaveLength(2);
+  expect(file.split(`<svg data-panel-loading="ring"`)).toHaveLength(4);
+
+  const got = texts(await tool("get_sketch", { project, sketch, pictures: false }));
+  const page = got.at(-1)!;
+  expect(page).toBe(shortParts(file));
+  expect(page).not.toContain("<path");
+  expect(page).toContain(`<panel-icon name="check-circle" weight="fill"></panel-icon>`);
+  expect(page).toContain(`<panel-loading name="ring" style="--ld-size:13px"></panel-loading>`);
+  expect(fillParts(page)).toBe(file);
+
+  const handoff = JSON.parse(texts(await tool("get_handoff", { project, sketch }))[0]!) as { folder: string };
+  expect(readFileSync(join(handoff.folder, "sketch", "index.html"), "utf8")).toBe(file);
+}, 60_000);
+
+withChrome("edit_sketch adds an icon by its tag, and the icons already there stay byte for byte", async () => {
+  await aProject();
+  const made = await tool("make_sketch", { project, title: "Upload to edit", html: UPLOAD });
+  const sketch = JSON.parse(texts(made)[0]!).sketch as string;
+  const v1 = readFileSync(sketchFile(sketch, 1), "utf8");
+  const drawings = (html: string) => [...html.matchAll(/<svg data-panel-[\s\S]*?<\/svg>|<style data-panel-[\s\S]*?<\/style>/g)].map((m) => m[0]);
+
+  const edited = await tool("edit_sketch", {
+    project,
+    sketch,
+    edits: [
+      { find: `<h1>Files</h1>`, replace: `<h1>Files</h1><label><panel-icon name="magnifying-glass" aria-label="Search"></panel-icon><input placeholder="Search files"></label>` },
+      { find: `Photo.jpg`, replace: `Photo-2.jpg` },
+    ],
+  });
+  expect(edited.isError).toBeFalsy();
+  const v2 = readFileSync(sketchFile(sketch, 2), "utf8");
+  for (const d of drawings(v1)) expect(v2).toContain(d);
+  expect(drawings(v2)).toHaveLength(drawings(v1).length + 1);
+  expect(v2).toContain(filledIcon("magnifying-glass", "regular", { "aria-label": "Search" })!);
+  expect(v2).toContain("Photo-2.jpg");
+  // Nothing else moved: the old page with the same two changes.
+  expect(v2).toBe(v1.replace(`<h1>Files</h1>`, `<h1>Files</h1><label>${filledIcon("magnifying-glass", "regular", { "aria-label": "Search" })}<input placeholder="Search files"></label>`).replace("Photo.jpg", "Photo-2.jpg"));
+
+  // An edit with a wrong name saves nothing.
+  const wrong = await tool("edit_sketch", { project, sketch, edits: [{ find: "Notes.txt", replace: `Notes.txt <panel-icon name="trashcan"></panel-icon>` }] });
+  expect(wrong.isError).toBe(true);
+  expect(texts(wrong).join("")).toContain("There is no icon called “trashcan”");
+  expect(existsSync(sketchFile(sketch, 3))).toBe(false);
+}, 90_000);
