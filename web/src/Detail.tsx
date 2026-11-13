@@ -320,12 +320,14 @@ function SkillStage({ r }: { r: Ref }) {
           </button>
         </div>
       </div>
-      {/* The panels and the file scroll together: a read can be longer than the screen. */}
-      <div className="doc-scroll">
+      {/* The panels and the file scroll together: a read can be longer than the screen. The card
+          opens into this scrolling page as a whole (the file itself starts below the panels and
+          can be thousands of pixels long, so the card would fly off the screen to reach it). */}
+      <div className="doc-scroll" style={{ viewTransitionName: "hero" }}>
       <SkillUsePanel id={r.id} text={r.text ?? ""} />
       <SkillReadPanel id={r.id} />
       <SkillOriginPanel id={r.id} shown={other?.path ?? null} onShow={(path, t) => setOther(path && t !== undefined ? { path, text: t } : null)} />
-      <article className="doc" style={{ viewTransitionName: "hero" }}>
+      <article className="doc">
         {fields.length > 0 && (
           <dl className="doc-fields">
             {fields.map(([k, v]) => (

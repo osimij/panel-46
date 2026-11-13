@@ -92,7 +92,7 @@ const looksLikeQuestion = (s: string) => {
  * "close": the item fades away over the grid, and the sidebar, lifted out of the
  * page into a layer of its own, slides back in once instead of fading in twice.
  */
-function transition(update: () => void, kind: "open" | "close" = "open") {
+function transition(update: () => void, kind: "open" | "close" = "open", text = false) {
   const doc = document as Document & { startViewTransition?: (cb: () => void) => ViewTransition };
   if (!doc.startViewTransition || prefersReducedMotion()) {
     update();
@@ -100,8 +100,11 @@ function transition(update: () => void, kind: "open" | "close" = "open") {
   }
   const root = document.documentElement;
   // Set before the old state is captured, so the sidebar has its name in both states.
-  root.classList.remove("vt-open", "vt-close");
+  root.classList.remove("vt-open", "vt-close", "vt-text");
   root.classList.add("vt", `vt-${kind}`);
+  // A card of text (a skill) opening into its page: the text keeps its size and the box grows
+  // around it, rather than the card's picture being stretched over the page (see styles.css).
+  if (text) root.classList.add("vt-text");
   let done = false;
   const run = () => {
     if (done) return;
@@ -112,7 +115,7 @@ function transition(update: () => void, kind: "open" | "close" = "open") {
   t.ready.catch(() => {});
   t.finished.catch(() => {}).finally(() => {
     // A newer transition may have started meanwhile; it set its own classes.
-    if (current === t) root.classList.remove("vt", "vt-open", "vt-close");
+    if (current === t) root.classList.remove("vt", "vt-open", "vt-close", "vt-text");
   });
   current = t;
   // If the page isn't painting (hidden window), don't hold the UI hostage to the animation.
@@ -636,12 +639,13 @@ export function App() {
     const t = transition(() => {
       thumb.style.viewTransitionName = "";
       setOpen(r);
-    });
+    }, "open", r.kind === "skill");
     if (!t) thumb.style.viewTransitionName = "";
   };
 
   const closeDetail = useCallback(() => {
     const id = open?.id;
+    const text = open?.kind === "skill";
     transition(() => {
       setOpen(null);
       const thumb = id && document.querySelector<HTMLElement>(`[data-ref="${id}"] .thumb`);
@@ -650,8 +654,8 @@ export function App() {
         thumb.style.viewTransitionName = "hero";
         lastHero.current = { el: thumb, timer: setTimeout(clearHero, 600) };
       }
-    }, "close");
-  }, [open?.id]);
+    }, "close", text);
+  }, [open?.id, open?.kind]);
 
   // ---- From the assistant ----
 
@@ -962,7 +966,6 @@ export function App() {
           <div className="title-row">
             <h1 key={title}>{title}</h1>
             <span className="subtitle">{subtitle}</span>
-            {scope.kind === "skills" && <SkillsLine count={stats?.skills ?? 0} />}
             {tags.length > 0 ? (
               <>
                 <span className="filters-divider" />
@@ -1006,17 +1009,13 @@ export function App() {
                 refs={refs}
                 onSay={say}
                 onError={sayError}
-                grid={(items, key) => (
-                  <Masonry
-                    key={key}
-                    items={items}
-                    onOpen={openRef}
-                    onFavorite={toggleFavorite}
-                    onHide={toggleHidden}
-                    onDelete={removeOne}
-                    selection={{ active: selecting, ids: picked, toggle: togglePick }}
-                  />
-                )}
+                cards={{
+                  onOpen: openRef,
+                  onFavorite: toggleFavorite,
+                  onHide: toggleHidden,
+                  onDelete: removeOne,
+                  selection: { active: selecting, ids: picked, toggle: togglePick },
+                }}
               />
             ) : (
               <Masonry
@@ -1174,18 +1173,6 @@ export function App() {
       )}
     </div>
   );
-}
-
-/** One quiet line at the top of Skills: how many FRIDAY uses, and what they add to every message. */
-function SkillsLine({ count }: { count: number }) {
-  const page = useSyncExternalStore(skillStore.subscribe, skillStore.get);
-  // Read again when a skill is added or removed.
-  useEffect(() => void skillStore.refresh().catch(() => {}), [count]);
-  if (!page || !page.skills.length) return null;
-  const text = page.on
-    ? `${page.on} used by FRIDAY${page.tokens ? `, adding about ${page.tokens.toLocaleString("en")} tokens to every message` : ""}`
-    : "None used by FRIDAY yet: open one to turn it on";
-  return <span className="subtitle skills-line">{text}</span>;
 }
 
 function headingFor(scope: Scope, collections: Collection[], stats: Stats | null) {

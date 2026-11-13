@@ -1,6 +1,6 @@
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { flushSync } from "react-dom";
-import { displayTitle, formatDuration, personFace, prefersReducedMotion, skillParts, skillStore, STATUS_LABEL, type Ref } from "./api.ts";
+import { displayTitle, formatDuration, personFace, prefersReducedMotion, skillApi, skillParts, skillStore, STATUS_LABEL, type Ref } from "./api.ts";
 import { Icon } from "./Icon.tsx";
 
 /**
@@ -10,7 +10,7 @@ import { Icon } from "./Icon.tsx";
  */
 const IDEAL_COL = 320;
 const MAX_COLS = 4;
-const columnsFor = (width: number) => Math.min(MAX_COLS, Math.max(width < 340 ? 1 : 2, Math.round(width / IDEAL_COL)));
+export const columnsFor = (width: number) => Math.min(MAX_COLS, Math.max(width < 340 ? 1 : 2, Math.round(width / IDEAL_COL)));
 
 /** While selecting, clicking a card picks it instead of opening it. */
 export interface Selection {
@@ -35,7 +35,7 @@ const GLIDE_EASE = "cubic-bezier(0.32, 0.72, 0, 1)";
  * mid-transition; laying out for every in-between width would re-flow the columns
  * several times on the way (2, then 3, then 4). Lay out once, for where it ends up.
  */
-function targetWidth(el: HTMLElement) {
+export function targetWidth(el: HTMLElement) {
   // Fractional, unlike clientWidth, so it lines up exactly with the fractional margin.
   const w = el.getBoundingClientRect().width;
   const main = el.closest<HTMLElement>(".main");
@@ -405,6 +405,245 @@ const Card = memo(function Card({
           </div>
         </div>
         {r.favorite && <span className="fav-mark"><Icon name="heart-fill" size={12} /></span>}
+      </div>
+    </article>
+  );
+});
+
+// ---------- Skills: cards of text in a plain grid ----------
+
+/**
+ * The Skills page's cards. A skill is text, not a picture, so its card grows to what it says
+ * instead of keeping a picture's shape, and the cards sit in a plain grid (rows of equal
+ * height) rather than the masonry. Inside a section of the Skills page the grid is the
+ * section's own (see .skill-section); on its own it lays out by --cols.
+ *
+ * `seen` holds the skills that have played their entrance already: switching between By
+ * subject and By pack moves cards to new sections (new elements), and they glide there
+ * rather than appearing again.
+ */
+export function CardFlow({
+  items,
+  start = 0,
+  seen,
+  omitSubject,
+  onOpen,
+  onFavorite,
+  onHide,
+  onDelete,
+  onError,
+  selection,
+}: {
+  items: Ref[];
+  /** Where these cards come in the page, so the entrance cascades down the whole page. */
+  start?: number;
+  seen: Set<string>;
+  /** The section's own subject, left out of each card's small print (the heading says it). */
+  omitSubject?: string;
+  onOpen: (r: Ref, thumb: HTMLElement) => void;
+  onFavorite: (r: Ref) => void;
+  onHide: (r: Ref) => void;
+  onDelete: (r: Ref) => void;
+  onError: (text: string) => void;
+  selection: Selection;
+}) {
+  // As in the masonry: handlers that never change, calling the latest ones.
+  const latest = useRef({ onOpen, onFavorite, onHide, onDelete, onError, toggle: selection.toggle });
+  latest.current = { onOpen, onFavorite, onHide, onDelete, onError, toggle: selection.toggle };
+  const handlers = useMemo<SkillCardHandlers>(
+    () => ({
+      onOpen: (r, thumb) => latest.current.onOpen(r, thumb),
+      onFavorite: (r) => latest.current.onFavorite(r),
+      onHide: (r) => latest.current.onHide(r),
+      onDelete: (r) => latest.current.onDelete(r),
+      onToggle: (r, range) => latest.current.toggle(r, range),
+      onError: (t) => latest.current.onError(t),
+    }),
+    [],
+  );
+  return (
+    <div className={`card-flow ${selection.active ? "selecting" : ""}`}>
+      {items.map((r, i) => (
+        <SkillCard
+          key={r.id}
+          r={r}
+          index={start + i}
+          seen={seen}
+          omitSubject={omitSubject}
+          selecting={selection.active}
+          picked={selection.ids.has(r.id)}
+          handlers={handlers}
+        />
+      ))}
+    </div>
+  );
+}
+
+interface SkillCardHandlers extends CardHandlers {
+  onError: (text: string) => void;
+}
+
+/**
+ * One skill: its name and FRIDAY's switch on top, what it's for, and in small print its
+ * subjects (or how its read stands). Pick, favorite, hide and delete sit quietly at the
+ * bottom right and show on hover. A skill FRIDAY doesn't use steps back a little.
+ */
+const SkillCard = memo(function SkillCard({
+  r,
+  index,
+  seen,
+  omitSubject,
+  selecting,
+  picked,
+  handlers: { onOpen, onFavorite, onHide, onDelete, onToggle, onError },
+}: {
+  r: Ref;
+  index: number;
+  seen: Set<string>;
+  omitSubject?: string;
+  selecting: boolean;
+  picked: boolean;
+  handlers: SkillCardHandlers;
+}) {
+  // The store keeps the same object until it is read again, so this only changes when the skill does.
+  const use = useSyncExternalStore(skillStore.subscribe, () => skillStore.get()?.skills.find((s) => s.id === r.id) ?? null);
+  // Its entrance plays once, the first time it is on the page (see CardFlow).
+  const [enter] = useState(() => !seen.has(r.id));
+  useEffect(() => void seen.add(r.id), [seen, r.id]);
+  const [stagger] = useState(() => Math.min(index, 16));
+  const thumbRef = useRef<HTMLDivElement>(null);
+  // The switch answers at once; the page's numbers follow when Panel has saved it.
+  const [flip, setFlip] = useState<boolean | null>(null);
+  const on = flip ?? !!use?.on;
+  const [arming, setArming] = useState(false);
+  useEffect(() => {
+    if (!arming) return;
+    const t = setTimeout(() => setArming(false), 2500);
+    return () => clearTimeout(t);
+  }, [arming]);
+
+  const pending = r.status === "pending";
+  const description = use?.read?.one_line ?? skillParts(r.text ?? "").description;
+  const subjects = (use?.subjects.length ? use.subjects : use?.read?.subjects ?? []).filter((x) => x !== omitSubject);
+  const state = use?.read?.state;
+  const small = pending
+    ? "Saving…"
+    : state === "reading"
+      ? "Reading…"
+      : state === "waiting"
+        ? "Waiting to be read"
+        : !use?.read?.for || use.read.older
+          ? state === "failed" ? "Couldn't be read" : "Not read yet"
+          : null;
+
+  const activate = (range: boolean) => (selecting ? onToggle(r, range) : onOpen(r, thumbRef.current!));
+  const stop = (e: React.SyntheticEvent) => e.stopPropagation();
+  const turn = () => {
+    const next = !on;
+    setFlip(next);
+    skillApi.set(r.id, { on: next }).then(
+      () => setFlip(null),
+      (e: Error) => {
+        setFlip(null);
+        onError(e.message);
+      },
+    );
+  };
+
+  return (
+    <article
+      className={`card skill-card ${on ? "on" : "off"} ${picked ? "picked" : ""} ${enter ? "" : "back"} ${r.status}`}
+      data-ref={r.id}
+      style={{ "--i": stagger, "--vt": `skill-${r.id}` } as React.CSSProperties}
+      onClick={(e) => activate(e.shiftKey)}
+      tabIndex={0}
+      // Only the card itself: Enter on one of its buttons is that button's.
+      onKeyDown={(e) => e.target === e.currentTarget && e.key === "Enter" && activate(e.shiftKey)}
+      aria-label={displayTitle(r)}
+      aria-selected={selecting ? picked : undefined}
+    >
+      <div className={`thumb skill-body ${pending ? "shimmer" : ""}`} ref={thumbRef}>
+        <div className="skill-top">
+          <div className="skill-name">{displayTitle(r)}</div>
+          {use && !pending && (
+            <span className="skill-switch" onClick={stop}>
+              <span className="skill-switch-label" aria-hidden>FRIDAY</span>
+              <button
+                role="switch"
+                aria-checked={on}
+                aria-label="Use in FRIDAY"
+                className={`switch small ${on ? "on" : ""}`}
+                title={on ? "FRIDAY uses this skill. Click to stop." : "Let FRIDAY use this skill"}
+                tabIndex={selecting ? -1 : 0}
+                onClick={turn}
+              >
+                <span />
+              </button>
+            </span>
+          )}
+          {/* While picking: a tick where the switch was. */}
+          <button
+            className={`skill-pick ${picked ? "on" : ""}`}
+            aria-label={picked ? "Deselect" : "Select"}
+            tabIndex={selecting ? 0 : -1}
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle(r, e.shiftKey);
+            }}
+          >
+            <Icon name="check" size={13} />
+          </button>
+        </div>
+        {description && <p className={`skill-desc ${use?.read?.one_line ? "" : "unread"}`}>{description}</p>}
+        <div className="skill-foot">
+          <span className={`skill-small ${state === "reading" || state === "waiting" ? "busy" : ""}`}>
+            {small ?? (
+              <>
+                {r.favorite && <span className="skill-fav"><Icon name="heart-fill" size={11} /></span>}
+                {subjects.slice(0, 4).join(" · ")}
+              </>
+            )}
+          </span>
+          {!pending && (
+            <span className="skill-acts" onClick={stop}>
+              <button
+                className="skill-act"
+                aria-label="Select"
+                title="Select"
+                onClick={(e) => onToggle(r, e.shiftKey)}
+              >
+                <Icon name="check" size={14} />
+              </button>
+              <button
+                className={`skill-act ${r.favorite ? "fav" : ""}`}
+                aria-label={r.favorite ? "Remove from favorites" : "Add to favorites"}
+                title={r.favorite ? "Remove from favorites" : "Add to favorites"}
+                onClick={() => onFavorite(r)}
+              >
+                <span key={String(r.favorite)} className={r.favorite ? "pop" : ""}>
+                  <Icon name={r.favorite ? "heart-fill" : "heart"} size={14} />
+                </span>
+              </button>
+              <button
+                className="skill-act"
+                aria-label={r.hidden ? "Show in library" : "Hide"}
+                title={r.hidden ? "Show in library" : "Hide: keep it, but out of sight"}
+                onClick={() => onHide(r)}
+              >
+                <Icon name={r.hidden ? "eye" : "eye-off"} size={14} />
+              </button>
+              <button
+                className={`skill-act delete ${arming ? "armed" : ""}`}
+                aria-label={arming ? "Click again to move to Trash" : "Delete"}
+                title={arming ? "Click again to move to Trash" : "Delete"}
+                onClick={() => (arming ? onDelete(r) : setArming(true))}
+                onMouseLeave={() => setArming(false)}
+              >
+                <Icon name="trash" size={14} />
+              </button>
+            </span>
+          )}
+        </div>
       </div>
     </article>
   );

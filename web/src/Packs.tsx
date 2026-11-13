@@ -9,18 +9,22 @@
 // - The Skills page, by subject (the default once something is read): a section per subject,
 //   each skill under its main one, the heading naming the skill that leads it when two or more
 //   that are on speak to it, which the designer can change. Or by pack: a pack's skills together
-//   under a quiet heading, with its version and "Check for a newer version".
+//   under a quiet heading, with its version and "Check for a newer version". Small sections sit
+//   side by side as tiles; each card has FRIDAY's switch, so a skill is turned on without
+//   opening it. Switching between the two, the cards glide to their new places.
 // - A skill's detail view says where it came from and lists its other files.
 //
 // A skill is text: the browser reads only a folder's text files (Markdown and plain text),
 // and sends the rest by name and size, so Panel can say what it left out. Everything arrives
 // off; nothing reaches FRIDAY until the designer turns a skill on.
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { flushSync } from "react-dom";
 import {
-  packApi, packStore, skillApi, skillReadApi, skillStore, type DroppedFolder, type FoundSkill, type PackLook, type Ref, type SkillLead,
+  packApi, packStore, prefersReducedMotion, skillApi, skillReadApi, skillStore, type DroppedFolder, type FoundSkill, type PackLook, type Ref, type SkillLead,
   type SkillOrigin, type SkillPack, type SkillsPage, type SkillUse,
 } from "./api.ts";
+import { CardFlow, columnsFor, targetWidth, type Selection } from "./Grid.tsx";
 import { Icon } from "./Icon.tsx";
 import { Popover } from "./TagRow.tsx";
 
@@ -331,18 +335,99 @@ export function orderSkills(refs: Ref[], packs: SkillPack[] | null, view: SkillV
   return orderByPack(refs, packs);
 }
 
+/** What the Skills page's cards need from the app: opening, the card buttons and picking. */
+export interface SkillCards {
+  onOpen: (r: Ref, thumb: HTMLElement) => void;
+  onFavorite: (r: Ref) => void;
+  onHide: (r: Ref) => void;
+  onDelete: (r: Ref) => void;
+  selection: Selection;
+}
+
+/** The same curve the cards glide on everywhere in Panel. */
+const GLIDE = "cubic-bezier(0.32, 0.72, 0, 1)";
+
 /**
- * The Skills page's list: a quiet switch (By subject, By pack) with the reading line, then the
- * sections. `grid` draws one group's cards (the masonry).
+ * Switch between By subject and By pack: each card glides from its place in one to its place in
+ * the other (a view transition, with each card its own layer for the moment), and the headings
+ * cross-fade. Without view transitions, or with reduced motion, it simply changes.
  */
-export function SkillGroups({ refs, grid, onSay, onError }: {
+function switchView(v: SkillView) {
+  if (v === viewOf(skillStore.get())) return;
+  const doc = document as Document & { startViewTransition?: (cb: () => void) => ViewTransition };
+  if (!doc.startViewTransition || prefersReducedMotion()) return viewStore.set(v);
+  const root = document.documentElement;
+  root.classList.add("vt-skills");
+  const t = doc.startViewTransition(() => flushSync(() => viewStore.set(v)));
+  t.ready.catch(() => {});
+  t.finished.catch(() => {}).finally(() => root.classList.remove("vt-skills"));
+}
+
+/**
+ * When the columns change (the window, or Ask opening beside the page) or a search narrows the
+ * skills, each card glides from where it was to where it goes, as cards do in the library's
+ * grid. `signature` names the layout; the glide only plays when it changes.
+ */
+function useGlide(board: React.RefObject<HTMLDivElement | null>, signature: string) {
+  const last = useRef(new Map<string, { x: number; y: number; w: number }>());
+  const running = useRef(new Map<string, Animation>());
+  useLayoutEffect(() => {
+    const el = board.current;
+    if (!el) return;
+    const cards = [...el.querySelectorAll<HTMLElement>(".skill-card")];
+    const b = el.getBoundingClientRect();
+    const spot = (c: HTMLElement) => {
+      const r = c.getBoundingClientRect();
+      return { x: r.left - b.left, y: r.top - b.top, w: r.width };
+    };
+    // A card still gliding starts again from where it is on screen right now.
+    const midway = new Map<string, { x: number; y: number; w: number }>();
+    for (const c of cards) {
+      const a = running.current.get(c.dataset.ref!);
+      if (a?.playState === "running") {
+        midway.set(c.dataset.ref!, spot(c));
+        a.cancel();
+      }
+    }
+    running.current.clear();
+    const now = new Map(cards.map((c) => [c.dataset.ref!, spot(c)]));
+    const prev = last.current;
+    last.current = now;
+    if (!prev.size || prefersReducedMotion() || document.documentElement.classList.contains("vt-skills")) return;
+    const near = (y: number) => b.top + y > -300 && b.top + y < innerHeight + 300;
+    for (const c of cards) {
+      const id = c.dataset.ref!;
+      const from = midway.get(id) ?? prev.get(id);
+      const to = now.get(id)!;
+      if (!from || !to.w || (Math.abs(from.x - to.x) < 0.5 && Math.abs(from.y - to.y) < 0.5 && Math.abs(from.w - to.w) < 0.5)) continue;
+      if (!near(from.y) && !near(to.y)) continue;
+      const anim = c.animate(
+        [
+          { transformOrigin: "0 0", transform: `translate(${from.x - to.x}px, ${from.y - to.y}px) scale(${from.w / to.w})` },
+          { transformOrigin: "0 0", transform: "none" },
+        ],
+        { duration: 460, easing: GLIDE },
+      );
+      running.current.set(id, anim);
+    }
+  }, [signature]);
+}
+
+/**
+ * The Skills page's list: a bar with the switch (By subject, By pack), how far the reads are,
+ * and what FRIDAY carries; then the sections. Small sections sit side by side as tiles, so a
+ * subject with one skill doesn't take a whole row; big ones take the full width.
+ */
+export function SkillGroups({ refs, cards, onSay, onError }: {
   refs: Ref[];
-  grid: (items: Ref[], key: string) => React.ReactNode;
+  cards: SkillCards;
   onSay: (text: string) => void;
   onError: (text: string) => void;
 }) {
   const page = useSyncExternalStore(skillStore.subscribe, skillStore.get);
   const view = useSkillView();
+  // Cards that have played their entrance on this visit of the page.
+  const seen = useRef(new Set<string>()).current;
   // While skills are read, look again every few seconds.
   const busy = (page?.skills ?? []).filter(isBusy).length;
   useEffect(() => {
@@ -350,29 +435,69 @@ export function SkillGroups({ refs, grid, onSay, onError }: {
     const t = setInterval(() => void skillStore.refresh().catch(() => {}), 3000);
     return () => clearInterval(t);
   }, [busy]);
-  useEffect(() => void (page || skillStore.refresh().catch(() => {})), [page]);
+  // Read again when a skill is added or removed.
+  useEffect(() => void skillStore.refresh().catch(() => {}), [refs.length]);
+
+  // Columns as the library's grid has them, for where the page is headed (Ask may be sliding).
+  const board = useRef<HTMLDivElement>(null);
+  // Cards of text need more room than pictures: on a phone, one column.
+  const colsFor = (w: number) => (w < 560 ? 1 : columnsFor(w));
+  const [cols, setCols] = useState(() => colsFor(innerWidth - (innerWidth > 820 ? 276 : 24)));
+  const ready = !!page;
+  useLayoutEffect(() => {
+    const el = board.current;
+    if (!el) return;
+    const measure = () => setCols(colsFor(targetWidth(el).target));
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ready]);
+  useGlide(board, `${cols}|${view}|${refs.map((r) => r.id).join()}`);
+
   // Until the skills are known, which way to show them isn't either.
   if (!page) return null;
+  const props = { refs, page, cols, seen, cards, onError };
   return (
     <>
-      <div className="skill-view-row">
-        <div className="seg" role="radiogroup" aria-label="Show skills">
+      <div className="skill-bar">
+        <div className="seg skill-seg" role="radiogroup" aria-label="Show skills">
           {(["subject", "pack"] as const).map((v) => (
-            <button key={v} role="radio" aria-checked={view === v} className={view === v ? "on" : ""} onClick={() => viewStore.set(v)}>
+            <button key={v} role="radio" aria-checked={view === v} className={view === v ? "on" : ""} onClick={() => switchView(v)}>
               {v === "subject" ? "By subject" : "By pack"}
             </button>
           ))}
         </div>
         <ReadingLine page={page} onError={onError} />
+        <FridayLine page={page} />
       </div>
-      {view === "subject" ? <SubjectGroups refs={refs} page={page} grid={grid} onError={onError} /> : <PackGroups refs={refs} grid={grid} onSay={onSay} onError={onError} />}
+      <div className="skill-board" ref={board} style={{ "--cols": cols } as React.CSSProperties}>
+        {view === "subject" ? <SubjectGroups {...props} /> : <PackGroups {...props} onSay={onSay} />}
+      </div>
     </>
   );
 }
 
+/** What FRIDAY carries from the skills: how many are on, and what they add to every message. */
+function FridayLine({ page }: { page: SkillsPage }) {
+  if (!page.skills.length) return null;
+  return (
+    <span className="skill-bar-sum">
+      {page.on ? (
+        <>
+          <b>{page.on}</b> of {page.skills.length} in FRIDAY
+          {page.tokens ? <> · about {page.tokens.toLocaleString("en")} tokens on every message</> : null}
+        </>
+      ) : (
+        "None in FRIDAY yet: turn one on with its switch"
+      )}
+    </span>
+  );
+}
+
 /**
- * One quiet line beside the switch: how far along the reads are (with Stop reading), or, with
- * "read automatically" off, how many skills aren't read yet, with "Read them".
+ * One line in the bar: how far along the reads are (with Stop reading), or, with "read
+ * automatically" off, how many skills aren't read yet, with "Read them".
  */
 function ReadingLine({ page, onError }: { page: SkillsPage | null; onError: (t: string) => void }) {
   if (!page) return null;
@@ -381,7 +506,7 @@ function ReadingLine({ page, onError }: { page: SkillsPage | null; onError: (t: 
     const reading = busy.filter((s) => s.read?.state === "reading").map((s) => s.name);
     const waiting = busy.length - reading.length;
     return (
-      <span className="pack-head-facts">
+      <span className="skill-bar-note busy">
         {reading.length ? `Reading ${andList(reading)}` : "Waiting to read"}{waiting ? `, ${waiting} more in line` : ""} ·{" "}
         <button className="text-btn inline pack-check" onClick={() => skillReadApi.stop().catch((e: Error) => onError(e.message))} title="Stops every read in line">Stop reading</button>
       </span>
@@ -389,27 +514,53 @@ function ReadingLine({ page, onError }: { page: SkillsPage | null; onError: (t: 
   }
   if (page.auto || !page.not_read) return null;
   return (
-    <span className="pack-head-facts">
+    <span className="skill-bar-note">
       {plural(page.not_read, "skill")} not read yet ·{" "}
       <button className="text-btn inline pack-check" onClick={() => skillReadApi.readUnread().catch((e: Error) => onError(e.message))}>Read them</button>
     </span>
   );
 }
 
-function SubjectGroups({ refs, page, grid, onError }: { refs: Ref[]; page: SkillsPage | null; grid: (items: Ref[], key: string) => React.ReactNode; onError: (t: string) => void }) {
+interface GroupProps {
+  refs: Ref[];
+  page: SkillsPage;
+  cols: number;
+  seen: Set<string>;
+  cards: SkillCards;
+  onError: (t: string) => void;
+}
+
+/** Where a section sits on the board: as many columns as it has cards (the full width at most), and its rows. */
+const spanOf = (n: number, cols: number, full = false) => {
+  const k = full ? cols : Math.max(1, Math.min(n, cols));
+  return { gridColumn: `span ${k}`, gridRow: `span ${1 + Math.max(1, Math.ceil(n / k))}` };
+};
+
+function SubjectGroups({ refs, page, cols, seen, cards, onError }: GroupProps) {
   const groups = bySubject(refs, page);
+  let start = 0;
   return (
     <>
-      {groups.map((g, i) => (
-        <section key={g.key} className={`pack-group ${i === 0 ? "first" : ""}`} aria-label={g.title}>
-          <div className="pack-head">
-            <span className="pack-name">{g.title}</span>
-            {g.lead && <LeadPicker lead={g.lead} onError={onError} />}
-            {!g.items.length && g.lead && <span className="pack-head-facts">No skill is mainly about {g.key}</span>}
-          </div>
-          {g.items.length > 0 && grid(g.items, `subject-${g.key}`)}
-        </section>
-      ))}
+      {groups.map((g) => {
+        const at = start;
+        start += g.items.length;
+        return (
+          <section key={g.key} className="skill-section" style={spanOf(g.items.length, cols)} aria-label={g.title}>
+            <div className="skill-section-head">
+              <span className="skill-section-title">
+                {g.title}
+                {g.items.length > 1 && <span className="skill-section-count">{g.items.length}</span>}
+              </span>
+              {g.lead && <LeadPicker lead={g.lead} onError={onError} />}
+            </div>
+            {g.items.length > 0 ? (
+              <CardFlow items={g.items} start={at} seen={seen} omitSubject={g.key} onError={onError} {...cards} />
+            ) : (
+              <div className="skill-ghost">No skill is mainly about {g.key}</div>
+            )}
+          </section>
+        );
+      })}
     </>
   );
 }
@@ -424,7 +575,7 @@ function LeadPicker({ lead, onError }: { lead: SkillLead; onError: (t: string) =
   const panelName = lead.speakers.find((x) => x.id === lead.panel)?.name ?? "";
   return (
     <span className="skill-lead">
-      led by{" "}
+      Led by{" "}
       <button
         className="text-btn inline skill-lead-btn"
         aria-haspopup="menu"
@@ -432,12 +583,12 @@ function LeadPicker({ lead, onError }: { lead: SkillLead; onError: (t: string) =
           const r = e.currentTarget.getBoundingClientRect();
           setAt({ x: r.left, y: r.bottom + 6 });
         }}
-        title={`Pick which skill FRIDAY follows on ${lead.subject}`}
+        title={`${lead.by === "panel" ? "Panel's pick. " : "Your pick. "}Click to choose which skill FRIDAY follows on ${lead.subject}.`}
       >
         {lead.name}
       </button>
-      {/* A tie: Panel's pick was level with another skill on main subject and lines. */}
-      {lead.by === "panel" && <span className="skill-lead-by"> · Panel's pick{lead.tie ? `, level with ${lead.tie}` : ""}</span>}
+      {/* Panel's pick (said in the button's tooltip). A tie is worth seeing: Panel's pick was level with another skill on main subject and lines. */}
+      {lead.by === "panel" && lead.tie && <span className="skill-lead-by"> · level with {lead.tie}</span>}
       {at && (
         <Popover x={at.x} y={at.y} onClose={() => setAt(null)}>
           <div className="menu-label">FRIDAY follows on {lead.subject}</div>
@@ -463,28 +614,39 @@ function LeadPicker({ lead, onError }: { lead: SkillLead; onError: (t: string) =
   );
 }
 
-/** By pack: single skill files at the top without a heading, then each pack under a quiet heading. */
-function PackGroups({ refs, grid, onSay, onError }: {
-  refs: Ref[];
-  grid: (items: Ref[], key: string) => React.ReactNode;
-  onSay: (text: string) => void;
-  onError: (text: string) => void;
-}) {
+/** By pack: skills added one by one first, then each pack, each the full width under its heading. */
+function PackGroups({ refs, cols, seen, cards, onSay, onError }: GroupProps & { onSay: (text: string) => void }) {
   const packs = useSyncExternalStore(packStore.subscribe, packStore.get);
   useEffect(() => void packStore.refresh().catch(() => {}), [refs.length]);
   const inPack = new Set(packs?.flatMap((p) => p.skills) ?? []);
   const single = refs.filter((r) => !inPack.has(r.id));
   const byId = new Map(refs.map((r) => [r.id, r]));
   const groups = (packs ?? []).map((p) => ({ p, items: p.skills.flatMap((id) => byId.get(id) ?? []) })).filter((g) => g.items.length);
+  let start = single.length;
   return (
     <>
-      {single.length > 0 && grid(single, "single")}
-      {groups.map(({ p, items }, i) => (
-        <section key={p.id} className={`pack-group ${i === 0 && !single.length ? "first" : ""}`} aria-label={p.name}>
-          <PackHeading pack={p} shown={items.length} onSay={onSay} onError={onError} />
-          {grid(items, p.id)}
+      {single.length > 0 && (
+        <section className="skill-section" style={spanOf(single.length, cols, true)} aria-label="Added one by one">
+          <div className="skill-section-head">
+            <span className="skill-section-title">
+              Added one by one
+              {single.length > 1 && <span className="skill-section-count">{single.length}</span>}
+            </span>
+            <span className="pack-head-facts">Single SKILL.md files, not from a pack</span>
+          </div>
+          <CardFlow items={single} start={0} seen={seen} onError={onError} {...cards} />
         </section>
-      ))}
+      )}
+      {groups.map(({ p, items }) => {
+        const at = start;
+        start += items.length;
+        return (
+          <section key={p.id} className="skill-section" style={spanOf(items.length, cols, true)} aria-label={p.name}>
+            <PackHeading pack={p} shown={items.length} onSay={onSay} onError={onError} />
+            <CardFlow items={items} start={at} seen={seen} onError={onError} {...cards} />
+          </section>
+        );
+      })}
     </>
   );
 }
@@ -512,13 +674,14 @@ function PackHeading({ pack, shown, onSay, onError }: { pack: SkillPack; shown: 
     pack.source === "folder" ? "from a folder" : pack.author && pack.author !== pack.name.split("/")[0] ? pack.author : null,
     pack.license,
     pack.version.date && day(pack.version.date),
-    shown < n ? `${shown} of ${n} skills` : plural(n, "skill"),
+    shown < n ? `${shown} of ${n} skills shown` : null,
     pack.gone.length ? `${pack.gone.length} no longer in the project` : null,
   ].filter(Boolean);
   return (
-    <div className="pack-head">
-      <span className="pack-name">
+    <div className="skill-section-head">
+      <span className="skill-section-title pack-name">
         {pack.url ? <a href={pack.url} target="_blank" rel="noreferrer">{pack.name}</a> : pack.name}
+        <span className="skill-section-count">{shown}</span>
       </span>
       <span className="pack-head-facts">{facts.join(" · ")}</span>
       <ReadThese pack={pack} onError={onError} />

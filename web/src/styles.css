@@ -71,6 +71,11 @@
    things that actually scroll: on a clipped card it would swallow the wheel
    instead of passing it on to the page. */
 html, body, .sidebar, .detail-scroll, .detail { overscroll-behavior: none; }
+/* While a save is open, the page behind it holds still. The open save is a layer over the page,
+   and the page is what scrolls: a wheel over a part of the layer that doesn't scroll by itself
+   (the empty stage around a picture) would otherwise move the grid underneath. The page keeps
+   its place and is where it was on closing. */
+html:has(.app.detail-open) { overflow: hidden; }
 *::-webkit-scrollbar { display: none; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body {
@@ -916,9 +921,7 @@ a.cover-btn { text-decoration: none; }
 .skill-checks ul { margin: 0; padding-left: 1.2em; display: grid; gap: 3px; line-height: 1.5; }
 .skill-must { color: var(--muted); }
 .skill-cant { color: var(--faint); }
-.skills-line { color: var(--faint); }
 /* The quieter of the two lines gives way first on a narrow window, so the header never runs past the edge. */
-.title-row .skills-line { flex-shrink: 1; }
 
 /* Skills from a pack (Packs.tsx): the chooser, the headings on the Skills page, and where a
    skill came from in its detail view. Quiet: the existing sheet, tick rows and pills. */
@@ -945,9 +948,6 @@ a.cover-btn { text-decoration: none; }
 .btn-wide.strong:hover { background: color-mix(in oklch, var(--text) 86%, var(--bg)); }
 .btn-wide.strong:disabled:hover { background: var(--text); }
 .btn-wide .spinner { border-color: color-mix(in oklch, var(--bg) 30%, transparent); border-top-color: var(--bg); }
-.pack-group { margin-top: 40px; }
-.pack-group.first { margin-top: 4px; }
-.pack-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 12px; margin: 0 0 14px; font-size: 13px; animation: title-in var(--slow) var(--ease); }
 .pack-name { font-weight: 500; }
 .pack-name a { color: inherit; text-decoration: none; }
 .pack-name a:hover { text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; }
@@ -959,7 +959,6 @@ a.cover-btn { text-decoration: none; }
 .skill-origin a:hover { text-decoration-color: currentColor; }
 .skill-files { display: flex; flex-wrap: wrap; gap: 6px; }
 .skill-files .pill { height: 26px; padding: 0 10px; font-size: 12px; }
-@media (prefers-reduced-motion: reduce) { .pack-head { animation: none; } }
 /* A skill's detail: its panels and its file scroll together under the file's name, so a long
    read never pushes the file out of reach. The panels keep their size; the file runs on below. */
 .doc-scroll { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; margin: 0 -14px; padding: 2px 14px 24px; }
@@ -980,14 +979,132 @@ a.cover-btn { text-decoration: none; }
 /* "· emil-design-eng leads motion": in the same quiet type as the subject; the line itself isn't muted. */
 .skill-line-why { color: var(--faint); font-size: 11.5px; }
 /* The Skills page by subject (Packs.tsx): a quiet switch, then a section per subject with its lead. */
-.skill-view-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 14px; margin: 0 0 18px; font-size: 13px; }
-.skill-view-row .seg button { height: 24px; padding: 0 10px; }
-.skill-lead { color: var(--muted); }
+.skill-lead { color: var(--muted); flex-basis: 100%; font-size: 12.5px; }
 .skill-lead-btn { color: var(--muted); text-decoration: underline; text-decoration-color: var(--faint); text-underline-offset: 2px; }
 .skill-lead-btn:hover { color: var(--text); }
 .skill-lead-by { color: var(--faint); }
 .skill-subjects { font-size: 11.5px; color: var(--faint); }
 .skill-subject-main { color: var(--muted); }
+/* ---- The Skills page (Packs.tsx SkillGroups, Grid.tsx CardFlow) ----
+   A bar, then a board of sections. The board has the library's columns; a small section spans
+   as many columns as it has cards, so subjects with one or two skills sit side by side as
+   tiles, and a big one takes the full width. Each section is a subgrid of the board, so cards
+   line up across sections and the headings of tiles side by side share one row. */
+.skill-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin: 2px 0 0; font-size: 13px; animation: title-in var(--slow) var(--ease); }
+.skill-bar .seg button { height: 26px; padding: 0 12px; transition: background-color var(--med) var(--ease), color var(--med) var(--ease), box-shadow var(--med) var(--ease); }
+.skill-bar-note { color: var(--muted); }
+.skill-bar-note.busy::before {
+  content: ""; display: inline-block; width: 6px; height: 6px; margin: 0 7px 1px 0; border-radius: 50%; background: var(--wait);
+  animation: pulse 1.6s var(--ease) infinite;
+}
+.skill-bar-sum { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.skill-bar-sum b { font-weight: 500; color: var(--text); }
+
+.skill-board {
+  display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 12px;
+  grid-auto-flow: row dense; margin-top: 2px;
+}
+.skill-section { display: grid; grid-template-columns: subgrid; grid-template-rows: subgrid; min-width: 0; }
+.skill-section-head {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0;
+  padding: 26px 2px 0; font-size: 13px; animation: title-in var(--slow) var(--ease);
+}
+.skill-section-title { display: inline-flex; align-items: baseline; gap: 7px; font-weight: 500; }
+.skill-section-count { color: var(--faint); font-weight: 400; font-variant-numeric: tabular-nums; }
+.skill-section-head .pack-head-facts { min-width: 0; }
+/* A subject no skill is mainly about, which still has a lead: an empty tile that says so. */
+.skill-ghost {
+  grid-column: 1 / -1; display: grid; place-items: center; min-height: 128px; padding: 16px; text-align: center;
+  color: var(--faint); font-size: 12.5px; border: 1px dashed var(--fill-hover);
+  border-radius: calc(var(--radius) * var(--smooth)); corner-shape: var(--corner);
+  animation: card-in 0.55s var(--ease) both;
+}
+
+/* The cards: a grid of their own, or the section's (display: contents hands them to it). */
+.card-flow { display: grid; grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr)); gap: 12px; }
+.skill-section > .card-flow { display: contents; }
+.skill-card { position: relative; display: flex; min-width: 0; }
+.skill-card .thumb.skill-body {
+  container-type: normal; flex: 1; min-width: 0; min-height: 128px; display: flex; flex-direction: column; gap: 6px;
+  padding: 14px 14px 10px 16px; background: var(--card);
+  transition: transform var(--med) var(--spring), background-color var(--med) var(--ease), box-shadow var(--med) var(--ease);
+}
+.skill-card:hover .skill-body { background: var(--raised); box-shadow: inset 0 0 0 1px var(--line); }
+/* Pressing one of its buttons isn't pressing the card. */
+.skill-card:has(button:active) .thumb { transform: none; }
+.skill-card.picked .thumb, .skill-card.picked:hover .thumb { transform: scale(0.965); box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+.skill-top { position: relative; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.skill-card .skill-name { margin: 0; flex: 1; min-width: 0; font-size: 15px; word-break: normal; overflow-wrap: anywhere; transition: color var(--med) var(--ease); }
+.skill-card .skill-desc { -webkit-line-clamp: 4; transition: color var(--med) var(--ease); }
+.skill-card .skill-desc.unread { -webkit-line-clamp: 3; }
+/* Off: FRIDAY doesn't use it, so it steps back a little. */
+.skill-card.off .skill-name { color: var(--muted); }
+.skill-card.off .skill-desc { color: var(--faint); }
+.skill-card.off:hover .skill-name { color: var(--text); }
+.skill-card.off:hover .skill-desc { color: var(--muted); }
+
+/* FRIDAY's switch, top right; its name shows beside it on hover. */
+.skill-switch { display: inline-flex; align-items: center; gap: 7px; flex: none; margin: 1px -2px 0 0; padding: 2px; cursor: default; transition: opacity var(--med) var(--ease), transform var(--med) var(--ease); }
+.skill-switch-label { font-size: 11.5px; color: var(--muted); opacity: 0; transform: translateX(4px); transition: opacity var(--med) var(--ease), transform var(--med) var(--ease); }
+.skill-card:hover .skill-switch-label, .skill-switch:focus-within .skill-switch-label { opacity: 1; transform: none; }
+.switch.small { width: 28px; height: 16px; }
+/* Most skills are on: at rest their switches stay grey, and darken when the card is hovered. */
+.skill-switch .switch.on { background: var(--muted); transition: background-color var(--med) var(--ease); }
+.skill-card:hover .skill-switch .switch.on, .skill-switch .switch.on:focus-visible { background: var(--text); }
+.switch.small span { width: 12px; height: 12px; }
+.switch.small.on span { transform: translateX(12px); }
+.switch:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--text); }
+
+/* Picking several: a tick takes the switch's place. */
+.skill-pick {
+  position: absolute; top: -1px; right: -1px; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center;
+  color: transparent; box-shadow: inset 0 0 0 1.5px var(--faint); opacity: 0; transform: scale(0.6); pointer-events: none;
+  transition: opacity var(--med) var(--ease), transform var(--med) var(--spring), background-color var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.selecting .skill-pick { opacity: 1; transform: none; pointer-events: auto; }
+.selecting .skill-pick:hover { color: var(--muted); box-shadow: inset 0 0 0 1.5px var(--muted); }
+.skill-pick.on, .selecting .skill-pick.on:hover { background: var(--text); color: var(--bg); box-shadow: none; }
+.selecting .skill-switch { opacity: 0; transform: scale(0.8); pointer-events: none; }
+
+/* Small print at the bottom: its subjects or how its read stands; its buttons on hover. */
+.skill-foot { position: relative; margin-top: auto; display: flex; align-items: center; min-height: 26px; padding-top: 4px; }
+.skill-small { min-width: 0; font-size: 11.5px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.skill-small.busy { color: var(--muted); animation: pulse 1.6s var(--ease) infinite; }
+.skill-fav { display: inline-grid; vertical-align: -1px; margin-right: 5px; color: var(--heart); }
+/* The buttons float over the end of the small print (which keeps the whole width at rest),
+   on the card's own colour with a soft edge so the words fade under them. */
+.skill-acts {
+  position: absolute; right: -4px; bottom: 0; display: flex; gap: 2px; padding-left: 24px; opacity: 0; transform: translateY(3px);
+  background: linear-gradient(to right, transparent, var(--raised) 24px);
+  transition: opacity var(--med) var(--ease), transform var(--med) var(--ease);
+}
+.skill-card:hover .skill-acts, .skill-card:focus-within .skill-acts { opacity: 1; transform: none; }
+.selecting .skill-acts { visibility: hidden; }
+.skill-act {
+  width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; color: var(--muted);
+  transition: background-color var(--fast) var(--ease), color var(--fast) var(--ease), transform var(--med) var(--spring);
+}
+.skill-act:hover { background: var(--fill); color: var(--text); }
+.skill-act:active { transform: scale(0.88); }
+.skill-act.fav { color: var(--heart); }
+.skill-act.delete.armed, .skill-act.delete.armed:hover { background: var(--bad); color: #fff; }
+@media (prefers-reduced-motion: reduce) {
+  .skill-bar, .skill-section-head, .skill-ghost { animation: none; }
+  .skill-small.busy, .skill-bar-note.busy::before { animation: none; }
+}
+
+/* Switching By subject and By pack (switchView in Packs.tsx): each card is its own layer for
+   the moment and glides to its new place, its text kept at its size; the header and the dock
+   stay on top of the moving cards. */
+:root.vt-skills .skill-card { view-transition-name: var(--vt); view-transition-class: skill-card; }
+:root.vt-skills .header { view-transition-name: page-head; }
+:root.vt-skills .dock { view-transition-name: page-dock; }
+::view-transition-group(.skill-card) { animation-duration: 0.5s; animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1); }
+::view-transition-old(.skill-card), ::view-transition-new(.skill-card) { height: 100%; object-fit: none; object-position: 0 0; }
+::view-transition-old(page-head), ::view-transition-old(page-dock) { display: none; }
+::view-transition-new(page-head), ::view-transition-new(page-dock) { animation: none; }
+::view-transition-group(page-head), ::view-transition-group(page-dock) { animation: none; }
+
 /* An on/off switch: a capsule with a knob that slides. */
 .switch {
   position: relative; flex: none; width: 34px; height: 20px; padding: 0; border-radius: 999px; background: var(--fill-hover);
@@ -1088,6 +1205,12 @@ a.cover-btn { text-decoration: none; }
 ::view-transition-old(hero), ::view-transition-new(hero) { animation-duration: 0.3s; height: 100%; object-fit: cover; overflow: hidden; }
 ::view-transition-image-pair(hero) { border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner); overflow: hidden; }
 ::view-transition-old(root), ::view-transition-new(root) { animation-duration: 0.28s; animation-timing-function: var(--ease); }
+/* A skill opening into its page (App.tsx transition, "vt-text"): its text is never stretched.
+   Both pictures keep their own size, pinned to the top left, while the box grows or shrinks
+   around them; the card's picture fades quickly so the two texts never sit on each other. */
+:root.vt-text::view-transition-old(hero), :root.vt-text::view-transition-new(hero) { object-fit: none; object-position: 0 0; }
+:root.vt-text::view-transition-old(hero) { animation-duration: 0.14s; }
+:root.vt-text::view-transition-new(hero) { animation-duration: 0.26s; animation-delay: 0.06s; animation-fill-mode: both; }
 /* Opening: no page cross-fade (see transition() in App.tsx); the new page shows at once and plays its own entrances. */
 :root.vt-open::view-transition-old(root) { display: none; }
 :root.vt-open::view-transition-new(root) { animation: none; }
