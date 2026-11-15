@@ -7,7 +7,8 @@
 // file already opens a library through db.ts. The checks need Chrome, as the sketch tests do.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fitBudget, parseSkill, skillsBlock, SKILL_BUDGET, type Skill } from "../server/skills.ts";
 import { startPanel, type TestPanel } from "./helpers.ts";
@@ -141,9 +142,9 @@ const call = async (name: string, args: unknown) => {
 const set = async (id: string, patch: unknown) => (await p.send("PATCH", `/api/skills/${id}`, patch)).json() as Promise<any>;
 
 /** FRIDAY's instructions for each reader, as chat.ts writes them on this companion's library. */
-async function prompts(): Promise<Record<"solo" | "planner" | "builder", string>> {
+async function prompts(env: Record<string, string> = {}): Promise<Record<"solo" | "planner" | "builder", string>> {
   const code = `const { systemPrompt } = await import(${JSON.stringify(join(ROOT, "server/chat.ts"))}); console.log(JSON.stringify({ solo: systemPrompt("solo"), planner: systemPrompt("planner"), builder: systemPrompt("builder"), none: systemPrompt() })); process.exit(0);`;
-  const proc = Bun.spawn(["bun", "-e", code], { cwd: ROOT, env: { ...process.env, PANEL_LIBRARY_DIR: p.dir, PANEL_PORT: "1" }, stdout: "pipe", stderr: "inherit" });
+  const proc = Bun.spawn(["bun", "-e", code], { cwd: ROOT, env: { ...process.env, PANEL_LIBRARY_DIR: p.dir, PANEL_PORT: "1", ...env }, stdout: "pipe", stderr: "inherit" });
   const out = await new Response(proc.stdout).text();
   await proc.exited;
   const j = JSON.parse(out.trim().split("\n").pop()!);
@@ -344,4 +345,34 @@ describe("the checks", () => {
     const again = await call("get_sketch", { project, sketch: before.sketch, html: false, pictures: false });
     expect("skill_checks" in again.first).toBe(false);
   }, 60_000);
+});
+
+// The mix card: how FRIDAY takes from saves. It sits after the Sketches section, outside the
+// step by step section that is cut out when there are no recipes, so it is always there.
+describe("taking from saves", () => {
+  const HEAD = "Taking from saves (the mix card):";
+  const after = (text: string) => {
+    expect(text).toContain(HEAD);
+    expect(text.indexOf(HEAD)).toBeGreaterThan(text.indexOf("Sketches (on a project's canvas):"));
+  };
+
+  test("the one-model reader and the planner have it, after Sketches", async () => {
+    const j = await prompts();
+    after(j.solo);
+    after(j.planner);
+    // The old line about uses is gone; mix took its place.
+    expect(j.solo).not.toContain("- Pass uses:");
+    expect(j.solo).toContain("- Pass mix:");
+  }, 30_000);
+
+  test("with no recipes in the folder, it is still there", async () => {
+    const empty = mkdtempSync(join(tmpdir(), "panel-no-recipes-"));
+    try {
+      const j = await prompts({ PANEL_RECIPES_DIR: empty });
+      expect(j.solo).not.toContain("Making a whole thing, step by step");
+      after(j.solo);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

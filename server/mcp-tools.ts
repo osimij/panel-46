@@ -15,38 +15,43 @@ import { existsSync } from "node:fs";
 import { DEVICES, fullUrl, keepPart, readSketch, renderOf, SCREEN, sketchPath, withSkillChecks, type Device, type Render } from "./sketches.ts";
 import { describeFindings } from "./rulecheck.ts";
 import { getBuild, messageBuild, seeBuild, startBuild, writeHandoff } from "./builds.ts";
-import { FACETS, TYPES, findByColor, gather, overview, reference, search, similar } from "./library.ts";
+import { FACETS, TYPES, findByColor, gather, nextWithSheet, overview, reference, search, similar } from "./library.ts";
+import { makeSheet, SHEET_MAX } from "./sheet.ts";
+import { mixOf, mixPictures, smallPicture, type Mix } from "./mix.ts";
+import { checkLines, checkMix, lastChecks, mixCheckOn } from "./mixcheck.ts";
 import { getReadyMade, ICON_WEIGHTS } from "./ready.ts";
 import { shortParts } from "./parts.ts";
 import { recipeText, setStep, startSteps, stopSteps } from "./steps.ts";
 
-const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude Opus from its pictures (and, for videos, frame grids and motion close-ups), split into facets: color (with colors measured from the pixels, as hex), typography, layout, imagery, motion, mood, components, worth_taking and search_terms. The designer's own note, when present, matters most.
+// What every AI app is told about Panel when it connects. Claude Code cuts a server's
+// instructions off after 4,096 characters without saying so, and for a long time the second
+// half of these never arrived. So this is only the map: what Panel is and the order of work.
+// How to use a tool belongs in that tool's own description, which arrives with the tool.
+// tests/instructions.test.ts fails when these grow past what arrives whole.
+const INSTRUCTIONS = `Panel is a designer's private library of saved design references: websites, app screens, posters, brands, motion pieces, photos. Each save has a design read written by Claude from its pictures, in facets: color (measured from the pixels, as hex), typography, layout, imagery, motion, mood, components and worth_taking. The designer's own note, when present, matters most.
 
-Use it to find references for a brief and to combine them: color from one save, type from another, motion from a third.
-- Start with library_overview to learn the words the library uses (moods, fonts, motion techniques).
+Use it to find references for a brief and to combine them: color from one save, type from another, motion from a third. Each tool's description says how to use it; this is the order of work.
+- library_overview first: the words the library uses.
 - gather_for_brief gives the best saves per facet for a brief in one call.
-- search_library finds by words and, when its answer says found_by includes "meaning", by meaning too (a save described in other words still comes up, in English or Russian). Give it look ("a dark dashboard with glowing charts") to find by the pictures themselves. If found_by is only "words", matching is by words alone: try synonyms when results are thin. It answers with short cards for the best and one line each for the rest.
-- find_by_color matches measured palettes by hex (ΔE distance).
-- similar_to finds saves like one you have, by facet; the facet "look" compares the pictures themselves.
-- get_reference returns everything about a save (the whole read, what's worth taking), and its pictures so you can look at it yourself; with facets, only those parts. Open and look before you recommend. For a website it also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures. Searching typography for a font's name, or for "cyrillic" or "tajik", finds sites whose own fonts have those letters.
-- Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials (files and links the designer added: specs, brand books, sites); get_project_material reads a material in full. When working on a project, read it and the materials that matter first, and build from its locked decisions.
-- get_verdicts is the designer's taste across every project: what they chose and ruled out, with their reasons. Lean on it.
-- On a project's canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change appears live on their canvas and can be undone there.
-- To try a direction before anyone builds it, make_sketch puts a quick page on the canvas: one self-contained HTML file. You get back pictures of it as rendered; look, check it against the brief and the rules, and fix it with edit_sketch before showing it. get_sketch reads one back, on any device or in any of its states.
-- A whole new piece of work (a website, a poster) is made step by step with a recipe: get_recipe lists them and reads one, start_steps begins on a project, set_step moves on when the designer agrees to a step. A step's first rough page is a wireframe: make_sketch with kind "wireframe".
-- The designer uploads their own fonts to Panel (get_fonts lists them). Every sketch has them loaded already: write font-family with the family's name, no @font-face or link. When the designer names one, use it.
-- Each project can have brand assets (get_brand_assets): the client's real logos, icons, pictures, patterns and brand books. When a sketch shows the brand, use its real logo with <img src="/brand/…"> (the src given), never a drawn stand-in. When building for real, copy the files from their path on this Mac.
-- Give a sketch knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. Where a name doesn't say what it is, write a short plain note beside it (--c1: #e2372b; /* Cortex */): the studio shows it as the knob's name. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those.
-- A sketch can be clickable: a flow of screens, or states (empty, loading, error). List them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.
-- A sketch can go to Figma and come back: the designer copies it into Figma from the studio, changes it there, and brings it back. get_figma_frame then gives the Figma frame beside the page it started from; rebuild the page with edit_sketch as its next version, keeping its knobs, states and scripts.
-- When the designer chooses a sketch, get_handoff writes down everything needed to build it, and start_build hands it to Claude Code to build in their code (get_build, message_build follow it).
-- The designer's skills are craft files they turned on (setting type, motion…): get_skill lists them and reads one. They come after the designer's rules and a project's locked decisions, and before any reference.
-- Panel comes with ready-made parts (get_ready_made): loading animations, icons and colour palettes. In a sketch, a part is a short tag and Panel puts the real drawing in when it saves the page: never paste or type a drawing. Find every icon a page needs in one call (find_icons), then write each as <panel-icon name="trash"></panel-icon> (weight="bold" for another weight; class, style, id, title and aria-label are kept; it is 1em in the text's colour). The tag itself is replaced: style a part through a class on it, never by the tag's name. Tags are filled in the HTML only, never inside a script: an icon a script needs goes in a <template> for the script to copy. A loading state is <panel-loading name="ring"></panel-loading>, with a name from the list; never draw your own. Keep one weight on a page, with fill only to mark what is active, unless the designer or a skill says otherwise. A project's own brand icons (get_brand_assets) come first; never an emoji as an icon. get_sketch shows the parts as these tags, and edits use them the same way.
-- Never use or imitate one of Panel's palettes unless the designer asks for one. Colours are settled when the project has a locked colour decision or brand assets with its colours, or the designer has said what colours to use ("pick calm colours" means your own; "use Slate" means that palette): then don't ask. When they aren't, ask before you sketch, in one short question, and stop: your own colours, or one of Panel's palettes (name two or three that would suit, by name only). The answer holds for the rest of the conversation. A chosen palette is used exactly as it is: a 12-step scale by what each step is for, a set as its colours; add a colour of your own only for what it doesn't have, and say which.
-For each save you recommend, give the designer its "open" link from get_reference's answer, so they can watch or look at the original.`;
+- search_library finds by words and by meaning (English or Russian), and by the pictures themselves when you give it look. Each search comes with a sheet of small numbered pictures: choose by eye. find_by_color matches measured palettes by hex. similar_to finds saves like one you have.
+- get_reference opens a save: the whole read, what's worth taking, and its pictures. Open and look before you recommend. For a site or a video, open the exact pictures you need (pictures: [n]). For a website it also has what was measured in the live page (fonts, sizes, colors): trust that over guesses from pictures.
+- Projects are the designer's canvases for a piece of work: decisions (Typography, Color…) with the saves chosen, kept and ruled out for each, and the designer's reasons. list_projects shows them; get_project reads one, with its brief and materials. Read it first and build from its locked decisions.
+- get_verdicts is the designer's taste across every project: what they chose and ruled out, and why. Lean on it.
+- On a canvas you can place_on_board (saves under a topic, as suggestions), add_topic, connect_topics and add_note. The designer decides: mark_saves and lock_topic only when they say so. Each change shows live and can be undone there.
+- make_sketch puts a quick page on the canvas to try a direction: one self-contained HTML file, with knobs and, for a flow, states. You get back pictures of it as rendered: look, check it against the brief and the rules, and fix it with edit_sketch before showing it. get_sketch reads one back.
+- A whole new piece of work (a website, a poster) is made step by step with a recipe: get_recipe, start_steps, then set_step when the designer agrees to a step.
+- The designer's own fonts (get_fonts) are loaded in every sketch: write font-family with the family's name.
+- A project's brand assets (get_brand_assets) are the client's real logos, icons and pictures. Use the real logo in a sketch, never a drawn stand-in.
+- Ready-made parts (get_ready_made): icons, loading animations and colour palettes. In a sketch a part is a short tag that Panel fills in: never paste or draw one, and never an emoji as an icon.
+- Never use or imitate one of Panel's palettes unless the designer asks for one. When a project's colours aren't settled (no locked colour decision, no brand colours, nothing said), ask before you sketch: your own colours, or one of Panel's palettes.
+- The designer's skills (get_skill) are craft files they turned on. They come after the designer's rules and a project's locked decisions, and before any reference.
+- A sketch can go to Figma and come back changed (get_figma_frame). A chosen sketch is built for real by Claude Code (get_handoff, start_build, get_build, message_build).`;
 
+// Only for AI apps other than FRIDAY (Claude Code, Claude Desktop). FRIDAY has the designer's
+// rules in its own instructions, and writes a save as [[id]], never as a link.
 const RULES_NOTE = `
-- The designer keeps standing rules for every design (unugly.md): get_design_rules returns them, and get_project starts with them. Read them before you design, build or judge anything, follow them over any reference, and check the result against them before you show it.`;
+- The designer keeps standing rules for every design (unugly.md): get_design_rules returns them, and get_project starts with them. Read them before you design, build or judge anything, follow them over any reference, and check the result against them before you show it.
+- For each save you recommend, give the designer its "open" link from get_reference's answer, so they can watch or look at the original.`;
 
 const skillsHeading = "## The designer's skills\n\nCraft they chose for every design: how to decide and how to build it well. They come after the rules above and a project's locked decisions, and before any reference.";
 
@@ -122,16 +127,58 @@ const WIRE_LOOK = "Look at the screens before you answer: every section is there
 /** A wireframe's render, without what was measured against the rules and the skills: it isn't a design to judge. */
 const asWire = (render: Render): Render => ({ ...render, rules: undefined, skills: undefined, apply: undefined, skillKey: undefined });
 
-const made = async (r: SketchResult, device: Device = "desktop") => {
-  const look = r.wire ? WIRE_LOOK : LOOK;
-  return sketchContent({
+/** What to do with the pictures a sketch took from, added to LOOK when it has a mix card. */
+const MIX_LOOK = "Then compare with the pictures it took from: is each taken part really there, as in its picture? Is the page a copy of the hero? Which sections have no save behind them? Fix what is missing before you reply, and say in a line what still has no save behind it. mix_checks are what a fresh pair of eyes found when it compared the page with those pictures: fix every one marked breaks before you reply; for each marked check, fix it or be ready to say why it stays.";
+
+/**
+ * After a sketch's own screens, the pictures it took from, small, each with what was taken
+ * from it: so the page and its sources are seen side by side, not from memory.
+ */
+async function mixContent(mix: Mix | undefined): Promise<Content> {
+  if (!mix) return [];
+  const pics = mixPictures(mix);
+  if (!pics.length) return [];
+  const content: Content = [{ type: "text", text: "What it took from, small. Compare each with the screens above." }];
+  for (const p of pics) {
+    content.push({ type: "text", text: p.caption });
+    content.push({ type: "image", data: (await smallPicture(p.file)).toString("base64"), mimeType: "image/jpeg" });
+  }
+  return content;
+}
+
+/**
+ * What the fresh look found for this version, for the sketch's answer. With `fresh`, it looks
+ * now (at the same time as the skill checks are measured); otherwise the last checks of the same
+ * mix are carried forward, saying which version they came from. Absent when it is turned off
+ * and never ran.
+ */
+async function mixChecksFor(r: SketchResult, device: Device, fresh: boolean): Promise<Record<string, unknown>> {
+  if (!r.mix || r.wire) return {};
+  if (fresh && mixCheckOn()) {
+    const got = await checkMix(r.project, r.id, r.version, r.mix, device);
+    return "not_checked" in got ? { mix_checks: `not checked: ${got.not_checked}` } : { mix_checks: checkLines(got) };
+  }
+  const held = mixOf(r.id, r.version);
+  const last = held ? lastChecks(r.id, r.version, held.version) : null;
+  return last ? { mix_checks: checkLines(last.form), ...(last.version !== r.version ? { mix_checks_from_version: last.version } : {}) } : {};
+}
+
+const made = async (r: SketchResult, device: Device = "desktop", freshLook = false) => {
+  const look = r.wire ? WIRE_LOOK : r.mix ? `${LOOK} ${MIX_LOOK}` : LOOK;
+  const url = fullUrl(sketchPath(r.project, r.id, r.version));
+  // The skill checks and the fresh look run side by side, so the sketch waits for the slower one.
+  const [render, checks] = await Promise.all([r.wire ? asWire(r.render) : withSkillChecks(r.render, url, device), mixChecksFor(r, device, freshLook)]);
+  const content = await sketchContent({
     sketch: r.id, title: r.title, version: r.version, page: fullUrl(sketchPath(r.project, r.id, r.version)),
     ...(r.wire ? { wireframe: true } : {}),
     states: r.states?.length ? r.states : undefined,
     linked_saves: r.linked_saves,
+    mix: r.mix,
+    ...checks,
     on_canvas: "as a suggestion; the designer keeps, chooses or rules it out",
     next: r.states && r.states.length > 1 ? `${look} These pictures show the first state; look at the others with get_sketch state.` : look,
-  }, r.wire ? asWire(r.render) : await withSkillChecks(r.render, fullUrl(sketchPath(r.project, r.id, r.version)), device), true, device);
+  }, render, true, device);
+  return [...content, ...(await mixContent(r.mix))];
 };
 
 const text = (v: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(v) }] });
@@ -144,6 +191,56 @@ const safe = <A,>(fn: (a: A) => unknown) => async (a: A) => {
   }
 };
 const readOnly = { readOnlyHint: true, openWorldHint: false } as const;
+
+// ---------- Searches that answer with a sheet of pictures ----------
+
+/** The new input on every search: a sheet of pictures, or words only. */
+const sheetInput = z.boolean().optional().describe("The saves as one sheet of small numbered pictures, to choose by eye. false: words only.");
+
+const SHEET_TEXT = "The same saves as small pictures, each numbered as its card's n. Choose by eye here, then open the ones worth it with get_reference: for a site or a video, ask for the exact pictures you need (pictures: [n]).";
+
+type Card = { id: string } & Record<string, unknown>;
+/** A card with its number on the sheet as its first field; the id stays, so FRIDAY's panel still finds it. */
+const numbered = (c: Card, n: Map<string, number>) => (n.has(c.id) ? { n: n.get(c.id), ...c } : c);
+
+/**
+ * Where each search keeps its cards, in the order they're numbered on the sheet, and how to
+ * put the numbers in. similar_to's save being compared is 1; gather_for_brief's picks are
+ * numbered facet by facet, and a save picked twice keeps one number.
+ */
+type Answer = Record<string, unknown> & { results?: Card[]; like?: Card; picks?: Record<string, Card[]> };
+const ordered = (r: Answer): Card[] => [...(r.like ? [r.like] : []), ...(r.results ?? []), ...Object.values(r.picks ?? {}).flat()];
+const withNumbers = (r: Answer, n: Map<string, number>): Answer => ({
+  ...r,
+  ...(r.like ? { like: numbered(r.like, n) } : {}),
+  ...(r.results ? { results: r.results.map((c) => numbered(c, n)) } : {}),
+  ...(r.picks ? { picks: Object.fromEntries(Object.entries(r.picks).map(([f, cs]) => [f, cs.map((c) => numbered(c, n))])) } : {}),
+  next: nextWithSheet(r.next),
+});
+
+/**
+ * Like safe(), for the searches: the JSON as always, then, unless pictures is false, one sheet of
+ * the saves as small numbered pictures. With no sheet (nothing found, no pictures on disk, or it
+ * failed) the answer is exactly what it was before sheets. A failure is still a plain message.
+ */
+const withSheet = <A extends { pictures?: boolean }>(fn: (a: A) => unknown) => async (a: A) => {
+  try {
+    const r = (await fn(a)) as Answer;
+    const ids = [...new Set(ordered(r).map((c) => c.id))].slice(0, SHEET_MAX);
+    const sheet = a.pictures === false || !ids.length ? null : await makeSheet(ids);
+    if (!sheet) return text(r);
+    const n = new Map(ids.map((id, i) => [id, i + 1]));
+    return {
+      content: [
+        { type: "text" as const, text: JSON.stringify(withNumbers(r, n)) },
+        { type: "text" as const, text: SHEET_TEXT },
+        { type: "image" as const, data: sheet.jpeg.toString("base64"), mimeType: "image/jpeg" },
+      ],
+    };
+  } catch (e) {
+    return failure(e);
+  }
+};
 
 /** withRules: false for Ask, which has the designer's rules in its instructions already. */
 export function createMcpServer({ withRules = true }: { withRules?: boolean } = {}) {
@@ -230,7 +327,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
   // Ready-made parts that ship with Panel (ready.ts): loading animations, colour scales, icons.
   server.registerTool("get_ready_made", {
     title: "Ready-made parts",
-    description: "Loading animations, colour palettes (OKLCH, light and dark) and icons (Phosphor) that come with Panel. In a sketch, write <panel-icon name> and <panel-loading name> tags: Panel puts the drawing in. With nothing, the list.",
+    description: "Loading animations, colour palettes (OKLCH, light and dark) and icons (Phosphor) that come with Panel. With nothing, the list. In a sketch, a part is a short tag and Panel puts the real drawing in when it saves the page: never paste or type a drawing. Find every icon a page needs in one call (find_icons), then write each as <panel-icon name=\"trash\"></panel-icon> (weight=\"bold\" for another weight; class, style, id, title and aria-label are kept; it is 1em in the text's colour). The tag itself is replaced: style a part through a class on it, never by the tag's name. Tags are filled in the HTML only, never inside a script: an icon a script needs goes in a <template> for the script to copy. A loading state is <panel-loading name=\"ring\"></panel-loading>, with a name from the list; never draw your own. Keep one weight on a page, with fill only to mark what is active, unless the designer or a skill says otherwise. A project's own brand icons (get_brand_assets) come first; never an emoji as an icon. get_sketch shows the parts as these tags, and edits use them the same way. Palettes: never use or imitate one unless the designer asks for one. Colours are settled when the project has a locked colour decision or brand assets with its colours, or the designer has said what colours to use (\"pick calm colours\" means your own; \"use Slate\" means that palette): then don't ask. When they aren't, ask before you sketch, in one short question, and stop: your own colours, or one of Panel's palettes (name two or three that would suit, by name only). The answer holds for the rest of the conversation. A chosen palette is used exactly as it is: a 12-step scale by what each step is for, a set as its colours; add a colour of your own only for what it doesn't have, and say which.",
     inputSchema: {
       loading: z.string().optional().describe("A loading animation's name: its code, only for building for real."),
       palette: z.string().optional().describe("A palette's name, only once the designer asked for one: its steps, light and dark, and what each is for."),
@@ -257,7 +354,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
 
   server.registerTool("search_library", {
     title: "Search the library",
-    description: "Find saves by words and by meaning: saves matching more words come first, and saves whose reads say the same in other words are found too (found_by says which ways were used; with only \"words\", try a few phrasings). With facets, the search stays within those facets: query \"stagger spring\" with facets [\"motion\"] finds motion that staggers, not a poster that mentions springs. With look, saves are ranked by how their pictures match it. No query: the newest. Combine with colors and filters. Answers with short cards for the best and a line each for the rest; the whole read is in get_reference.",
+    description: "Find saves by words and by meaning: saves matching more words come first, and saves whose reads say the same in other words are found too (found_by says which ways were used; with only \"words\", try a few phrasings). With facets, the search stays within those facets: query \"stagger spring\" with facets [\"motion\"] finds motion that staggers, not a poster that mentions springs. With look, saves are ranked by how their pictures match it. No query: the newest. Combine with colors and filters. Searching typography for a font's name, or for \"cyrillic\" or \"tajik\", finds sites whose own fonts have those letters. Answers with short cards for the best and a line each for the rest; the whole read is in get_reference. The cards come with one sheet of small numbered pictures (each card's n is its number on it): choose by eye there.",
     inputSchema: {
       query: z.string().optional().describe("Words to look for: mood, style, technique, component, font, subject, creator…"),
       look: z.string().optional().describe("How it should look, described plainly in English, e.g. \"a dark dashboard with glowing charts\" or \"a poster with one huge red word\". Matches the pictures themselves, not what was written about them. Alone or together with query."),
@@ -268,13 +365,14 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       limit: z.number().int().min(1).max(60).optional().describe("Default 12."),
       offset: z.number().int().min(0).optional(),
       detail,
+      pictures: sheetInput,
     },
     annotations: readOnly,
-  }, safe((a) => search(a)));
+  }, withSheet((a) => search(a)));
 
   server.registerTool("find_by_color", {
     title: "Find by color",
-    description: "Saves whose measured palette contains these colors, nearest first. Colors were measured from the pixels, so this is exact, not an AI's guess. Distance is ΔE2000 (as the eye judges it): about 2 is barely visible, 5 a close match, 10 the same family, 20 loose. If nothing is that close, the nearest are returned with a note.",
+    description: "Saves whose measured palette contains these colors, nearest first. Colors were measured from the pixels, so this is exact, not an AI's guess. Distance is ΔE2000 (as the eye judges it): about 2 is barely visible, 5 a close match, 10 the same family, 20 loose. If nothing is that close, the nearest are returned with a note. The cards come with one sheet of small numbered pictures (each card's n): see that the colors sit as you need them.",
     inputSchema: {
       colors: z.array(z.string()).min(1).describe("Hex values (#e85d3a) or plain names (terracotta matches only if the palette uses that word; prefer hex)."),
       match: z.enum(["any", "all"]).optional().describe("any (default): at least one color; all: every color."),
@@ -284,26 +382,28 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       ...filterShape,
       limit: z.number().int().min(1).max(60).optional(),
       detail,
+      pictures: sheetInput,
     },
     annotations: readOnly,
-  }, safe((a) => findByColor(a)));
+  }, withSheet((a) => findByColor(a)));
 
   server.registerTool("similar_to", {
     title: "Similar saves",
-    description: "Saves like a given one, judged by the facets you choose: color compares measured palettes; look compares the pictures themselves; the others compare what the reads say about that facet, by shared words and by meaning. Several facets are combined, so [\"color\",\"motion\"] finds saves close in both. Use it for \"more like this\" (look) or \"this palette but different type\".",
+    description: "Saves like a given one, judged by the facets you choose: color compares measured palettes; look compares the pictures themselves; the others compare what the reads say about that facet, by shared words and by meaning. Several facets are combined, so [\"color\",\"motion\"] finds saves close in both. Use it for \"more like this\" (look) or \"this palette but different type\". The cards come with one sheet of small numbered pictures: the save you gave is 1, the ones like it follow.",
     inputSchema: {
       id: z.string().describe("The save to compare against."),
       facets: z.array(z.enum([...FACETS, "overall", "look"])).optional().describe("Default [\"overall\"]. look: by the pictures themselves."),
       ...filterShape,
       limit: z.number().int().min(1).max(40).optional().describe("Default 10."),
       detail,
+      pictures: sheetInput,
     },
     annotations: readOnly,
-  }, safe((a) => similar(a)));
+  }, withSheet((a) => similar(a)));
 
   server.registerTool("gather_for_brief", {
     title: "Gather references for a brief",
-    description: "For a design brief, the best saves for each facet on its own (color, typography, layout, imagery, motion by default), preferring different saves per facet so the mix is wide. This is where combining starts: e.g. \"calm warm editorial banking app\" might take its palette from a poster, its type from a magazine site and its motion from an onboarding video. Write it in the library's vocabulary (see library_overview), and give each facet its own words with facet_briefs.",
+    description: "For a design brief, the best saves for each facet on its own (color, typography, layout, imagery, motion by default), preferring different saves per facet so the mix is wide. This is where combining starts: e.g. \"calm warm editorial banking app\" might take its palette from a poster, its type from a magazine site and its motion from an onboarding video. Write it in the library's vocabulary (see library_overview), and give each facet its own words with facet_briefs. The picks come with one sheet of small numbered pictures (each pick's n): check by eye that they suit each other.",
     inputSchema: {
       brief: z.string().describe("The feeling, subject and qualities wanted, in plain words."),
       facet_briefs: z.object(Object.fromEntries(FACETS.map((f) => [f, z.string().optional()])) as Record<(typeof FACETS)[number], z.ZodOptional<z.ZodString>>).optional()
@@ -312,33 +412,39 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       colors: z.array(z.string()).optional().describe("Colors the palette picks should contain (hex)."),
       per_facet: z.number().int().min(1).max(8).optional().describe("Default 3."),
       ...filterShape,
+      pictures: sheetInput,
     },
     annotations: readOnly,
-  }, safe((a) => gather(a)));
+  }, withSheet((a) => gather(a)));
 
   server.registerTool("get_reference", {
     title: "Open a save",
-    description: "Everything about one or more saves: the whole design read (every facet, what's worth taking), measured palette with roles, the designer's note and tags, the source link, the original files on this Mac and the pictures the read was made from. Searches give short cards: open a save before saying what to take from it. With images, you see those pictures: for a video, frame grids in time order and motion close-ups 0.1s apart; for a site, crops and the whole page folded into columns.",
+    description: "Everything about one or more saves: the whole design read (every facet, what's worth taking), measured palette with roles, the designer's note and tags, the source link, the original files on this Mac and the pictures the read was made from. Searches give short cards: open a save before saying what to take from it. With images, you see those pictures: for a video, frame grids in time order and motion close-ups 0.1s apart; for a site, crops and the whole page folded into columns. For a site or a video the first picture is only an overview (the page folded small, a grid of small frames): open the exact pictures you mean at full size with pictures, by their n in the save's pictures list. A website also has measured_in_page: the fonts the site really uses (with whether each has Cyrillic and Tajik letters), its text sizes, colors and corner radii, read from the live page. Trust those over likely_fonts, which are guesses from pictures.",
     inputSchema: {
       ids: z.array(z.string()).min(1).max(10),
       images: z.enum(["none", "first", "all"]).optional().describe("Pictures to include: none, first (default) or all."),
+      pictures: z.array(z.number().int().min(1)).min(1).max(8).optional().describe("Exact pictures of one save, by their number in its pictures list: a site's screen 4 at full size, a video's third frame grid. Give one id."),
       facets: z.array(facet).optional().describe("Only these parts of the read, when that's all you need: much shorter."),
     },
     annotations: readOnly,
-  }, async ({ ids, images = "first", facets }) => {
+  }, async ({ ids, images = "first", facets, pictures: pick }) => {
+    // Exact pictures belong to one save: with two, which save's picture 4 would be meant?
+    if (pick && ids.length !== 1) return failure(new Error("Exact pictures (pictures) are for one save at a time: give one id, and open the others in another call."));
     const content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[] = [];
     for (const id of ids) {
       try {
-        const { data, pictures } = reference(id, facets);
+        const { data, pictures } = reference(id, facets, pick);
         const used = projectsOf(id);
         content.push({ type: "text", text: JSON.stringify(used.length ? { ...data, in_projects: used.map((p) => ({ project: p.name, state: p.state ?? "kept" })) } : data) });
-        for (const p of images === "none" ? [] : images === "first" ? pictures.slice(0, 1) : pictures) {
+        for (const p of pick ? pictures : images === "none" ? [] : images === "first" ? pictures.slice(0, 1) : pictures) {
           const file = Bun.file(p.path);
           if (!(await file.exists())) continue;
-          content.push({ type: "text", text: `${data.id} picture: ${p.label}` });
+          content.push({ type: "text", text: `${data.id} picture ${p.n}: ${p.label}` });
           content.push({ type: "image", data: Buffer.from(await file.arrayBuffer()).toString("base64"), mimeType: "image/jpeg" });
         }
       } catch (e) {
+        // Asked for exact pictures of one save, a wrong number is a plain error to act on.
+        if (pick) return failure(e);
         content.push({ type: "text", text: (e as Error).message });
       }
     }
@@ -504,11 +610,26 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
     annotations: write,
   }, safe((a) => addNote(a)));
 
-  const html = z.string().min(1).describe("The whole page: one self-contained HTML file with its CSS and scripts inline. The designer's own fonts (get_fonts) are loaded already: just write font-family with their name. Other fonts and libraries from CDNs are fine (Google Fonts, cdnjs, jsdelivr, unpkg); so are three.js and shaders. It runs sandboxed: no localStorage, cookies or calls to Panel. Real content in the project's language, never lorem ipsum. Ready-made parts go in as tags, <panel-icon name=\"trash\"></panel-icon> and <panel-loading name=\"ring\"></panel-loading>: Panel puts the drawings in; never type one.");
+  // The mix card as make_sketch and edit_sketch take it (mix.ts says what each part is for).
+const mixInput = z.object({
+  takes: z.array(z.object({
+    save: z.string().describe("The save's id."),
+    role: z.enum(["hero", "helper"]).describe("hero: the one save that gives the structure. helper: one other thing."),
+    job: z.string().describe("What it gives: \"structure\", \"color\", \"the glow\", or a section's name on a whole page."),
+    take: z.string().describe("The exact thing: the move, the hex, the font, the proportion."),
+    leave: z.string().optional().describe("What not to take from it."),
+    picture: z.number().int().min(1).optional().describe("Which of the save's pictures shows it: its n in get_reference's pictures list."),
+  })).min(1).max(8),
+  shares: z.string().optional().describe("What the saves have in common, in a line."),
+  unusual: z.string().optional().describe("The one thing that makes it not look like the hero."),
+  no_save_behind: z.array(z.string()).optional().describe("The parts that come from no save."),
+}).optional().describe("What this sketch takes from which save: one hero that gives the structure, one or two helpers with one job each, and for each the exact thing to take, what to leave, and which of its pictures shows it. Leave it out for a sketch that takes from no save, and for a small change.");
+
+const html = z.string().min(1).describe("The whole page: one self-contained HTML file with its CSS and scripts inline. The designer's own fonts (get_fonts) are loaded already: just write font-family with their name. Other fonts and libraries from CDNs are fine (Google Fonts, cdnjs, jsdelivr, unpkg); so are three.js and shaders. It runs sandboxed: no localStorage, cookies or calls to Panel. Real content in the project's language, never lorem ipsum. Ready-made parts go in as tags, <panel-icon name=\"trash\"></panel-icon> and <panel-loading name=\"ring\"></panel-loading>: Panel puts the drawings in; never type one.");
 
   server.registerTool("make_sketch", {
     title: "Sketch a direction",
-    description: `Put a quick page on a project's canvas to try a direction: a hero, a screen, a type specimen, a component, a motion study. It's rendered in Chrome at ${SCREEN.width}×${SCREEN.height}, and you get back pictures of up to three screens down the page plus any errors the page threw, so you can see it before the designer does. Build it from the project's locked decisions and materials. The card goes next to what it came from (from) as a suggestion; the designer keeps, chooses or rules it out. For a few directions at once, make one sketch per direction from the same thing, each with its own title and tries.`,
+    description: `Put a quick page on a project's canvas to try a direction: a hero, a screen, a type specimen, a component, a motion study. It's rendered in Chrome at ${SCREEN.width}×${SCREEN.height}, and you get back pictures of up to three screens down the page plus any errors the page threw, so you can see it before the designer does. Build it from the project's locked decisions and materials. The card goes next to what it came from (from) as a suggestion; the designer keeps, chooses or rules it out. For a few directions at once, make one sketch per direction from the same thing, each with its own title and tries. Give it knobs: declare its colors, fonts, type sizes, radius and spacing as CSS variables on :root (--bg, --ink, --accent, --font-display, --radius…) and use them throughout. Where a name doesn't say what it is, write a short plain note beside it (--c1: #e2372b; /* Cortex */): the studio shows it as the knob's name. The designer adjusts them live in Panel's studio and may keep a version with their own values; build on those. A sketch can be clickable, a flow of screens or states (empty, loading, error): list them in <meta name="panel:states" content="home: Главная, detail: Детали, error: Ошибка"> (a Latin id, then the name shown) and show each when the address ends in #id (#detail, #error; the first shows with no #), switching on hashchange; links between screens just set location.hash.`,
     inputSchema: {
       project: projectArg,
       title: z.string().min(1).max(120).describe("A short name for what this is: \"Hero, paper and stamp\", \"Tajik type specimen\"."),
@@ -518,11 +639,13 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       uses: z.array(z.string()).max(12).optional().describe("Ids of the saves it takes from (type from one, color from another). Each one on the canvas gets a line to the sketch, so the designer sees where it came from."),
       device: z.enum(["desktop", "tablet", "phone"]).optional().describe("The screen it's made for, and rendered on. Default desktop; phone for a mobile app screen (390×844)."),
       kind: z.enum(["page", "wireframe"]).optional().describe("wireframe: a gray page that shows each section at the height it will have and what is in it, before any design (a recipe's Sections or Layout step). It isn't checked against the rules or the skills. Leave out for a designed page."),
+      mix: mixInput,
     },
     annotations: write,
   }, async (a) => {
     try {
-      return { content: await made(await makeSketch(a), a.device ?? "desktop") };
+      // A new sketch with a mix is always looked at fresh.
+      return { content: await made(await makeSketch(a), a.device ?? "desktop", true) };
     } catch (e) {
       return failure(e);
     }
@@ -543,14 +666,19 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       from_version: z.number().int().min(1).optional().describe("Build on this earlier version instead of the one on the canvas."),
       title: z.string().max(120).optional(),
       tries: z.string().max(300).optional(),
+      mix: mixInput,
+      check: z.boolean().optional().describe("Ask the fresh look again, after fixing what it found. Once per answer is enough."),
     },
     annotations: write,
-  }, async (a) => {
+  }, async ({ check, ...a }) => {
     try {
       const r = await editSketch(a);
       const { getProject } = await import("./projects.ts");
       const device = (getProject(r.project)?.nodes.find((n) => n.id === r.id)?.data.device as Device | undefined) ?? "desktop";
-      return { content: await made(r, device) };
+      // The fresh look runs again for a new mix, a page rewritten whole, or when asked; a small
+      // edit carries the last checks forward. A rename alone made no new version: nothing to look at.
+      const changed = !!a.html || !!a.edits?.length || !!a.from_version;
+      return { content: await made(r, device, changed && (!!a.mix || !!a.html || !!check)) };
     } catch (e) {
       return failure(e);
     }
@@ -567,9 +695,10 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       state: z.string().optional().describe("See it in one of its states (from its meta panel:states), e.g. \"Loading\" or \"Error\"."),
       html: z.boolean().optional().describe("Include the page's HTML. Default true."),
       pictures: z.boolean().optional().describe("Include pictures of it. Default true."),
+      compare: z.boolean().optional().describe("Also the pictures it took from, small, after its screens."),
     },
     annotations: readOnly,
-  }, async ({ html: withHtml = true, pictures = true, ...a }) => {
+  }, async ({ html: withHtml = true, pictures = true, compare = false, ...a }) => {
     try {
       const { render, html: page, ...head } = await getSketch(a);
       // Measured against the skills that are on now, even if it was rendered before they were. A
@@ -577,6 +706,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       const slug = head.seen_state?.match(/\(#([^)]+)\)$/)?.[1];
       const checked = head.wireframe ? asWire(render) : await withSkillChecks(render, head.page + (slug ? `#${slug}` : ""), head.seen_on);
       const content = await sketchContent(head, checked, pictures, head.seen_on);
+      if (compare) content.push(...(await mixContent(head.mix)));
       // Ready-made parts as their short tags (parts.ts): no drawing to read or retype.
       if (withHtml) content.push({ type: "text", text: shortParts(page) });
       return { content };

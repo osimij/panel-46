@@ -14,6 +14,7 @@ import { withText, type TextEdit } from "./pagetext.ts";
 import { withParts, type PartRemove, type PartStyle } from "./pageparts.ts";
 import { rememberedFrame } from "./figma.ts";
 import { shortParts } from "./parts.ts";
+import { cleanMix, mixOf, saveMix, type Mix } from "./mix.ts";
 
 const FACET_NAMES: Record<string, string> = { typography: "Typography", color: "Color", layout: "Layout", imagery: "Imagery", motion: "Motion", components: "Components", other: "Other" };
 const SIZE = { topic: { w: 248, h: 140 }, ref: { w: 220, h: 370 }, note: { w: 228, h: 100 }, sketch: { w: 360, h: 300 }, build: { w: 380, h: 330 } };
@@ -361,11 +362,26 @@ export interface SketchResult {
   linked_saves?: string[];
   /** A wireframe: a rough draft, not checked against the rules or the skills. */
   wire?: true;
+  /** What this version takes from which save, as stored (its own, or kept from an earlier version). */
+  mix?: Mix;
+  /** True when this answer wrote a new mix for this version (so the fresh look should run). */
+  mixNew?: true;
 }
 
-export async function makeSketch(o: { project: string; title: string; tries?: string; html: string; from?: string; uses?: string[]; device?: Device; kind?: "page" | "wireframe" }): Promise<SketchResult> {
+/** The saves a mix takes from, which get their "uses" lines on the canvas like uses does. */
+const mixSaves = (mix: Mix | undefined) => mix?.takes.map((t) => t.save) ?? [];
+
+export async function makeSketch(o: { project: string; title: string; tries?: string; html: string; from?: string; uses?: string[]; device?: Device; kind?: "page" | "wireframe"; mix?: Mix }): Promise<SketchResult> {
   const first = board(o.project);
   if (o.from && !findSource(first, o.from)) throw new Error(`Nothing called “${o.from}” on this canvas: give a sketch's id or title, a save's id or a topic's name.`);
+  // A wireframe is gray boxes before any design: it takes nothing from a save, so a mix is ignored.
+  // Otherwise the mix is checked before rendering, so a wrong one costs no render and leaves nothing on the canvas.
+  const isWire = o.kind === "wireframe";
+  const given = o.mix && !isWire ? cleanMix(o.mix) : undefined;
+  // A sketch made from another one that has a mix starts with a copy of it.
+  const source = o.from ? findSource(first, o.from) : undefined;
+  const inherited = !given && !isWire && source?.kind === "sketch" ? mixOf(source.id, Number(source.data.version) || 1)?.mix : undefined;
+  const mix = given ?? inherited;
   const id = newId();
   const title = o.title.trim().slice(0, 120) || "Untitled sketch";
   const device = o.device && o.device !== "desktop" ? o.device : undefined;
@@ -379,7 +395,7 @@ export async function makeSketch(o: { project: string; title: string; tries?: st
   if (from) ops.push({ op: "add_edge", edge: { source: from.id, target: id } });
   // The saves it took from, when they're on the canvas: a line from each, so the designer sees where it came from.
   const used: string[] = [];
-  for (const ref of new Set(o.uses ?? [])) {
+  for (const ref of new Set([...(o.uses ?? []), ...mixSaves(mix)])) {
     const n = b.full.nodes.find((x) => x.kind === "ref" && x.ref_id === ref);
     if (n && n.id !== from?.id) {
       ops.push({ op: "add_edge", edge: { source: n.id, target: id, label: "uses" } });
@@ -387,17 +403,25 @@ export async function makeSketch(o: { project: string; title: string; tries?: st
     }
   }
   apply(b.p.id, ops, "assistant", { label: `Sketched ${title}` });
-  return { project: b.p.id, id, title, version, render, states: statesOf(o.html).map((x) => `${x.name} (#${x.slug})`), linked_saves: used.length ? used : undefined, ...(wire ? { wire: true as const } : {}) };
+  if (mix) saveMix(b.p.id, id, version, mix);
+  return {
+    project: b.p.id, id, title, version, render, states: statesOf(o.html).map((x) => `${x.name} (#${x.slug})`), linked_saves: used.length ? used : undefined,
+    ...(wire ? { wire: true as const } : {}),
+    ...(mix ? { mix, ...(given ? { mixNew: true as const } : {}) } : {}),
+  };
 }
 
 export interface Edit { find: string; replace: string; all?: boolean }
 
-export async function editSketch(o: { project: string; sketch: string; html?: string; edits?: Edit[]; from_version?: number; title?: string; tries?: string }): Promise<SketchResult> {
+export async function editSketch(o: { project: string; sketch: string; html?: string; edits?: Edit[]; from_version?: number; title?: string; tries?: string; mix?: Mix }): Promise<SketchResult> {
   const b = board(o.project);
   const node = findSketch(b, o.sketch);
   if (!node) throw new Error(`No sketch “${o.sketch}” on this canvas. get_project lists the sketches.`);
   const base = o.from_version ?? (Number(node.data.version) || 1);
   if (!versionsOf(b.p.id, node.id).includes(base)) throw new Error(`That sketch has no version ${base}.`);
+  // A new mix is checked before anything changes. A wireframe takes none.
+  const isWire = node.data.wire === true;
+  const given = o.mix && !isWire ? cleanMix(o.mix) : undefined;
   const meta: Record<string, unknown> = {};
   if (o.title?.trim()) meta.title = o.title.trim().slice(0, 120);
   if (o.tries !== undefined) meta.tries = o.tries.trim().slice(0, 300);
@@ -418,14 +442,39 @@ export async function editSketch(o: { project: string; sketch: string; html?: st
   } else if (o.from_version) html = readSketch(b.p.id, node.id, base);
 
   if (html === undefined) {
-    if (!Object.keys(meta).length) throw new Error("Nothing to change: give html, edits, or a new title or tries.");
+    if (!Object.keys(meta).length) throw new Error(given ? "A new mix goes with a change to the page: give edits or html with it." : "Nothing to change: give html, edits, or a new title or tries.");
     apply(b.p.id, [{ op: "update_node", id: node.id, data: meta }], "assistant", { label: `Renamed a sketch to ${title}` });
     const v = Number(node.data.version) || 1;
-    return { project: b.p.id, id: node.id, title, version: v, render: renderOf(b.p.id, node.id, v), ...(node.data.wire === true ? { wire: true as const } : {}) };
+    const kept = isWire ? undefined : mixOf(node.id, v)?.mix;
+    return { project: b.p.id, id: node.id, title, version: v, render: renderOf(b.p.id, node.id, v), ...(isWire ? { wire: true as const } : {}), ...(kept ? { mix: kept } : {}) };
   }
   const { version, render } = await writeVersion(b.p.id, node.id, html, node.data.device as Device | undefined, { by: "friday", what: o.tries ?? "" });
-  apply(b.p.id, [{ op: "update_node", id: node.id, data: { ...meta, version } }], "assistant", { label: `Changed ${title} (version ${version})` });
-  return { project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`), ...(node.data.wire === true ? { wire: true as const } : {}) };
+  // The saves of a new mix get their "uses" lines too, when they're on the canvas and haven't one yet.
+  const ops: Op[] = [{ op: "update_node", id: node.id, data: { ...meta, version } }];
+  for (const ref of new Set(mixSaves(given))) {
+    const n = b.full.nodes.find((x) => x.kind === "ref" && x.ref_id === ref);
+    if (n && !b.linked(node.id).has(n.id)) ops.push({ op: "add_edge", edge: { source: n.id, target: node.id, label: "uses" } });
+  }
+  apply(b.p.id, ops, "assistant", { label: `Changed ${title} (version ${version})` });
+  // With a new mix, it holds from this version on. Without one, the mix that held for the
+  // version it was built on carries on: written down only when that isn't the one before it
+  // (built from an older version), since otherwise the earlier row is found anyway.
+  let mix: Mix | undefined;
+  if (given) {
+    saveMix(b.p.id, node.id, version, given);
+    mix = given;
+  } else if (!isWire) {
+    const held = mixOf(node.id, base);
+    const before = mixOf(node.id, version - 1);
+    // Built from a version that came before any mix: an empty row says this one has none either.
+    if (held?.version !== before?.version) saveMix(b.p.id, node.id, version, held?.mix ?? { takes: [] });
+    mix = held?.mix;
+  }
+  return {
+    project: b.p.id, id: node.id, title, version, render, states: statesOf(html).map((x) => `${x.name} (#${x.slug})`),
+    ...(isWire ? { wire: true as const } : {}),
+    ...(mix ? { mix, ...(given ? { mixNew: true as const } : {}) } : {}),
+  };
 }
 
 /**
@@ -564,6 +613,8 @@ export async function getSketch(o: { project: string; sketch: string; version?: 
     states: states.length ? states.map((x) => `${x.name} (#${x.slug})`) : undefined,
     seen_state: state ? `${state.name} (#${state.slug})` : undefined,
     page: fullUrl(sketchPath(b.p.id, node.id, version)),
+    // What this version takes from which save, when it has a mix card.
+    mix: node.data.wire === true ? undefined : mixOf(node.id, version)?.mix,
     html,
     render,
   };

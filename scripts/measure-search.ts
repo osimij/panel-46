@@ -42,7 +42,8 @@ async function call(label: string, name: string, args: Record<string, unknown>) 
   const text = r.content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("");
   const pictures = r.content.filter((c) => c.type === "image").length;
   let j: Answer = {};
-  try { j = JSON.parse(text) as Answer; } catch { /* get_reference answers in several blocks */ }
+  // The JSON is the first block; a search can be followed by its sheet's words and picture.
+  try { j = JSON.parse(r.content.find((c) => c.type === "text")?.text ?? "") as Answer; } catch { /* not JSON */ }
   const cards = j.results?.length ?? (j.picks ? Object.values(j.picks).flat().length : undefined);
   const lines = Array.isArray(j.more) ? j.more.length : 0;
   console.log(

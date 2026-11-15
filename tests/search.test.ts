@@ -200,7 +200,9 @@ describe("opening a save", () => {
     expect(d.title).toBeDefined();
     // Searches carry no link, so the way back to the save comes with opening it.
     expect(d.open).toContain(`?open=${read[0]}`);
-    for (const k of ["files", "pictures", "read", "palette", "color", "motion", "post_text"]) expect(d[k]).toBeUndefined();
+    for (const k of ["files", "read", "palette", "color", "motion", "post_text"]) expect(d[k]).toBeUndefined();
+    // The list of pictures always comes, so an exact one can be asked for (pictures: [n]); this save has none prepared.
+    expect(d.pictures).toEqual([]);
   });
 
   test("without facets, everything as before", async () => {

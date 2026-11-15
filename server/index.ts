@@ -363,6 +363,17 @@ async function handle(req: Request): Promise<Response> {
     return serveFile(full, req, true);
   }
 
+  // One prepared picture of a save, by its number in the save's list (1 is the first): what
+  // FRIDAY means when it writes [[id#3]]. Read-only, like /media.
+  const pictureRoute = path.match(/^\/api\/refs\/([0-9a-f]{16})\/picture\/(\d{1,2})$/);
+  if (pictureRoute && m === "GET") {
+    const visuals = loadLibrary().docs.get(pictureRoute[1]!)?.visuals ?? [];
+    const v = visuals[Number(pictureRoute[2]) - 1];
+    const full = v ? join(MEDIA_DIR, v.rel) : null;
+    if (!full || !existsSync(full)) return bad("That picture isn't there.", 404);
+    return serveFile(full, req, true);
+  }
+
   // Sketches: pages Claude made on a project's canvas, and their pictures. A page runs in a
   // sandbox of its own (no same-origin), so its scripts can't reach Panel, even opened in a tab.
   if (path.startsWith("/sketches/")) {

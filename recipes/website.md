@@ -73,7 +73,7 @@ The one thing people will remember. It is decided before color and type, because
 - Kinds of gem: an illustration style; a shader or a generated pattern; a real object in 3D or photographed; a way of treating photos; a typographic device; one interaction (a stamp that lands, a page that folds).
 - Read the designer's rules again. Something physical made fully real is one way to a gem, and half-real is the failure.
 - Search the library for how others did each kind (search_library with look), and read get_verdicts for what this designer keeps choosing and keeps turning down.
-- Offer three ideas, different in kind. For each: one line saying what it is; one line saying why it belongs to this brand and no other; where it shows on the page (in the hero, and how it comes back, smaller, further down); and two or three saves that show the craft. Place those saves under the topic Gem.
+- Offer three ideas, different in kind. For each: one line saying what it is; one line saying why it belongs to this brand and no other; where it shows on the page (in the hero, and how it comes back, smaller, further down); and two or three saves that show the craft, each as the exact picture that shows it ([[id#n]]) with what to take from it and what to leave. Place those saves under the topic Gem.
 - Test each idea: could it sit on another company's site? If yes, it is decoration, not a gem. Drop it and find another.
 - When they pick one, make a study of it: a small sketch of the gem alone, large, on a plain ground. Not a page. This is where the effort goes: real craft, looked at and fixed until it is good. Give it knobs for everything worth tuning, and a seed knob if anything in it is random, so a look they like can be kept.
 - If the gem is a family of pictures (a pattern, a set of illustrations, textures), the study is a maker: the designer tunes it with Knobs, points at the picture and presses Keep, and it goes into the project's brand assets. From then on use what they kept (its src from get_brand_assets), never a redrawing of it.
@@ -119,6 +119,7 @@ Decision to write down: the families, weights and sizes, and what each is used f
 
 The first screen, for real. Everything decided so far, together for the first time.
 
+- Write the mix card first, one card: the hero of the card is the save whose first screen gives this one its structure. Take it from the saves chosen so far. If none of them gives a structure, search with look for one, show two or three with the question (its saves) and ask which. The gem, the color and the type are decided already: they are not helpers.
 - One sketch, "Hero": the navbar and the hero only, with the chosen words, the gem at full craft, the colors and the type. From the topic Hero.
 - This is where the feel is judged. Spend the effort here. Don't go on to the other sections yet.
 - Look at it on a phone too (get_sketch with device phone) and fix what breaks.
@@ -149,6 +150,7 @@ Decision to write down: the four, a line each, with durations and easing.
 The rest of the sections, built from everything decided.
 
 - A new sketch from the hero, "Whole page": every section of the wireframe, in order, with its words.
+- Before the sketch, go down the wireframe section by section and name, for each, the one screen of a save it follows (search with look for that kind of section, open the screen), or say that it has none. That list is the mix you pass to make_sketch, each section as a take with its name as the job. A section with no save behind it gets a line on what its job is and why the plain way fits. If most sections have none, stop and find screens first.
 - Each section follows what was decided: the colors where they were said to go, the type sizes, the motion. The gem comes back where the Gem step said it would.
 - No section is a template block. For each one, ask what its job is, and what the plainest way is to do that job on this site. Three cards in a row is a choice, never a default.
 - Real pictures from the project where there are any. Where a picture is still missing, a quiet gray block that says what it will be. Never a stock-looking stand-in.
@@ -157,5 +159,6 @@ The rest of the sections, built from everything decided.
   1. What is the one thing a visitor will remember? If you can't name it, it isn't done: go back to it.
   2. Could this page be another company's by changing the logo? Where?
   3. Which of the designer's rules does it brush against, and why is each of those still there?
+  4. Which sections have no save behind them, and what did the fresh look say about them?
 
 There is no decision to lock. The designer chooses the sketch (Choose), and then it can be built.

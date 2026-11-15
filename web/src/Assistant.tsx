@@ -43,7 +43,8 @@ const store = {
   },
 };
 
-const REF_IN_TEXT = /\[\[([0-9a-f]{16})\]\]/g;
+/** A save in a message, as [[id]] or as one exact picture of it, [[id#3]]: the id is the first group. */
+const REF_IN_TEXT = /\[\[([0-9a-f]{16})(?:#\d{1,2})?\]\]/g;
 
 // Sketch pages while FRIDAY is still writing them, by tool call. Kept outside React's
 // state: a draft arrives a few times a second, and only the small preview under that step
@@ -858,7 +859,7 @@ function asTyped(
   keep?: { card: (label: string, c: RefCard) => void; brand: (label: string, token: string, thumb: BrandAsset["thumb_url"]) => void },
 ): string {
   return text
-    .replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+    .replace(REF_IN_TEXT, (all, id: string) => {
       const c = cards.get(id);
       if (!c) return all;
       keep?.card(labelFor(c), c);
@@ -891,7 +892,7 @@ function UserMessage({
   const { quoted, body } = splitQuote(m.text);
   const [copied, setCopied] = useState(false);
   // Saves mentioned with @ travel as [[id]] and show as their chips; brand assets as [[brand:id]], a kit as [[brandkit:id]].
-  const pieces = body.split(/(\[\[(?:brand:|brandkit:)?(?:[0-9a-f]{16}|none)\]\])/);
+  const pieces = body.split(/(\[\[(?:brand:|brandkit:)?(?:[0-9a-f]{16}(?:#\d{1,2})?|none)\]\])/);
   const files = m.context?.files ?? [];
   return (
     <div className="msg-user">
@@ -939,8 +940,8 @@ function UserMessage({
           {pieces.map((t, i) => {
             const brand = t.match(/^\[\[(brand|brandkit):([0-9a-f]{16}|none)\]\]$/);
             if (brand) return <BrandChip key={i} kit={brand[1] === "brandkit"} id={brand[2]!} onOpen={onOpenBrand} />;
-            const id = t.match(/^\[\[([0-9a-f]{16})\]\]$/)?.[1];
-            return id ? <RefChip key={i} id={id} ctx={{ cards, onOpen }} /> : t;
+            const ref = t.match(/^\[\[([0-9a-f]{16})(?:#(\d{1,2}))?\]\]$/);
+            return ref ? <RefChip key={i} id={ref[1]!} n={ref[2] ? Number(ref[2]) : undefined} ctx={{ cards, onOpen }} /> : t;
           })}
         </div>
       )}

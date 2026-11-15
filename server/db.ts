@@ -259,6 +259,21 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 `);
+// What a sketch takes from which save (its mix card, mix.ts), one row per version that has
+// one, and what the fresh look found when it compared the page with those saves (mixcheck.ts).
+// A table of its own, only added, so Panel on older code keeps working beside it.
+db.exec(`
+CREATE TABLE IF NOT EXISTS sketch_mix (
+  sketch TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  project TEXT NOT NULL,
+  mix TEXT NOT NULL,
+  checks TEXT,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (sketch, version)
+);
+`);
+
 // Which way of measuring colors made a read's palette (palette.ts PALETTE_VERSION); empty is the first.
 const readCols = db.query<{ name: string }, []>("PRAGMA table_info(reads)").all().map((c) => c.name);
 if (!readCols.includes("palette_v")) db.exec("ALTER TABLE reads ADD COLUMN palette_v INTEGER");

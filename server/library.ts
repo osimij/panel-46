@@ -615,7 +615,7 @@ export async function search(o: SearchInput) {
     more: lined.length ? lined.map((x) => listLine(x.d)) : undefined,
     not_listed: after > 0 ? after : undefined,
     next: shown.length
-      ? "Open a save with get_reference for its whole read (facets: only the parts you need)." +
+      ? OPEN_NEXT +
         (after <= 0 ? ""
           : askedNothing ? ` ${after} more aren't listed: search with words, a look or colors to find the right ones, or ask from offset ${offset + shown.length} for the next newest.`
           : ` ${after} more matched and aren't listed: narrow the search with facets, filters or more exact words.`)
@@ -738,8 +738,20 @@ export async function gather(o: Filters & { brief: string; facet_briefs?: Partia
     brief: o.brief,
     words_searched: terms(o.brief),
     picks: out,
-    next: "Open the strongest picks with get_reference (images: \"all\") to look at them before combining.",
+    next: GATHER_NEXT,
   };
+}
+
+// What a search's answer says to do next. When a sheet of pictures comes with it (the MCP tools
+// add one), the words point at the sheet instead: choose by eye, then open exact pictures.
+const OPEN_NEXT = "Open a save with get_reference for its whole read (facets: only the parts you need).";
+const GATHER_NEXT = "Open the strongest picks with get_reference (images: \"all\") to look at them before combining.";
+/** `next` as it reads when a sheet came with the answer. */
+export function nextWithSheet(next: unknown) {
+  if (typeof next !== "string") return next;
+  return next
+    .replace(OPEN_NEXT, "Choose on the sheet, then open saves with get_reference (pictures: [n] for exact ones).")
+    .replace(GATHER_NEXT, "Choose on the sheet; open the best with get_reference (pictures: [n] for exact ones).");
 }
 
 const count = (values: (string | undefined | null)[], top = 40) => {
@@ -795,13 +807,21 @@ const abs = (rel: string) => join(MEDIA_DIR, rel);
  * With facets, only those parts of the read (and what to take from it), for when that's all
  * that's needed: a fraction of the length. The pictures come back the same either way.
  */
-export function reference(id: string, facets?: Facet[]) {
+export function reference(id: string, facets?: Facet[], pick?: number[]) {
   const d = load().docs.get(id) ?? (() => {
     const hidden = db.query<{ id: string }, [string]>("SELECT id FROM refs WHERE id = ?").get(id);
     throw new Error(hidden ? `Save ${id} is hidden in Panel.` : `No save with id ${id}.`);
   })();
   const r = d.r;
-  const pictures = d.visuals.map((v) => ({ path: abs(v.rel), label: v.label }));
+  const all = d.visuals.map((v) => ({ path: abs(v.rel), label: v.label }));
+  // Exact pictures by their number in the save's list (1 is the first), for one screen of a
+  // site or one frame grid of a video at full size, not the overview.
+  const wrong = pick?.filter((n) => n < 1 || n > all.length) ?? [];
+  if (wrong.length) {
+    throw new Error(`Save ${id} has ${all.length} picture${all.length === 1 ? "" : "s"}${all.length ? ` (1 to ${all.length})` : ""}, so there is no picture ${wrong.join(", ")}.`);
+  }
+  const pictures = pick?.length ? [...new Set(pick)].map((n) => ({ ...all[n - 1]!, n })) : all.map((p, i) => ({ ...p, n: i + 1 }));
+  const extra = { pictures_note: pictureNote(d) };
   if (facets?.length) {
     return {
       doc: d,
@@ -814,6 +834,9 @@ export function reference(id: string, facets?: Facet[]) {
         favorite: !!r.favorite,
         ...Object.fromEntries(facets.map((f) => [f, facetView(d, f)])),
         worth_taking: d.profile?.worth_taking,
+        // The list of pictures, so an exact one can be asked for (pictures: [n]) without the whole read.
+        pictures: d.visuals.map((v, i) => ({ n: i + 1, what: v.label })),
+        ...extra,
         // Searches give no link, so this is where the designer's way back to the save comes from.
         open: panelUrl(r.id),
       },
@@ -846,8 +869,24 @@ export function reference(id: string, facets?: Facet[]) {
         .filter((m) => m.status === "archived" && m.local_path)
         .map((m) => ({ type: m.type, path: abs(m.local_path!), width: m.width ?? undefined, height: m.height ?? undefined, seconds: m.duration ?? undefined })),
       pictures: d.visuals.map((v, i) => ({ n: i + 1, what: v.label, path: abs(v.rel) })),
+      ...extra,
       open: panelUrl(r.id),
     },
     pictures,
   };
+}
+
+/**
+ * For a site or a video, picture 1 is only an overview: the whole page folded small, or a grid
+ * of small frames. Taking from that alone is how the details get lost, so the answer says so.
+ */
+function pictureNote(d: Doc) {
+  const first = d.visuals[0]?.label ?? "";
+  if (first.startsWith("The whole page, cut into") && d.visuals.length > 1) {
+    return "Picture 1 is the whole page folded small: a map of it. Before you take anything from this site, open the screens that show it at full size (pictures: [n]).";
+  }
+  if (d.type === "video" && d.visuals.length > 1) {
+    return "Picture 1 is a grid of small frames. Open the grid or close-up that shows the moment you mean (pictures: [n]).";
+  }
+  return undefined;
 }

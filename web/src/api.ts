@@ -575,6 +575,9 @@ export function personFace(r: Ref) {
 
 // ---------- The assistant ----------
 
+/** One prepared picture of a save, by its number in the save's list (1 is the first): what [[id#3]] shows. */
+export const picturePath = (id: string, n: number) => `/api/refs/${id}/picture/${n}`;
+
 export interface RefCard {
   id: string;
   title: string;

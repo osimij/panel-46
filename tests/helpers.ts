@@ -34,8 +34,8 @@ export async function startPanel(env: Record<string, string> = {}, sql = ""): Pr
   const dir = mkdtempSync(join(tmpdir(), "panel-test-"));
   // Reading new saves by AI is off before Panel first looks, so a test never spends anything.
   const seed = new Database(join(dir, "library.sqlite"), { create: true });
-  // (Nor does it fetch the models for search by meaning.)
-  seed.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO settings VALUES ('ai_auto', '0'), ('meaning_search', '0');");
+  // (Nor does it fetch the models for search by meaning, nor ask a fresh look at a sketch's mix.)
+  seed.exec("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO settings VALUES ('ai_auto', '0'), ('meaning_search', '0'), ('mix_check', '0');");
   if (sql) seed.exec(sql);
   seed.close();
 

@@ -46,7 +46,7 @@ The poster's gem: one visual idea that says the line without repeating it.
 
 - Look for it in what is true about the event, the place or the people. Read the designer's rules again: something physical made fully real is one way, and half-real is the failure.
 - Search the library for how others did it (search_library with look), and read get_verdicts.
-- Offer three ideas, different in kind: type alone as the picture; one object made real; an illustration or a pattern; a photograph treated one way. For each: one line saying what it is, one line saying why it fits this and nothing else, and two or three saves that show the craft. Place those saves under the topic Idea.
+- Offer three ideas, different in kind: type alone as the picture; one object made real; an illustration or a pattern; a photograph treated one way. For each: one line saying what it is, one line saying why it fits this and nothing else, and two or three saves that show the craft, each as the exact picture that shows it ([[id#n]]) with what to take from it and what to leave. Place those saves under the topic Idea.
 - Test each: with another event's name on it, would it still work? Then it is decoration. Drop it.
 - When they pick one, make a study of it: the idea alone, large, with real craft and knobs for what is worth tuning (and a seed knob if anything is random). If it is a picture to reuse, the designer can point at it and press Keep to put it in the project's brand assets.
 
@@ -58,6 +58,7 @@ Decision to write down: the idea in one sentence.
 
 Where things go, in gray, at the poster's real shape.
 
+- Write the mix card first, one card: the hero of the card is the save whose composition gives this poster its structure. Take it from the saves chosen so far. If none of them gives a structure, search with look for one, show two or three with the question (its saves) and ask which. The idea is decided already: it is not a helper. A wireframe keeps no mix, so pass the card to make_sketch when the poster itself is made.
 - A wireframe (make_sketch with kind "wireframe"), "Layout": the board in the poster's shape, with gray blocks for the idea, the line and each level of facts. No colors, no chosen fonts.
 - Show the order for the eye: what is biggest, what is second, where the small print sits. Say it in a line.
 - Offer two or three layouts side by side in the one sketch when there is a real choice (the idea filling the board with the words small; the words huge with the idea inside them).
