@@ -118,11 +118,20 @@
 
 /* ---- Body ---- */
 .st-body { flex: 1; min-height: 0; display: flex; }
-.st-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); }
+.st-main { position: relative; flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--card); }
 
 /* The page row: the states at the left (scrolling sideways in their own room), the rest at the right, whole. */
 .st-bar { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px; flex: none; }
 .st-bar-end { display: flex; align-items: center; gap: 8px; flex: none; }
+/* Over the page, the row takes no room of its own: it floats on the page's top edge, so the page
+   gets the whole height. Only its pieces catch clicks, each on a small chip of the column's color
+   so it reads on a white page as well as a dark one. (Compare keeps its row in the flow.) */
+.st-main > .st-bar { position: absolute; top: 0; left: 0; right: 0; z-index: 3; padding: 0 12px; pointer-events: none; }
+.st-main > .st-bar > :not(.st-gap) { pointer-events: auto; }
+.st-main > .st-bar .st-states, .st-main > .st-bar .st-bar-end {
+  padding: 3px; background: var(--card); border-radius: calc(10px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 0 0 1px var(--line), 0 6px 18px -10px oklch(0 0 0 / 0.35);
+}
 /* The view chip: which screen, at what scale; its menu has the rest. */
 .st-view {
   display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 7px 0 8px; flex: none;
