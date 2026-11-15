@@ -2,7 +2,7 @@
 
 :root {
   --drawer: cubic-bezier(0.32, 0.72, 0, 1);
-  /* The assistant's colors: only ever seen while it's working. */
+  /* The colors inside FRIDAY's mark, seen only when it's hovered or working. Its light is gray, white and a little bronze. */
   --iris-1: #ffd36e;
   --iris-2: #ff7fc8;
   --iris-3: #9a82ff;
@@ -31,8 +31,7 @@
 
 .ask {
   position: fixed; top: 0; right: 0; bottom: 0; width: var(--chat); z-index: 26;
-  display: flex; flex-direction: column; background: var(--bg);
-  box-shadow: -1px 0 0 var(--line);
+  display: flex; flex-direction: column; gap: 8px; padding: 8px; background: var(--bg);
   transform: translateX(calc(100% + 24px)); opacity: 0; visibility: hidden;
   transition: transform 0.5s var(--drawer), opacity 0.35s var(--ease), visibility 0s linear 0.5s;
 }
@@ -54,6 +53,16 @@
 /* While dragging, everything follows the pointer at once. */
 :root.ask-resizing, :root.ask-resizing * { cursor: col-resize !important; user-select: none; }
 :root.ask-resizing .main, :root.ask-resizing .detail, :root.ask-resizing .dock, :root.ask-resizing .ask { transition: none !important; }
+
+/*
+ * Two cards on the page's own background: the conversation (head, steps, messages) in one,
+ * the composer in the other, 8px apart and 8px from every edge. Both share one tone and the
+ * same smoothed corner, so they read as a pair; no borders, the tone alone sets them apart.
+ */
+.ask-sheet {
+  position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+  background: var(--card); border-radius: calc(24px * var(--smooth)); corner-shape: var(--corner);
+}
 
 /* ---- Head ---- */
 .ask-head { display: flex; align-items: center; gap: 9px; height: 52px; padding: 0 10px 0 16px; flex: none; }
@@ -287,10 +296,30 @@
   border-radius: calc(8px * var(--smooth)); corner-shape: var(--corner);
 }
 .msg-actions button:hover { background: var(--fill); color: var(--text); }
+/* Under your own message: Edit and Copy, right-aligned under the bubble. They keep their room so
+   nothing moves, and fade in while the pointer is over the message (or a button in it has focus).
+   A touch screen has no hover, so there they always show. */
+.msg-actions.msg-user-actions { margin: -4px -4px 0 0; opacity: 0; animation: none; transition: opacity 0.2s var(--ease); }
+.msg-user:hover .msg-user-actions, .msg-user-actions:focus-within { opacity: 1; }
+@media (hover: none) { .msg-actions.msg-user-actions { opacity: 1; } }
+.msg-user-actions button { position: relative; width: 30px; height: 30px; padding: 0; justify-content: center; }
+/* Each icon's name, the moment the pointer or Tab is on it, in a small chip just above it (not the
+   browser's own slow title). Light ink on a gray a step lighter than your message bubble in the dark; inverted in the light. */
+.msg-user-actions [data-tip]::after {
+  content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); left: 50%; z-index: 4; padding: 6px 10px;
+  font-size: 12px; font-weight: 500; line-height: 1.2; white-space: nowrap; color: var(--bg); background: var(--text);
+  border-radius: calc(9px * var(--smooth)); corner-shape: var(--corner);
+  box-shadow: 0 6px 18px -8px oklch(0 0 0 / 0.4);
+  opacity: 0; translate: -50% 3px; pointer-events: none;
+  transition: opacity var(--fast) var(--ease), translate var(--fast) var(--ease);
+}
+@media (prefers-color-scheme: dark) { .msg-user-actions [data-tip]::after { color: var(--text); background: oklch(0.32 0 0); box-shadow: inset 0 0 0 1px var(--line), 0 6px 18px -8px oklch(0 0 0 / 0.5); } }
+.msg-user-actions [data-tip]:hover::after, .msg-user-actions [data-tip]:focus-visible::after { opacity: 1; translate: -50% 0; }
+@media (prefers-reduced-motion: reduce) { .msg-user-actions [data-tip]::after { transition: none; translate: -50% 0; } }
 
 /* ---- Bottom: the composer, and the light behind it ---- */
 .ask-jump {
-  position: absolute; left: 50%; bottom: 112px; z-index: 3; width: 30px; height: 30px; border-radius: 50%;
+  position: absolute; left: 50%; bottom: 14px; z-index: 3; width: 30px; height: 30px; border-radius: 50%;
   display: grid; place-items: center; background: var(--raised); color: var(--text);
   box-shadow: 0 0 0 1px var(--line), 0 8px 20px -8px oklch(0 0 0 / 0.35);
   translate: -50% 8px; opacity: 0; pointer-events: none;
@@ -298,32 +327,25 @@
 }
 .ask-jump.show { opacity: 1; translate: -50% 0; pointer-events: auto; }
 
-.ask-foot { position: relative; flex: none; padding: 8px 12px 14px; }
+.ask-foot { position: relative; flex: none; }
+/* The light lives in the conversation card, rising from its bottom edge; the card's corners clip it. */
 .glow {
   position: absolute; left: 0; right: 0; bottom: 0; width: 100%; height: 360px; pointer-events: none; z-index: 0;
   mix-blend-mode: multiply; opacity: 0.95;
 }
 @media (prefers-color-scheme: dark) { .glow { mix-blend-mode: screen; opacity: 0.85; } }
 
-@property --rim { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 .composer {
   position: relative; z-index: 1; display: flex; flex-direction: column; padding: 10px 8px 8px 16px;
-  background: var(--raised); border-radius: calc(24px * var(--smooth)); corner-shape: var(--corner);
-  box-shadow: inset 0 0 0 1px var(--line), 0 12px 32px -14px oklch(0 0 0 / 0.3), 0 1px 3px oklch(0 0 0 / 0.05);
+  background: var(--card); border-radius: calc(24px * var(--smooth)); corner-shape: var(--corner);
   transition: box-shadow 0.25s var(--ease);
 }
-.composer:focus-within { box-shadow: inset 0 0 0 1px var(--faint), 0 16px 40px -14px oklch(0 0 0 / 0.35), 0 1px 3px oklch(0 0 0 / 0.05); }
-/* While it works, a thin iridescent rim runs around the composer. */
-.composer::before {
-  content: ""; position: absolute; inset: 0; border-radius: inherit; corner-shape: inherit; padding: 1.25px; pointer-events: none;
-  background: conic-gradient(from var(--rim), var(--iris-1), var(--iris-2), var(--iris-3), var(--iris-4), var(--iris-5), var(--iris-1));
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
-  opacity: 0; transition: opacity 0.8s var(--ease);
-  animation: rim 3.2s linear infinite;
-}
-.composer.working::before { opacity: 0.95; }
-@keyframes rim { to { --rim: 360deg; } }
+/* Typing in it draws a faint edge, the only edge either card ever has. */
+.composer:focus-within { box-shadow: inset 0 0 0 1px var(--line); }
+/* While FRIDAY works, the composer catches the light from the card above it: the same pools,
+   dimmer, on its top edge and a little way down its face (Glow.tsx, part "field"). It sits over
+   the composer's own background and under everything in it, cut to the composer's corners. */
+.glow.glow-field { top: 0; height: 100%; z-index: -1; border-radius: inherit; corner-shape: inherit; }
 .composer-row { display: flex; align-items: flex-end; gap: 8px; }
 /* The foot sits 8px in from the left, right and bottom edges, the same as the composer's own
    padding, so the model chip and Send hug the corners evenly (the corner's radius is the
@@ -500,7 +522,7 @@
 .msg-bubble .ref-chip { vertical-align: middle; }
 
 /* ---- Pictures and files attached to a message ---- */
-.composer.dropping { box-shadow: inset 0 0 0 1.5px var(--text), 0 16px 40px -14px oklch(0 0 0 / 0.35); }
+.composer.dropping { box-shadow: inset 0 0 0 1.5px var(--text); }
 .composer-btn.attach { color: var(--muted); animation: none; transition: background 0.15s var(--ease), color 0.15s var(--ease); }
 .composer-btn.attach:hover:not(:disabled) { background: var(--fill); color: var(--text); }
 .composer-btn.attach:disabled { opacity: 0.4; cursor: default; }
@@ -703,7 +725,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .rt-live .w, .ref-chip, .gallery-card, .step, .msg-bubble, .ask-idea, .ask-steps, .mention-pick, .mention-row, .composer-mention, .reply-btn, .composer-quote, .composer-file, .msg-file-pic { animation: none !important; }
-  .mark i, .composer::before { animation: none !important; }
+  .mark i { animation: none !important; }
 }
 
 /* Brand assets in the @ list, in the composer and in messages: a logo shows whole, never cropped. */

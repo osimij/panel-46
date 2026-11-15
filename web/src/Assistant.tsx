@@ -423,6 +423,13 @@ export function Assistant(props: {
     document.addEventListener("selectionchange", onChange);
     return () => document.removeEventListener("selectionchange", onChange);
   }, []);
+  /** Edit on your message: its words go back in the composer (and what it replied to, above them), to change and send again. */
+  const [recall, setRecall] = useState<{ text: string; n: number } | null>(null);
+  const edit = (text: string) => {
+    const { quoted, body } = splitQuote(text);
+    setQuote(quoted);
+    setRecall({ text: body, n: Date.now() });
+  };
   const replyTo = (text: string) => {
     setQuote(text.slice(0, 1200));
     setReply(null);
@@ -535,86 +542,91 @@ export function Assistant(props: {
       }}
     >
       <Resizer />
-      <header className="ask-head">
-        <Mark size={16} active={running} />
-        <span className="ask-title" key={title || "new"}>{title || "FRIDAY"}</span>
-        <div className="ask-head-tools">
-          <button className="ask-tool" onClick={openHistory} title="Conversations" aria-label="Conversations">
-            <Icon name="history" size={15} />
-          </button>
-          <button className="ask-tool" onClick={newChat} title="New conversation" aria-label="New conversation" disabled={!messages.length}>
-            <Icon name="compose" size={15} />
-          </button>
-          <button className="ask-tool" onClick={props.onClose} title="Close (⌘J)" aria-label="Close">
-            <Icon name="x" size={15} />
-          </button>
-        </div>
-      </header>
-      {props.project && steps?.state === "on" && (
-        <StepsRow
-          steps={steps}
-          onStop={() => {
-            const at = props.project!;
-            setSteps(null);
-            projectApi.stopSteps(at).then((s) => placeNow.current === at && setSteps(s)).catch(() => readSteps());
-          }}
-        />
-      )}
+      {/* Two cards, as in the designer's sketch: the conversation in one, the composer in the other. */}
+      <div className="ask-sheet">
+        <header className="ask-head">
+          <Mark size={16} active={running} />
+          <span className="ask-title" key={title || "new"}>{title || "FRIDAY"}</span>
+          <div className="ask-head-tools">
+            <button className="ask-tool" onClick={openHistory} title="Conversations" aria-label="Conversations">
+              <Icon name="history" size={15} />
+            </button>
+            <button className="ask-tool" onClick={newChat} title="New conversation" aria-label="New conversation" disabled={!messages.length}>
+              <Icon name="compose" size={15} />
+            </button>
+            <button className="ask-tool" onClick={props.onClose} title="Close (⌘J)" aria-label="Close">
+              <Icon name="x" size={15} />
+            </button>
+          </div>
+        </header>
+        {props.project && steps?.state === "on" && (
+          <StepsRow
+            steps={steps}
+            onStop={() => {
+              const at = props.project!;
+              setSteps(null);
+              projectApi.stopSteps(at).then((s) => placeNow.current === at && setSteps(s)).catch(() => readSteps());
+            }}
+          />
+        )}
 
-      <div
-        className="ask-scroll"
-        ref={scroller}
-        onScroll={onScroll}
-        onWheel={markTouched}
-        onTouchMove={markTouched}
-        onPointerDown={markTouched}
-        onKeyDown={(e) => ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key) && markTouched()}
-      >
         <div
-          className="ask-content"
-          ref={content}
-          onMouseUp={() => setTimeout(placeReply, 0)}
-          onKeyUp={(e) => e.shiftKey && placeReply()}
+          className="ask-scroll"
+          ref={scroller}
+          onScroll={onScroll}
+          onWheel={markTouched}
+          onTouchMove={markTouched}
+          onPointerDown={markTouched}
+          onKeyDown={(e) => ["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(e.key) && markTouched()}
         >
-          {messages.length === 0 ? (
-            <Welcome looking={context} picked={picked} project={!!props.project} onPick={(t) => void send(t)} />
-          ) : (
-            messages.map((m, i) =>
-              m.role === "user" ? (
-                <UserMessage key={keyOf(m)} m={m} cards={cards} onOpen={props.onOpenRef} onOpenBrand={props.onOpenBrand} />
-              ) : (
-                <AssistantMessage
-                  key={keyOf(m)}
-                  m={m}
-                  animate={live.current.has(keyOf(m))}
-                  last={i === messages.length - 1}
-                  waiting={i === messages.length - 1 && !running}
-                  onAnswer={(text) => void send(text)}
-                  ctx={ctx}
-                  onShowInGrid={(ids) => props.onShowInGrid(ids, title || "From FRIDAY")}
-                  onRetry={() => {
-                    const q = messages.slice(0, i).findLast((x) => x.role === "user");
-                    if (q) void send(q.text);
-                  }}
-                />
-              ),
-            )
-          )}
+          <div
+            className="ask-content"
+            ref={content}
+            onMouseUp={() => setTimeout(placeReply, 0)}
+            onKeyUp={(e) => e.shiftKey && placeReply()}
+          >
+            {messages.length === 0 ? (
+              <Welcome looking={context} picked={picked} project={!!props.project} onPick={(t) => void send(t)} />
+            ) : (
+              messages.map((m, i) =>
+                m.role === "user" ? (
+                  <UserMessage key={keyOf(m)} m={m} cards={cards} onOpen={props.onOpenRef} onOpenBrand={props.onOpenBrand} onEdit={edit} />
+                ) : (
+                  <AssistantMessage
+                    key={keyOf(m)}
+                    m={m}
+                    animate={live.current.has(keyOf(m))}
+                    last={i === messages.length - 1}
+                    waiting={i === messages.length - 1 && !running}
+                    onAnswer={(text) => void send(text)}
+                    ctx={ctx}
+                    onShowInGrid={(ids) => props.onShowInGrid(ids, title || "From FRIDAY")}
+                    onRetry={() => {
+                      const q = messages.slice(0, i).findLast((x) => x.role === "user");
+                      if (q) void send(q.text);
+                    }}
+                  />
+                ),
+              )
+            )}
+          </div>
         </div>
+
+        {/* While FRIDAY works, its light rises inside this card from the bottom edge, just above the composer. */}
+        <Glow state={glow} />
+        <button className={`ask-jump ${below && messages.length ? "show" : ""}`} onClick={toBottom} aria-label="Scroll to the latest" tabIndex={below ? 0 : -1}>
+          <Icon name="arrow-down" size={14} />
+        </button>
       </div>
 
-      <button className={`ask-jump ${below && messages.length ? "show" : ""}`} onClick={toBottom} aria-label="Scroll to the latest" tabIndex={below ? 0 : -1}>
-        <Icon name="arrow-down" size={14} />
-      </button>
-
       <div className="ask-foot">
-        <Glow state={glow} />
         <Composer
           use={use}
           inputRef={inputRef}
           value={draft}
           setValue={setDraft}
           running={running}
+          glow={glow}
           onSend={(text, files) => {
             void send(withQuote(text), undefined, files);
             setQuote(null);
@@ -632,6 +644,7 @@ export function Assistant(props: {
             if (picked?.point) props.onLetGoPoint?.();
           }}
           lastAsked={messages.findLast((m) => m.role === "user")?.text}
+          recall={recall}
         />
       </div>
 
@@ -827,13 +840,56 @@ function Welcome({ looking, picked, project, onPick }: { looking: Ref | null; pi
 
 // ---------- Messages ----------
 
-function UserMessage({ m, cards, onOpen, onOpenBrand }: { m: ChatMessage; cards: Map<string, RefCard>; onOpen: (id: string) => void; onOpenBrand?: (focus: string) => void }) {
+/** A reply starts with what it replies to, as "> " lines: splits that quote from your own words. */
+function splitQuote(text: string): { quoted: string | null; body: string } {
+  const q = text.match(/^((?:>[^\n]*(?:\n|$))+)\s*/);
+  if (!q) return { quoted: null, body: text };
+  return { quoted: q[1]!.split("\n").map((l) => l.replace(/^> ?/, "")).join("\n").trim(), body: text.slice(q[0].length) };
+}
+
+/**
+ * A message the way you typed it: saves back to "@their name", brand assets and kits to "@their name".
+ * Copying your message and bringing it back into the composer both use it. `keep` lets the composer
+ * remember what each @ stands for, so sending it again sends the same saves.
+ */
+function asTyped(
+  text: string,
+  cards: Map<string, RefCard>,
+  keep?: { card: (label: string, c: RefCard) => void; brand: (label: string, token: string, thumb: BrandAsset["thumb_url"]) => void },
+): string {
+  return text
+    .replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
+      const c = cards.get(id);
+      if (!c) return all;
+      keep?.card(labelFor(c), c);
+      return `@${labelFor(c)}`;
+    })
+    .replace(/\[\[(brand|brandkit):([0-9a-f]{16}|none)\]\]/g, (all, which: string, id: string) => {
+      const a = which === "brand" ? brandSeen.find((x) => x.id === id) : brandSeen.find((x) => (x.project_id ?? "none") === id);
+      if (!a) return all;
+      const label = which === "brand" ? a.name : kitLabel(kitName(a), id);
+      keep?.brand(label, all, a.thumb_url);
+      return `@${label}`;
+    });
+}
+
+function UserMessage({
+  m,
+  cards,
+  onOpen,
+  onOpenBrand,
+  onEdit,
+}: {
+  m: ChatMessage;
+  cards: Map<string, RefCard>;
+  onOpen: (id: string) => void;
+  onOpenBrand?: (focus: string) => void;
+  onEdit: (text: string) => void;
+}) {
   const about = m.context?.open ? cards.get(m.context.open) : null;
   const pick = m.context?.label ? m.context : null;
-  // A reply starts with what it replies to, as "> " lines.
-  const q = m.text.match(/^((?:>[^\n]*(?:\n|$))+)\s*/);
-  const quoted = q ? q[1]!.split("\n").map((l) => l.replace(/^> ?/, "")).join("\n").trim() : null;
-  const body = q ? m.text.slice(q[0].length) : m.text;
+  const { quoted, body } = splitQuote(m.text);
+  const [copied, setCopied] = useState(false);
   // Saves mentioned with @ travel as [[id]] and show as their chips; brand assets as [[brand:id]], a kit as [[brandkit:id]].
   const pieces = body.split(/(\[\[(?:brand:|brandkit:)?(?:[0-9a-f]{16}|none)\]\])/);
   const files = m.context?.files ?? [];
@@ -886,6 +942,25 @@ function UserMessage({ m, cards, onOpen, onOpenBrand }: { m: ChatMessage; cards:
             const id = t.match(/^\[\[([0-9a-f]{16})\]\]$/)?.[1];
             return id ? <RefChip key={i} id={id} ctx={{ cards, onOpen }} /> : t;
           })}
+        </div>
+      )}
+      {/* Under your words, as icons, shown while the pointer is over the message (always on a touch screen). Each names itself above it on hover. */}
+      {body.trim() && (
+        <div className="msg-actions msg-user-actions">
+          <button onClick={() => onEdit(m.text)} aria-label="Edit" data-tip="Edit">
+            <Icon name="pencil" size={14} />
+          </button>
+          <button
+            aria-label={copied ? "Copied" : "Copy"}
+            data-tip={copied ? "Copied" : "Copy"}
+            onClick={() => {
+              void navigator.clipboard?.writeText(asTyped(body, cards).trim());
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1200);
+            }}
+          >
+            <Icon name={copied ? "check" : "copy"} size={14} />
+          </button>
         </div>
       )}
     </div>
@@ -1603,11 +1678,15 @@ function Composer(props: {
   value: string;
   setValue: (v: string) => void;
   running: boolean;
+  /** What FRIDAY's light is doing: the composer catches it on its top edge. */
+  glow: GlowState;
   onSend: (text: string, files: ChatFileNote[]) => void;
   onStop: () => void;
   context: Ref | null;
   onDropContext: () => void;
   lastAsked?: string;
+  /** A message to bring back for editing; a new n each time, so editing the same one twice works. */
+  recall?: { text: string; n: number } | null;
   cards: Map<string, RefCard>;
   onMention: (c: RefCard) => void;
   quote: string | null;
@@ -1629,6 +1708,25 @@ function Composer(props: {
   const fontMentions = useRef(new Set<string>());
   // Brand assets (and whole kits) mentioned with @, by their label; they travel as [[brand:id]] / [[brandkit:id]].
   const brandMentions = useRef(new Map<string, { token: string; thumb: string | null }>());
+  // Bringing a message back (↑ or Edit) remembers what each of its @ stands for.
+  const keep = {
+    card: (label: string, c: RefCard) => mentions.current.set(label, c),
+    brand: (label: string, token: string, thumb: string | null) => brandMentions.current.set(label, { token, thumb }),
+  };
+  // Edit on one of your messages: its words replace what's in the box, with the cursor at the end.
+  useEffect(() => {
+    if (!props.recall) return;
+    const text = asTyped(props.recall.text, props.cards, keep);
+    props.setValue(text);
+    requestAnimationFrame(() => {
+      const el = props.inputRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(text.length, text.length);
+    });
+    // Only a new Edit brings it back, not every change to the saves around it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.recall]);
   const [pick, setPick] = useState(0);
   // While the mic listens, the box says so; the words come in when the designer stops it.
   const [listening, setListening] = useState(false);
@@ -1886,6 +1984,8 @@ function Composer(props: {
         attach([...e.dataTransfer.files]);
       }}
     >
+      {/* The light on the card above falls on the composer's top edge too. */}
+      <Glow state={props.glow} part="field" />
       {command && !open && (
         <div className="mention-pick" role="listbox" aria-label="Commands">
           <button
@@ -2112,20 +2212,7 @@ function Composer(props: {
             // ↑ in an empty composer brings back what you last asked, to change it.
             if (e.key === "ArrowUp" && !value && props.lastAsked) {
               e.preventDefault();
-              const again = props.lastAsked
-                .replace(/\[\[([0-9a-f]{16})\]\]/g, (all, id: string) => {
-                  const c = props.cards.get(id);
-                  if (!c) return all;
-                  mentions.current.set(labelFor(c), c);
-                  return `@${labelFor(c)}`;
-                })
-                .replace(/\[\[(brand|brandkit):([0-9a-f]{16}|none)\]\]/g, (all, which: string, id: string) => {
-                  const a = which === "brand" ? brandSeen.find((x) => x.id === id) : brandSeen.find((x) => (x.project_id ?? "none") === id);
-                  if (!a) return all;
-                  const label = which === "brand" ? a.name : kitLabel(kitName(a), id);
-                  brandMentions.current.set(label, { token: all, thumb: a.thumb_url });
-                  return `@${label}`;
-                });
+              const again = asTyped(props.lastAsked, props.cards, keep);
               props.setValue(again);
               return;
             }
