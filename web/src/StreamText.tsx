@@ -171,7 +171,7 @@ function inline(text: string, at: number, ctx: Ctx): ReactNode[] {
     const k = at + m.index;
     if (m[1] !== undefined) out.push(<strong key={`b${k}`}>{inline(m[1], k + 2, ctx)}</strong>);
     else if (m[2]) out.push(<RefChip key={`r${k}`} id={m[2]} ctx={ctx} />);
-    else if (m[3] !== undefined) out.push(<code key={`c${k}`} className="w">{m[3]}</code>);
+    else if (m[3] !== undefined) out.push(m[0].endsWith("`") && isColor(m[3]) ? <Hex key={`x${k}`} hex={m[3].trim()} /> : <code key={`c${k}`} className="w">{m[3]}</code>);
     else if (m[4]) out.push(<Hex key={`x${k}`} hex={m[4]} />);
     else if (m[5] !== undefined) {
       const href = m[6] ?? "";
@@ -313,20 +313,35 @@ export function Gallery({ ids, ctx, small }: { ids: string[]; ctx: Ctx; small?: 
   );
 }
 
+/**
+ * FRIDAY usually writes a color as code (`#1f4216`), so a code span that holds only a color
+ * gets the same swatch as a bare hex. Hex in any length, and the rgb/hsl/oklch/oklab forms;
+ * names like `white` stay plain code, since in code they are more often a word than a color.
+ * A code span still arriving (no closing backtick yet) shows as code until it is whole, so a
+ * half-written "#1f4" never flashes as a different color.
+ */
+function isColor(s: string) {
+  const t = s.trim();
+  if (/^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(t)) return true;
+  return /^(?:rgba?|hsla?|oklch|oklab|lab|lch)\(.+\)$/i.test(t) && CSS.supports("color", t);
+}
+
 function Hex({ hex }: { hex: string }) {
   const [copied, setCopied] = useState(false);
+  // Hex is shown in capitals; the other forms are shown as written.
+  const label = hex.startsWith("#") ? hex.toUpperCase() : hex;
   return (
     <button
       className={`hex w ${copied ? "copied" : ""}`}
       onClick={() => {
-        void navigator.clipboard?.writeText(hex.toUpperCase());
+        void navigator.clipboard?.writeText(label);
         setCopied(true);
         setTimeout(() => setCopied(false), 1100);
       }}
       title="Copy"
     >
       <i style={{ background: hex }} />
-      {copied ? "Copied" : hex.toUpperCase()}
+      {copied ? "Copied" : label}
     </button>
   );
 }

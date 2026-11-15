@@ -211,7 +211,9 @@
   background: var(--fill); border-radius: 6px;
 }
 .hex:hover { background: var(--fill-hover); }
-.hex i { width: 11px; height: 11px; border-radius: 3.5px; box-shadow: inset 0 0 0 1px oklch(0 0 0 / 0.12); flex: none; }
+/* The ring follows the text color, so a near-black swatch still shows its edge in dark mode
+   and a near-white one in light mode. */
+.hex i { width: 11px; height: 11px; border-radius: 3.5px; box-shadow: inset 0 0 0 1px color-mix(in oklch, currentColor 22%, transparent); flex: none; }
 .hex.copied { color: var(--ok); }
 
 /* ---- Steps: a quiet timeline of what it did ---- */
