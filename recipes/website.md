@@ -36,7 +36,8 @@ What the page shows, section by section, before any design.
 
 - Decide the sections from the visitor's questions, in the order they come: what is this, is it for me, how does it work, can I trust it, what do I do now. Each section has one job. If you can't say a section's job in one line, it goes.
 - Most pages need five to eight sections. Say why each one is there.
-- Make a wireframe: make_sketch with kind "wireframe", titled "Wireframe", from the topic Sections. Start from the page below and fill it in: one row per section, with the note on the left (its name, its job, what is in it: which links, which buttons, what kind of picture or video) and gray blocks on the right.
+- Make a wireframe: make_sketch with kind "wireframe", titled "Wireframe", from the topic Sections. Start from the page below and fill it in: the page as it will stand, one full-width section after another, in gray. No notes beside the sections and no title above the page: the placeholder words inside say what goes where (which links, which buttons, what kind of picture or video). Each section's job goes in your reply, not on the page.
+- Give every section the height it will really have, in screens (vh): a hero that is the whole first screen is 100vh, a short band of logos maybe 25vh, a list as tall as it needs. Each height is a variable on :root, so the designer can drag it. A tag in each section's corner shows its height as measured; check it says what you meant.
 - Gray only. No colors, no chosen fonts, no real copy yet: the placeholders say what the words will do ("Headline: the one promise", "Button: book a table").
 - Name each section by what it is ("Hero", "Menu"). Don't number the sections, here or in any later sketch.
 - This is not design. Don't polish it. It should take one try.

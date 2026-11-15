@@ -23,7 +23,7 @@ const tool = async (name: string, args: unknown) => {
 // The recipe's own starting page, with plain round corners on its buttons: a designed page with
 // these would break the designer's rules, so the checks have something to find.
 const WIRE = readFileSync(join(import.meta.dir, "..", "recipes", "wireframe.html"), "utf8")
-  .replace(".wf-btn { padding: 9px 16px;", ".wf-btn { border-radius: 12px; padding: 9px 16px;");
+  .replace(".wf-btn { padding: 10px 16px;", ".wf-btn { border-radius: 12px; padding: 10px 16px;");
 
 beforeAll(async () => {
   p = await startPanel();
@@ -45,7 +45,7 @@ withChrome("a wireframe isn't checked, says it is one, and stays one when change
   const board = await p.get(`/api/projects/${project}`);
   expect(board.nodes.find((n: any) => n.id === id).data.wire).toBe(true);
 
-  const edited = await tool("edit_sketch", { project, sketch: id, edits: [{ find: "NAME OF THE SITE: wireframe", replace: "Rohat: wireframe" }] });
+  const edited = await tool("edit_sketch", { project, sketch: id, edits: [{ find: "Headline: the one promise", replace: "Headline: Rohat, the one promise" }] });
   expect(edited.first.wireframe).toBe(true);
   expect(edited.first.rule_checks).toBeUndefined();
   expect(edited.first.version).toBe(2);

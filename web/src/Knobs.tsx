@@ -298,6 +298,10 @@ function rangeFor(role: Role, o: number, unit: string): { min: number; max: numb
       return unit === "%" ? r(0, 100, 1) : r(0, 1, 0.01);
     case "time":
       return unit === "ms" ? r(0, Math.max(1000, a * 3), 10) : r(0, Math.max(1, a * 3), 0.05);
+    case "dimension":
+      // A height in screens (a wireframe's sections): from a thin band to a screen and a half.
+      if (/^[sdl]?vh$/.test(unit)) return r(10, 150, 1);
+      return r(o < 0 ? -a * 2.5 : 0, a ? a * 2.5 : 10);
     default:
       if (RELATIVE.test(unit) && unit === "%") return r(0, Math.max(100, a * 2), 1);
       return r(o < 0 ? -a * 2.5 : 0, a ? a * 2.5 : 10);

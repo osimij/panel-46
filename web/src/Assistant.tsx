@@ -926,8 +926,22 @@ function AssistantMessage(props: {
     return ids;
   }, [m.parts]);
   const [copied, setCopied] = useState(false);
-  // The last words may still be coming into view after the stream ends; actions wait for them.
-  const [revealing, setRevealing] = useState(false);
+  // Words may still be coming into view after the stream ends; actions and questions wait for
+  // them. Every text part says whether it is still typing (not only the last one: a part that
+  // stops being last while it types would otherwise leave this stuck on).
+  const [typing, setTyping] = useState<ReadonlySet<number>>(() => new Set());
+  const onLive = useCallback(
+    (key: number, live: boolean) =>
+      setTyping((s) => {
+        if (s.has(key) === live) return s;
+        const next = new Set(s);
+        if (live) next.add(key);
+        else next.delete(key);
+        return next;
+      }),
+    [],
+  );
+  const revealing = typing.size > 0;
   const plain = () =>
     m.parts
       .filter((p): p is Extract<ChatPart, { type: "text" }> => p.type === "text")
@@ -956,13 +970,16 @@ function AssistantMessage(props: {
             animate={props.animate}
             streaming={streaming && i === groups.length - 1}
             ctx={ctx}
-            onLive={i === groups.length - 1 ? setRevealing : undefined}
+            liveKey={g.key}
+            onLive={onLive}
           />
         ),
       )}
-      {/* Shown once the answer is whole: in Plan, then build the builder may still be making what they are about. */}
-      {asks.length > 0 && !streaming && (
-        <Questions asks={asks} waiting={props.waiting && !revealing} onAnswer={props.onAnswer} ctx={props.ctx} />
+      {/* Shown once the answer is whole: in Plan, then build the builder may still be making what they are about.
+          The latest answer's questions wait for its words to finish too, then come as buttons; they never
+          show in the answered look first. */}
+      {asks.length > 0 && !streaming && !(props.waiting && revealing) && (
+        <Questions asks={asks} waiting={props.waiting} onAnswer={props.onAnswer} ctx={props.ctx} />
       )}
       {m.status === "error" && (
         <div className="msg-error">
@@ -993,9 +1010,12 @@ function AssistantMessage(props: {
   );
 }
 
-function TextPart({ text, animate, streaming, ctx, onLive }: { text: string; animate: boolean; streaming: boolean; ctx: Ctx; onLive?: (live: boolean) => void }) {
+function TextPart(props: { text: string; animate: boolean; streaming: boolean; ctx: Ctx; liveKey: number; onLive: (key: number, live: boolean) => void }) {
+  const { text, animate, streaming, ctx, liveKey, onLive } = props;
   const { text: shown, live } = useSmoothText(text, animate, streaming);
-  useEffect(() => onLive?.(live), [live, onLive]);
+  useEffect(() => onLive(liveKey, live), [live, liveKey, onLive]);
+  // Gone (the answer redrawn): no longer typing.
+  useEffect(() => () => onLive(liveKey, false), [liveKey, onLive]);
   return <RichText text={shown} live={live} ctx={ctx} />;
 }
 

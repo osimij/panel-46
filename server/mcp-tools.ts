@@ -117,7 +117,7 @@ const FIGMA_HOW_TO = (sketch: string, base: number) =>
   "Then look at the new version's render next to the Figma picture and fix what differs before you answer. Say in a line or two what changed and anything you couldn't carry over.";
 
 /** What to look at in a wireframe's pictures, in place of LOOK: it is a rough draft, not a design. */
-const WIRE_LOOK = "Look at the screens before you answer: every section has its note (its name, its job, what is in it), the order reads from top to bottom, and nothing is designed (gray only). Fix what's off with edit_sketch first. page_errors come from the page itself.";
+const WIRE_LOOK = "Look at the screens before you answer: every section is there in order with its name tag, each is as tall as you meant (the tag says its height in screens, vh), the placeholder words say what goes where, and nothing is designed (gray only). Fix what's off with edit_sketch first. page_errors come from the page itself.";
 
 /** A wireframe's render, without what was measured against the rules and the skills: it isn't a design to judge. */
 const asWire = (render: Render): Render => ({ ...render, rules: undefined, skills: undefined, apply: undefined, skillKey: undefined });
@@ -517,7 +517,7 @@ export function createMcpServer({ withRules = true }: { withRules?: boolean } = 
       from: z.string().optional().describe("What it comes from: a topic's name, a save's id, or another sketch's id or title (a branch of it)."),
       uses: z.array(z.string()).max(12).optional().describe("Ids of the saves it takes from (type from one, color from another). Each one on the canvas gets a line to the sketch, so the designer sees where it came from."),
       device: z.enum(["desktop", "tablet", "phone"]).optional().describe("The screen it's made for, and rendered on. Default desktop; phone for a mobile app screen (390×844)."),
-      kind: z.enum(["page", "wireframe"]).optional().describe("wireframe: a gray page that only shows what each section is for and what is in it, before any design (a recipe's Sections or Layout step). It isn't checked against the rules or the skills. Leave out for a designed page."),
+      kind: z.enum(["page", "wireframe"]).optional().describe("wireframe: a gray page that shows each section at the height it will have and what is in it, before any design (a recipe's Sections or Layout step). It isn't checked against the rules or the skills. Leave out for a designed page."),
     },
     annotations: write,
   }, async (a) => {

@@ -48,7 +48,7 @@ describe("the recipes", () => {
 
     const sections = await call("get_recipe", { name: "Website", step: "sections" });
     expect(sections.text).toStartWith("# Website: Sections (step 1 of 8)");
-    expect(sections.text).toContain('class="wf-row"');
+    expect(sections.text).toContain('class="wf-sec');
     expect(sections.text).toContain("```html");
     expect(sections.text).not.toContain("### Words");
     expect(sections.text).not.toContain("What makes it great");
@@ -87,7 +87,7 @@ describe("a project going step by step", () => {
     const s = await tool("start_steps", { project: id, recipe: "Website" });
     expect(s.recipe).toBe("Website");
     expect(s.now.step).toBe("Sections");
-    expect(s.now.text).toContain('class="wf-row"');
+    expect(s.now.text).toContain('class="wf-sec');
     expect(s.steps[0]).toEqual({ step: "Sections", state: "now" });
     expect(await topic(id, "Sections")).toBeTruthy();
 

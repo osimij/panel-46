@@ -13,6 +13,8 @@
     { "name": "panel-copy-studio", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4737", "PANEL_LIBRARY_DIR=.copy/lib-studio", "PANEL_DIST=.copy/dist-studio", "bun", "server/index.ts"], "port": 4737 },
     { "name": "panel-copy-sidebar", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4717", "PANEL_LIBRARY_DIR=.copy/lib-sidebar", "PANEL_DIST=.copy/dist-sidebar", "bun", "server/index.ts"], "port": 4717 },
     { "name": "panel-copy-steps", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4707", "PANEL_LIBRARY_DIR=.copy/lib-steps", "PANEL_DIST=.copy/dist-steps", "bun", "server/index.ts"], "port": 4707 },
-    { "name": "panel-copy-meter", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4727", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist-meter", "bun", "server/index.ts"], "port": 4727 }
+    { "name": "panel-copy-meter", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4727", "PANEL_LIBRARY_DIR=.copy/lib", "PANEL_DIST=.copy/dist-meter", "bun", "server/index.ts"], "port": 4727 },
+    { "name": "navtech-hero", "runtimeExecutable": "python3", "runtimeArgs": ["-m", "http.server", "4801", "--directory", "navtech-hero"], "port": 4801 },
+    { "name": "panel-copy-skills", "runtimeExecutable": "env", "runtimeArgs": ["PANEL_PORT=4697", "PANEL_LIBRARY_DIR=.copy/lib-skills", "PANEL_DIST=.copy/dist-skills", "bun", "server/index.ts"], "port": 4697 }
   ]
 }

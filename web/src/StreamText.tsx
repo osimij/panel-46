@@ -44,7 +44,9 @@ export function useSmoothText(target: string, animate: boolean, streaming: boole
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
-      const dt = Math.min(64, now - last) / 16.7;
+      // Paced by the time that really passed, not by frames: a window out of view draws a few
+      // frames a second (or none), and on the next one the words catch up instead of crawling.
+      const dt = Math.min(1000, now - last) / 16.7;
       last = now;
       const text = tgt.current;
       const backlog = text.length - pos.current;
