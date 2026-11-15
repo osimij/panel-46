@@ -621,10 +621,10 @@ a.mat-name:hover { text-decoration: underline; text-decoration-color: var(--fain
 .canvas-lost-title { margin: 0; font-size: 13px; color: var(--muted); }
 .canvas-lost .canvas-chip { pointer-events: auto; }
 
-/* The small map, bottom right, above the dock's line: quiet, grayscale, the part in view outlined. */
+/* The small map, top right, level with the project's name: quiet, grayscale, the part in view outlined. */
 .canvas { --map-mask: color-mix(in oklch, var(--bg) 62%, transparent); --map-line: var(--muted); }
 .canvas .react-flow__panel.canvas-map {
-  right: 14px; bottom: 92px; margin: 0; overflow: hidden;
+  top: 14px; right: 14px; margin: 0; overflow: hidden;
   border-radius: calc(12px * var(--smooth)); corner-shape: var(--corner);
   background: color-mix(in oklch, var(--raised) 88%, transparent);
   -webkit-backdrop-filter: blur(20px) saturate(1.6); backdrop-filter: blur(20px) saturate(1.6);

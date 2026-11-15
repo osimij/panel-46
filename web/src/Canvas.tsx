@@ -1821,6 +1821,7 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           {partOut && !lost && !empty && (
             <MiniMap
               className="canvas-map"
+              position="top-right"
               pannable
               ariaLabel="Map of the canvas"
               nodeClassName={(n) => `mm-${n.type}`}
