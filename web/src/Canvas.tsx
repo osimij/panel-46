@@ -1356,18 +1356,31 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
     },
     [id, addCards, onError],
   );
+  /** ⇧⌘Z: takes back this window's latest undo; the server knows which (projects.ts). */
+  const redo = useCallback(() => {
+    setJudged(null);
+    queue.current = queue.current
+      .then(() => projectApi.redo(id, CLIENT))
+      .then((res) => {
+        if (res.seq) seq.current = Math.max(seq.current, res.seq);
+        addCards(res.cards);
+        if (res.ops.length) applyRef.current(res.ops);
+      })
+      .catch((e) => onError((e as Error).message));
+  }, [id, addCards, onError]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== "z") return;
-      // In the studio, ⌘Z steps back through the hand changes on the page instead (Studio.tsx).
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.key.toLowerCase() !== "z") return;
+      // In the studio, ⌘Z and ⇧⌘Z step through the hand changes on the page instead (Studio.tsx).
       if (reviewingRef.current || viewingRef.current) return;
       if ((e.target as Element).closest?.("input, textarea, [contenteditable]")) return;
       e.preventDefault();
-      undo("me");
+      if (e.shiftKey) redo();
+      else undo("me");
     };
     addEventListener("keydown", onKey);
     return () => removeEventListener("keydown", onKey);
-  }, [undo]);
+  }, [undo, redo]);
 
   // The note about the assistant's change goes away on its own after a while.
   useEffect(() => {
@@ -1794,7 +1807,10 @@ function Board({ id, dock, askRunning, askDoing, askUnread, askOpen, ...handlers
           panOnScrollSpeed={PAN_SPEED}
           selectionOnDrag
           panOnDrag={[1, 2]}
-          deleteKeyCode={["Backspace", "Delete"]}
+          // React Flow listens for Delete on the whole page, and the sketch stays selected under
+          // the studio: without this, deleting a pointed part in the studio deleted the whole
+          // sketch from the canvas too. While a sketch is open or Review is up, Delete is theirs.
+          deleteKeyCode={viewing || reviewing ? null : ["Backspace", "Delete"]}
           multiSelectionKeyCode="Shift"
           proOptions={{ hideAttribution: true }}
           fitViewOptions={{ padding: 0.25 }}

@@ -127,3 +127,56 @@ describe("saying no counts", () => {
     expect(records(c.project).length).toBe(0);
   });
 });
+
+// ⇧⌘Z: redo takes back this window's undos, newest first, goes back and forth with ⌘Z,
+// and a new change of the designer's own ends what can be redone.
+describe("redo", () => {
+  const redo = async (project: string) => (await p.send("POST", `/api/projects/${project}/redo`, { client: CLIENT })).json();
+  const has = async (project: string, node: string) => (await p.get(`/api/projects/${project}`)).nodes.some((n: any) => n.id === node);
+  const at = async (project: string, node: string) => (await p.get(`/api/projects/${project}`)).nodes.find((n: any) => n.id === node);
+
+  test("⌘Z then ⇧⌘Z deletes the card again, and they go back and forth", async () => {
+    const c = await canvas("Redo 1", ids[4]!, "kept");
+    await ops(c.project, [{ op: "remove_node", id: c.node }]);
+    await undo(c.project);
+    expect(await has(c.project, c.node)).toBe(true);
+    const again = await redo(c.project);
+    expect(again.redid).toBeTruthy();
+    expect(await has(c.project, c.node)).toBe(false);
+    await undo(c.project);
+    expect(await has(c.project, c.node)).toBe(true);
+    await redo(c.project);
+    expect(await has(c.project, c.node)).toBe(false);
+    // Nothing left to redo.
+    expect((await redo(c.project)).ops.length).toBe(0);
+  });
+
+  test("two undos redo newest first", async () => {
+    const c = await canvas("Redo 2", ids[5]!, "kept");
+    await ops(c.project, [{ op: "update_node", id: c.node, x: 100, y: 200 }]);
+    await ops(c.project, [{ op: "update_node", id: c.node, x: 300, y: 200 }]);
+    await undo(c.project);
+    await undo(c.project);
+    expect((await at(c.project, c.node)).x).toBe(0);
+    await redo(c.project);
+    expect((await at(c.project, c.node)).x).toBe(100);
+    await redo(c.project);
+    expect((await at(c.project, c.node)).x).toBe(300);
+  });
+
+  test("a new change ends what can be redone", async () => {
+    const c = await canvas("Redo 3", ids[6]!, "kept");
+    await ops(c.project, [{ op: "update_node", id: c.node, x: 100, y: 200 }]);
+    await undo(c.project);
+    await ops(c.project, [{ op: "update_node", id: c.node, x: 50, y: 200 }]);
+    expect((await redo(c.project)).ops.length).toBe(0);
+    expect((await at(c.project, c.node)).x).toBe(50);
+  });
+
+  test("another window's undo isn't redone here", async () => {
+    const c = await canvas("Redo 4", ids[7]!, "kept");
+    await p.send("POST", `/api/projects/${c.project}/ops`, { client: "other", ops: [{ op: "update_node", id: c.node, x: 100, y: 200 }] });
+    await p.send("POST", `/api/projects/${c.project}/undo`, { client: "other", who: "me" });
+    expect((await redo(c.project)).ops.length).toBe(0);
+  });
+});

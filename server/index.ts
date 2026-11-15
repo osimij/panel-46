@@ -11,7 +11,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { createMcpServer } from "./mcp-tools.ts";
 import { addFile, addLink, listMaterials, materialFile, removeMaterial, rereadCut, updateMaterial } from "./materials.ts";
 import { startSummaries, summarize } from "./digest.ts";
-import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, setArchived, setTurnedDownReason, undoLast, verdictReasons, type Op } from "./projects.ts";
+import { apply, createProject, deleteProject, follow as followProject, getProject, listProjects, setArchived, setTurnedDownReason, undoLast, redoLast, verdictReasons, type Op } from "./projects.ts";
 import { captureForFigma, keepPart, readSketch, SKETCH_CSP, servedSketch, sketchFile, statesOf } from "./sketches.ts";
 import { frameName, readFrame } from "./figma.ts";
 import { addFont, fontFile, listFonts, removeFonts, renameFamily } from "./fonts.ts";
@@ -915,7 +915,7 @@ async function handle(req: Request): Promise<Response> {
     }
   }
 
-  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream|\/undo|\/turned-down)?$/);
+  const projectRoute = path.match(/^\/api\/projects\/([0-9a-f]{16})(\/ops|\/stream|\/undo|\/redo|\/turned-down)?$/);
   if (projectRoute) {
     const [, id, sub] = projectRoute as unknown as [string, string, string | undefined];
     if (!sub && m === "GET") {
@@ -962,6 +962,20 @@ async function handle(req: Request): Promise<Response> {
       try {
         const res = undoLast(id, b.who === "assistant" ? "assistant" : { client }, client);
         if (!res) return json({ seq: null, ops: [], cards: [], undid: null });
+        const added = res.ops.flatMap((o) => (o.op === "add_node" && o.node.ref_id ? [o.node.ref_id] : []));
+        return json({ ...res, cards: cards(added) });
+      } catch (e) {
+        return bad((e as Error).message, 409);
+      }
+    }
+    if (sub === "/redo" && m === "POST") {
+      // { client }: ⇧⌘Z, taking back this window's latest undo.
+      const b = (await req.json().catch(() => ({}))) as { client?: string };
+      const client = typeof b.client === "string" ? b.client.slice(0, 40) : "";
+      if (!client) return bad("Which window is asking?");
+      try {
+        const res = redoLast(id, client);
+        if (!res) return json({ seq: null, ops: [], cards: [], redid: null });
         const added = res.ops.flatMap((o) => (o.op === "add_node" && o.node.ref_id ? [o.node.ref_id] : []));
         return json({ ...res, cards: cards(added) });
       } catch (e) {

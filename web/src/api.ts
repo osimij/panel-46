@@ -960,6 +960,9 @@ export const projectApi = {
   /** Undo this window's last change (who: "me", ⌘Z) or the assistant's last change. */
   undo: (id: string, client: string, who: "me" | "assistant") =>
     call<{ seq: number | null; ops: BoardOp[]; cards: RefCard[]; undid: string | null }>(`/api/projects/${id}/undo`, { method: "POST", body: body({ client, who }) }),
+  /** ⇧⌘Z: take back this window's latest undo. */
+  redo: (id: string, client: string) =>
+    call<{ seq: number | null; ops: BoardOp[]; cards: RefCard[]; redid: string | null }>(`/api/projects/${id}/redo`, { method: "POST", body: body({ client }) }),
   /** Why the designer took these cards off the canvas, said after they're gone. */
   whyRemoved: (id: string, nodes: string[], reason: string) =>
     call<{ ok: boolean; n: number }>(`/api/projects/${id}/turned-down`, { method: "POST", body: body({ nodes, reason }) }),

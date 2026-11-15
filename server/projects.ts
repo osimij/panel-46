@@ -70,6 +70,8 @@ if (!eventCols.includes("undo")) db.exec("ALTER TABLE project_events ADD COLUMN 
 if (!eventCols.includes("label")) db.exec("ALTER TABLE project_events ADD COLUMN label TEXT");
 if (!eventCols.includes("undo_of")) db.exec("ALTER TABLE project_events ADD COLUMN undo_of INTEGER");
 if (!eventCols.includes("undone")) db.exec("ALTER TABLE project_events ADD COLUMN undone INTEGER NOT NULL DEFAULT 0");
+// Added with redo (⇧⌘Z): the undo this change took back. Older code reads a redo as an ordinary change.
+if (!eventCols.includes("redo_of")) db.exec("ALTER TABLE project_events ADD COLUMN redo_of INTEGER");
 
 // A finished project can be archived: it leaves the sidebar's main list but keeps everything,
 // and comes back with one click. Empty means it is in use.
@@ -246,6 +248,8 @@ export interface ApplyOptions {
   label?: string;
   /** This change undoes the event with this number. */
   undoOf?: number;
+  /** This change takes back the undo with this number (⇧⌘Z). */
+  redoOf?: number;
 }
 
 /**
@@ -374,10 +378,12 @@ export function apply(projectId: string, ops: Op[], actor: Actor = "designer", o
     db.run("UPDATE projects SET seq = seq + 1, updated_at = ? WHERE id = ?", [ts, projectId]);
     const next = rowOf(projectId)!.seq;
     db.run(
-      "INSERT INTO project_events (project_id, seq, at, actor, client, ops, undo, label, undo_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [projectId, next, ts, actor, opts.client ?? null, JSON.stringify(done), JSON.stringify(undo.reverse().flat()), opts.label ?? null, opts.undoOf ?? null],
+      "INSERT INTO project_events (project_id, seq, at, actor, client, ops, undo, label, undo_of, redo_of) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      [projectId, next, ts, actor, opts.client ?? null, JSON.stringify(done), JSON.stringify(undo.reverse().flat()), opts.label ?? null, opts.undoOf ?? null, opts.redoOf ?? null],
     );
     if (opts.undoOf) db.run("UPDATE project_events SET undone = 1 WHERE project_id = ? AND seq = ?", [projectId, opts.undoOf]);
+    // A redone undo is spent: the next ⇧⌘Z reaches the undo before it.
+    if (opts.redoOf) db.run("UPDATE project_events SET undone = 1 WHERE project_id = ? AND seq = ?", [projectId, opts.redoOf]);
     return next;
   })();
   if (done.length) wake(projectId);
@@ -422,6 +428,36 @@ export function undoLast(projectId: string, who: { client: string } | "assistant
   const res = apply(projectId, ops, "designer", { client, undoOf: rows[0]!.seq, label: what ? `Undid: ${what}` : "Undid a change" });
   db.run(`UPDATE project_events SET undone = 1 WHERE project_id = ? AND seq IN (${rows.map(() => "?").join(",")})`, [projectId, ...rows.map((r) => r.seq)]);
   return { ...res, undid: what };
+}
+
+interface RedoRow { seq: number; undo: string | null; label: string | null; undone: number; undo_of: number | null; redo_of: number | null }
+
+/**
+ * Redo (⇧⌘Z): take back this window's latest undo that hasn't been taken back yet. Each undo
+ * was logged with what puts it back, so redoing is replaying that. A new change of the
+ * designer's own (not an undo, not a redo) ends the chain, as everywhere else: after it,
+ * there is nothing to redo. A redo is an ordinary change for ⌘Z, so the two go back and forth.
+ */
+export function redoLast(projectId: string, client: string) {
+  const recent = db
+    .query<RedoRow, [string, string]>(
+      "SELECT seq, undo, label, undone, undo_of, redo_of FROM project_events WHERE project_id = ? AND client = ? AND actor = 'designer' ORDER BY seq DESC LIMIT 200",
+    )
+    .all(projectId, client);
+  let row: RedoRow | null = null;
+  for (const r of recent) {
+    if (r.redo_of) continue;
+    if (!r.undo_of) break;
+    if (r.undone) continue;
+    row = r;
+    break;
+  }
+  if (!row?.undo) return null;
+  const what = row.label?.replace(/^Undid:\s*/, "") || null;
+  const res = apply(projectId, JSON.parse(row.undo) as Op[], "designer", { client, redoOf: row.seq, label: what ? `Redid: ${what}` : "Redid a change" });
+  // Nothing was left to put back (another window changed it since): the undo is spent all the same.
+  if (!res.ops.length) db.run("UPDATE project_events SET undone = 1 WHERE project_id = ? AND seq = ?", [projectId, row.seq]);
+  return { ...res, redid: what };
 }
 
 // ---------- What the designer took off a canvas ----------
